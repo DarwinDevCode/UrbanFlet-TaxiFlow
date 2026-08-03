@@ -1,0 +1,198 @@
+name: urbanflet-taxiflow
+
+services:
+  # --- BD operativa principal (arquitectura_software.md línea 42) ---
+  # --replSet: las transacciones multi-documento de Mongo (core/db_transaction.py)
+  # solo funcionan sobre un replica set, aunque sea de un solo nodo. `mongo-init`
+  # lo inicializa una vez arriba (rs.initiate), de forma idempotente.
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # `service_completed_successfully` de este contenedor es lo único que
+  # `backend` espera antes de arrancar (ver depends_on más abajo) — por eso
+  # el script no puede limitarse a EMITIR rs.initiate() y salir: eso solo
+  # dispara la elección, no la termina. Debe quedarse sondeando hasta
+  # confirmar myState==1 (PRIMARY) de verdad, o fallar con exit≠0 si no
+  # llega a tiempo (así docker-compose nunca deja arrancar a backend contra
+  # un replica set a medio elegir).
+  mongo-init:
+    image: mongo:7
+    restart: "no"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        mongosh --host mongo:27017 --quiet --eval '
+          if (!(function () { try { rs.status(); return true; } catch (e) { return false; } })()) {
+            rs.initiate({_id: "rs0", members: [{_id: 0, host: "mongo:27017"}]});
+          }
+
+          let primario = false;
+          for (let i = 0; i < 30; i++) {
+            if (rs.status().myState === 1) {
+              primario = true;
+              break;
+            }
+            sleep(1000);
+          }
+
+          if (!primario) {
+            print("ERROR: el replica set rs0 no llegó a PRIMARY a tiempo");
+            quit(1);
+          }
+          print("replica set rs0 listo, nodo PRIMARY");
+        '
+
+  # --- Cache y tiempo real: última posición, sesiones WS, colas de oferta (línea 47) ---
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Backend único en Python: FastAPI + Uvicorn (línea 5, 39) ---
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
+      REDIS_URL: redis://redis:6379/0
+      POCKETBASE_URL: http://pocketbase:8090
+      CLICKHOUSE_HOST: clickhouse
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/src:/app/src
+    depends_on:
+      mongo:
+        condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  # --- BD de dataset crudo: exclusivamente 2021 Yellow Taxi Trip Data (línea 43, 52) ---
+  pocketbase:
+    image: ghcr.io/muchobien/pocketbase:latest
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      - pocketbase_data:/pb_data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8090/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- BD columnar: capa Gold (línea 44) ---
+  clickhouse:
+    image: clickhouse/clickhouse-server:24
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  # --- Orquestación ETL: Apache Airflow 2.x, DAGs Medallion por dominio (línea 45) ---
+  # airflow-db es solo el metastore interno de Airflow (jobs, DAG runs); no es
+  # una base de datos de dominio y no participa del modelo de diseno_base_datos.md.
+  airflow-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${AIRFLOW_DB_USER:-airflow}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:-airflow}
+      POSTGRES_DB: ${AIRFLOW_DB_NAME:-airflow}
+    volumes:
+      - airflow_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  airflow-init:
+    image: apache/airflow:2.9.3-python3.11
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+    environment: &airflow-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-db/${AIRFLOW_DB_NAME:-airflow}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY:-change-me}
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      MONGO_URI: mongodb://mongo:27017
+      POCKETBASE_URL: http://pocketbase:8090
+      CLICKHOUSE_HOST: clickhouse
+      _PIP_ADDITIONAL_REQUIREMENTS: "clickhouse-connect==0.7.19 pymongo==4.8.0"
+    volumes:
+      - ./analytics/dags:/opt/airflow/dags
+      - ./analytics/logs:/opt/airflow/logs
+      - ./analytics/plugins:/opt/airflow/plugins
+    entrypoint: /bin/bash
+    command: -c "airflow db migrate && airflow users create --username admin --password admin --firstname Admin --lastname Plataforma --role Admin --email admin@urbanflet.local || true"
+
+  airflow-webserver:
+    image: apache/airflow:2.9.3-python3.11
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment: *airflow-env
+    volumes:
+      - ./analytics/dags:/opt/airflow/dags
+      - ./analytics/logs:/opt/airflow/logs
+      - ./analytics/plugins:/opt/airflow/plugins
+      - ./analytics/seed_data:/opt/airflow/seed_data
+      - ./data/nyc_taxi:/opt/airflow/nyc_data:ro
+    ports:
+      - "8080:8080"
+    command: webserver
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.3-python3.11
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment: *airflow-env
+    volumes:
+      - ./analytics/dags:/opt/airflow/dags
+      - ./analytics/logs:/opt/airflow/logs
+      - ./analytics/plugins:/opt/airflow/plugins
+      - ./analytics/seed_data:/opt/airflow/seed_data
+      - ./data/nyc_taxi:/opt/airflow/nyc_data:ro
+    command: scheduler
+
+volumes:
+  mongo_data:
+  pocketbase_data:
+  clickhouse_data:
+  airflow_db_data:

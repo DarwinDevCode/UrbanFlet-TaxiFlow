@@ -1,0 +1,102 @@
+/* AppShell — sidebar + header + content, compartido por las 3 apps.
+   Mobile-first: en pantallas angostas (web-pasajero/web-conductor corren
+   ahí) la barra lateral vive fuera de pantalla y se abre con el botón de
+   menú del header, en vez de robarle ancho permanente a un viewport de
+   teléfono. */
+
+.shell-root {
+  min-height: 100dvh;
+  display: flex;
+  background: var(--color-bg);
+}
+
+.shell-sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--shell-sidebar-width);
+  background: var(--color-sidebar-bg);
+  color: var(--color-sidebar-text);
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-4);
+  gap: var(--space-4);
+  transform: translateX(-100%);
+  transition: transform 0.2s ease;
+  z-index: 40;
+  overflow-y: auto;
+}
+
+.shell-sidebar.shell-sidebar-open {
+  transform: translateX(0);
+}
+
+.shell-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 12, 22, 0.4);
+  z-index: 30;
+}
+
+.shell-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.shell-header {
+  height: var(--shell-header-height);
+  min-height: var(--shell-header-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 0 var(--space-4);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.shell-menu-button {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--color-text);
+  flex-shrink: 0;
+}
+
+.shell-content {
+  flex: 1;
+  padding: var(--space-4);
+}
+
+/* A partir de un ancho de tablet en adelante, la barra lateral queda fija y
+   visible siempre — deja de ser un panel que se abre/cierra. */
+@media (min-width: 900px) {
+  .shell-sidebar {
+    position: sticky;
+    top: 0;
+    height: 100dvh;
+    transform: none;
+  }
+
+  .shell-backdrop {
+    display: none;
+  }
+
+  .shell-menu-button {
+    display: none;
+  }
+
+  .shell-content {
+    padding: var(--space-5);
+  }
+}

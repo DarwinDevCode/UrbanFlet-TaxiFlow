@@ -1,0 +1,70 @@
+[project]
+name = "urbanflet-taxiflow-backend"
+version = "0.1.0"
+description = "Backend único (Python/FastAPI) de UrbanFleet-TaxiFlow — monolito modular por dominio."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic[email]>=2.9",
+    "pydantic-settings>=2.6",
+    "motor>=3.6",
+    "pymongo>=4.9",
+    "redis>=5.1",
+    "pyjwt>=2.9",
+    "passlib>=1.7",
+    # passlib 1.7.4 no reconoce bcrypt>=4.1 (le falta el atributo __about__);
+    # se fija <4.1 hasta que se actualice passlib o se cambie de backend.
+    "bcrypt>=4.0,<4.1",
+    "pywebpush>=2.0",
+    "python-multipart>=0.0.12",
+    # zoneinfo (resolución de franja tarifaria en hora local, CU-O04) depende
+    # de la base de datos IANA del sistema operativo, que Windows no trae y
+    # algunas imágenes mínimas de Linux tampoco — se empaqueta explícito.
+    "tzdata>=2024.1",
+    # CU-O16: lectura de los snapshots rpt_* publicados en ClickHouse
+    # (urbanflet_gold) por el pipeline Medallion de Airflow (CU-O15).
+    "clickhouse-connect>=0.7.19",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
+    "httpx>=0.27",
+    "mongomock-motor>=0.0.34",
+    "fakeredis>=2.25",
+    "ruff>=0.7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["src"]
+
+[tool.coverage.report]
+# NFR (arquitectura_software.md línea 123): cobertura mínima 80% en
+# viajes, recaudacion y auditoria. Se exige por módulo en CI (ver
+# .github/workflows/ci.yml), no como un único número global — un módulo
+# fuerte no debe poder compensar a otro débil que sí tiene el requisito.
+fail_under = 0
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "UP", "B", "BLE", "RUF"]
+ignore = [
+    "B008",  # Depends(...) en valores por defecto es el patrón estándar de FastAPI, no un bug.
+]

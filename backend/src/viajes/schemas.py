@@ -1,0 +1,144 @@
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+EstadoViaje = Literal[
+    "SOLICITADO", "OFERTADO", "ASIGNADO", "EN_CAMINO", "EN_CURSO", "FINALIZADO", "PAGADO", "CANCELADO", "SIN_CONDUCTOR"
+]
+Franja = Literal["DIURNA", "NOCTURNA"]
+
+
+class SolicitarViajeRequest(BaseModel):
+    origen_lat: float = Field(ge=-90, le=90)
+    origen_lon: float = Field(ge=-180, le=180)
+    origen_direccion: str
+    destino_lat: float | None = Field(default=None, ge=-90, le=90)
+    destino_lon: float | None = Field(default=None, ge=-180, le=180)
+    destino_direccion: str | None = None
+
+
+class CalificacionOut(BaseModel):
+    puntaje: int
+    comentario: str | None
+    ts: datetime
+
+
+class ViajeOut(BaseModel):
+    id: str
+    pasajero_id: str
+    conductor_id: str | None
+    vehiculo_id: str | None
+    estado: EstadoViaje
+    origen_lat: float
+    origen_lon: float
+    origen_direccion: str
+    destino_lat: float | None
+    destino_lon: float | None
+    destino_direccion: str | None
+    franja: Franja
+    ts_solicitud: datetime
+    ts_asignacion: datetime | None
+    ts_llegada_origen: datetime | None = None
+    ts_inicio: datetime | None
+    ts_fin: datetime | None
+    km_recorridos: float | None
+    min_espera: float | None
+    tarifa_estimada: float | None
+    tarifa_final: float | None
+    motivo_cancelacion: str | None
+    conductor_nombre: str | None = None
+    conductor_calificacion: float | None = None
+    vehiculo_placa: str | None = None
+    vehiculo_marca: str | None = None
+    vehiculo_color: str | None = None
+    calificacion_pasajero_a_conductor: CalificacionOut | None = None
+    calificacion_conductor_a_pasajero: CalificacionOut | None = None
+    # CU-O14 paso 3 / A2: "datos de la contraparte (limitados: nombre y
+    # calificación)" — para cuando el CONDUCTOR consulta el historial, ya que
+    # conductor_nombre/conductor_calificacion (arriba) cubren el caso inverso
+    # (pasajero viendo al conductor) desde que se asigna el viaje. Nunca
+    # incluye teléfono ni historial de ubicaciones del pasajero.
+    pasajero_nombre: str | None = None
+    pasajero_calificacion: float | None = None
+
+
+class HistorialOut(BaseModel):
+    viajes: list[ViajeOut]
+    total: int
+    pagina: int
+    limite: int
+
+
+class CalificarViajeRequest(BaseModel):
+    puntaje: int = Field(ge=1, le=5)
+    comentario: str | None = None
+
+
+class OfertaActualOut(BaseModel):
+    viaje_id: str
+    pasajero_nombre: str
+    pasajero_calificacion: float | None
+    origen_lat: float
+    origen_lon: float
+    distancia_km: float | None
+    tiene_destino: bool
+    segundos_restantes: int
+
+
+class ResponderOfertaRequest(BaseModel):
+    aceptar: bool
+
+
+class EstimacionRutaOut(BaseModel):
+    # Directions API de Google no envía cabeceras CORS — la ruta se pide
+    # siempre a través del backend, nunca directo desde el navegador (ver
+    # rutas.ts en web-pasajero). `origen_directions=False` indica que se usó
+    # el respaldo de línea recta (cuota agotada, sin ruta, red caída, etc.).
+    ruta: list[tuple[float, float]]
+    distancia_km: float
+    duracion_min: float
+    origen_directions: bool
+
+
+class ViajeActivoOut(BaseModel):
+    """Panel táctico de Despacho -- CU-T07, informe simple (MongoDB)."""
+
+    id: str
+    pasajero_id: str
+    conductor_id: str | None
+    estado: EstadoViaje
+    zona_origen_id: str | None = None
+    ts_solicitud: datetime
+
+
+class ViajeSinConductorCanceladoOut(BaseModel):
+    """Panel táctico de Despacho -- CU-T08, informe simple (MongoDB)."""
+
+    id: str
+    estado: EstadoViaje
+    motivo_cancelacion: str | None
+    actor_cancelacion: str | None = None
+    ts_solicitud: datetime
+
+
+class TiempoAsignacionOut(BaseModel):
+    """Fila del informe compuesto (ClickHouse) `rpt_tiempo_asignacion` -- CU-T07/OT4.1."""
+
+    zona_origen_id: str
+    franja: str
+    segundos_promedio: float
+    segundos_p95: float
+    total_registros: int
+
+
+class TasaCancelacionOut(BaseModel):
+    """Fila del informe compuesto (ClickHouse) `rpt_tasa_cancelacion` -- CU-T08/OT4.2."""
+
+    periodo: str
+    zona_origen_id: str
+    motivo: str
+    actor: str
+    cancelados: int
+    solicitados: int
+    tasa_cancelacion: float

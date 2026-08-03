@@ -1,0 +1,83 @@
+/* Design tokens compartidos por las 3 PWA (pasajero, conductor, interno).
+   Un solo sistema visual minimalista — cada app solo cambia --color-accent. */
+:root {
+  --color-bg: #f7f7f8;
+  --color-surface: #ffffff;
+  --color-text: #14161a;
+  --color-text-muted: #5b6270;
+  --color-border: #e4e5e9;
+  --color-accent: #2a78d6;
+  --color-accent-contrast: #ffffff;
+  --color-danger: #d03b3b;
+  --color-success: #0ca30c;
+  --color-warning: #b5760a;
+
+  /* Paleta de estado (KPIs/badges) — semántica reservada, nunca reusada
+     para series de gráfico (skill dataviz: "status colors are reserved").
+     `serious` es el escalón intermedio entre advertencia y crítico (p.ej.
+     "por vencer en 7 días" vs. "vencido"). */
+  --status-good: #0ca30c;
+  --status-warning: #b5760a;
+  --status-serious: #d9652f;
+  --status-critical: #d03b3b;
+
+  /* Paleta categórica de gráficos (skill dataviz, orden fijo validado —
+     nunca reordenar por serie individual, solo asignar en este orden). */
+  --chart-series-1: #2a78d6; /* azul */
+  --chart-series-2: #eb6834; /* naranja */
+  --chart-series-3: #1baf7a; /* aqua */
+  --chart-series-4: #eda100; /* amarillo */
+  --chart-series-5: #e87ba4; /* magenta */
+  --chart-series-6: #008300; /* verde */
+  --chart-series-7: #4a3aa7; /* violeta */
+  --chart-series-8: #e34948; /* rojo */
+  --chart-grid: #e1e0d9;
+  --chart-axis: #c3c2b7;
+  --chart-muted: #898781;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-size-sm: 0.875rem;
+  --font-size-md: 1rem;
+  --font-size-lg: 1.25rem;
+  --font-size-xl: 1.75rem;
+  --font-size-2xl: 2.25rem;
+
+  --shadow-sm: 0 1px 2px rgba(20, 22, 26, 0.06);
+  --shadow-md: 0 4px 16px rgba(20, 22, 26, 0.08);
+
+  /* AppShell (sidebar + header) — mismo sistema de tokens, no colores nuevos
+     sueltos: la barra lateral es oscura por diseño (referencia del dueño de
+     producto), el resto de la app sigue usando los tokens de arriba. */
+  --color-sidebar-bg: #12172b;
+  --color-sidebar-text: #b9bfd6;
+  --color-sidebar-text-muted: #7a8099;
+  --color-sidebar-border: rgba(255, 255, 255, 0.08);
+  --color-sidebar-active-bg: #ffffff;
+  --color-sidebar-active-text: #12172b;
+  --shell-sidebar-width: 264px;
+  --shell-header-height: 64px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  -webkit-font-smoothing: antialiased;
+}

@@ -1,0 +1,6 @@
+# Dependencias Python que necesitan los DAGs de analytics/dags.
+# Instaladas en los contenedores de Airflow vía _PIP_ADDITIONAL_REQUIREMENTS
+# (ver &airflow-env en docker-compose.yml) -- este archivo documenta esas
+# mismas versiones para referencia/instalación manual fuera de Airflow.
+clickhouse-connect==0.7.19
+pymongo==4.8.0

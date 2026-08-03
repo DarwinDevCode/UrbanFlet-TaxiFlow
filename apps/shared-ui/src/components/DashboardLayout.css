@@ -1,0 +1,6 @@
+@media (max-width: 900px) {
+  .dashboard-z-row,
+  .dashboard-f-row {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}

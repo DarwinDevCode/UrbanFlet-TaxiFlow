@@ -1,0 +1,5 @@
+@import "@urbanflet/shared-ui/src/tokens.css";
+
+#root {
+  min-height: 100dvh;
+}

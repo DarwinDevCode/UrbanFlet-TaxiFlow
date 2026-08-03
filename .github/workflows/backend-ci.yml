@@ -1,0 +1,83 @@
+name: backend-ci
+
+on:
+  push:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Mongo con replica set de un nodo: lo exigen las pruebas de
+      # core/db_transaction.py (transacciones multi-documento). El resto de
+      # la suite sigue usando mongomock y no depende de este servicio — solo
+      # las 2 pruebas de integración (tests/core/test_db_transaction_integration.py,
+      # tests/captacion/test_write_ahead_integration.py) lo necesitan; sin
+      # él, esas dos se saltan solas en vez de fallar.
+      - name: Levantar Mongo con replica set
+        run: |
+          docker run -d --name mongo-ci -p 27017:27017 mongo:7 mongod --replSet rs0 --bind_ip_all
+
+          for i in $(seq 1 30); do
+            docker exec mongo-ci mongosh --quiet --eval "db.adminCommand('ping')" && break
+            sleep 2
+          done
+
+          # rs.initiate() solo DISPARA la elección; no basta con emitirlo y
+          # seguir — hay que sondear hasta que el nodo sea PRIMARY de verdad
+          # (myState==1), o fallar el step si no llega a tiempo. Un sleep
+          # fijo aquí es exactamente el tipo de cosa que pasa intermitente
+          # en CI semanas después.
+          docker exec mongo-ci mongosh --quiet --eval '
+            if (!(function () { try { rs.status(); return true; } catch (e) { return false; } })()) {
+              rs.initiate({_id: "rs0", members: [{_id: 0, host: "localhost:27017"}]});
+            }
+
+            let primario = false;
+            for (let i = 0; i < 30; i++) {
+              if (rs.status().myState === 1) {
+                primario = true;
+                break;
+              }
+              sleep(1000);
+            }
+
+            if (!primario) {
+              print("ERROR: el replica set rs0 no llegó a PRIMARY a tiempo");
+              quit(1);
+            }
+            print("replica set rs0 listo, nodo PRIMARY");
+          '
+
+      - name: Instalar dependencias
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check src tests
+
+      - name: Pruebas + cobertura
+        env:
+          MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0
+        run: pytest --cov --cov-report=json --cov-report=term-missing
+
+      - name: Gate de cobertura ≥80% en viajes/recaudacion/auditoria
+        run: python scripts/check_coverage_gate.py
+
+      - name: Bajar Mongo
+        if: always()
+        run: docker rm -f mongo-ci

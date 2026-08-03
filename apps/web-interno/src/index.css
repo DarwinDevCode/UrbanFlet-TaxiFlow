@@ -1,0 +1,9 @@
+@import "@urbanflet/shared-ui/src/tokens.css";
+
+:root {
+  --color-accent: #14161a;
+}
+
+#root {
+  min-height: 100dvh;
+}

@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.json
+htmlcov/
+
+# Node
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Env
+.env
+.env.local
+
+# Docker volumes mounted locally
+pgdata/
+mongodata/
+
+# Dataset crudo NYC Yellow Taxi 2021 (~172MB, supera el límite de 100MB de
+# GitHub) -- ver CLAUDE.md, sección "Cambio de arquitectura NYC" para cómo
+# obtenerlo y dónde debe quedar montado (data/nyc_taxi/yellow_tripdata.csv).
+data/nyc_taxi/
+
+# Airflow
+analytics/logs/
+analytics/plugins/__pycache__/
+
+# Editors / OS
+.DS_Store
+*.swp
