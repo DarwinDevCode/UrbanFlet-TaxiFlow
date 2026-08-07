@@ -28,6 +28,7 @@ from datetime import UTC, datetime, timedelta
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 
+from src.configuracion.service import obtener_parametro_sistema_vigente
 from src.core.audit import AccionAuditoria, ResultadoAuditoria, write_audit_event
 from src.core.db_mongo import get_mongo_client
 from src.core.db_redis import get_redis
@@ -36,8 +37,12 @@ from src.core.exceptions import DomainError
 from src.core.geo import distancia_km
 from src.core.tiempo import como_utc
 
-RADIOS_M = (300, 600, 1000)
-OFERTA_EXPIRA_SEGUNDOS = 20
+# Módulo 2.1 de admin_sistema (specs/specs-administrativas/admin_sistema.md):
+# radios de despacho y expiración de oferta ya no son constantes fijas, se
+# leen de `configuracion.service.obtener_parametro_sistema_vigente` (30s de
+# caché en memoria, mismo mecanismo que tarifa/comisión) -- estos valores
+# quedan solo como el fallback documentado en
+# `configuracion/service.py::DEFAULTS` si nunca se publicó una versión.
 MAX_OFERTAS_TOTALES = 10
 POSICION_MAX_ANTIGUEDAD_SEGUNDOS = 60
 
@@ -196,12 +201,13 @@ async def _emitir_oferta(db: AsyncIOMotorDatabase, viaje: dict, candidato: dict,
 async def _intentar_emitir_siguiente(db: AsyncIOMotorDatabase, viaje: dict) -> dict:
     descartados = viaje.get("conductores_descartados", [])
     radio_idx = viaje.get("radio_idx", 0)
+    radios_m = (await obtener_parametro_sistema_vigente(db))["radios_despacho_m"]
 
-    while radio_idx < len(RADIOS_M):
+    while radio_idx < len(radios_m):
         if viaje.get("ofertas_totales", 0) >= MAX_OFERTAS_TOTALES:
             return await _marcar_sin_conductor(db, viaje)
 
-        radio_m = RADIOS_M[radio_idx]
+        radio_m = radios_m[radio_idx]
         candidatos = await _buscar_candidatos(
             db, origen_lat=viaje["origen_lat"], origen_lon=viaje["origen_lon"], radio_m=radio_m, excluir=descartados
         )
@@ -223,7 +229,8 @@ async def avanzar_despacho(db: AsyncIOMotorDatabase, viaje: dict) -> dict:
         return await _intentar_emitir_siguiente(db, viaje)
 
     if viaje["estado"] == "OFERTADO":
-        expira = como_utc(viaje["ts_oferta_emitida"]) + timedelta(seconds=OFERTA_EXPIRA_SEGUNDOS)
+        oferta_expira_segundos = (await obtener_parametro_sistema_vigente(db))["oferta_expira_segundos"]
+        expira = como_utc(viaje["ts_oferta_emitida"]) + timedelta(seconds=oferta_expira_segundos)
         if datetime.now(UTC) < expira:
             return viaje
 
@@ -267,7 +274,8 @@ async def construir_oferta_out(db: AsyncIOMotorDatabase, viaje: dict, conductor_
         if cache.get("lat"):
             distancia = distancia_km(viaje["origen_lat"], viaje["origen_lon"], float(cache["lat"]), float(cache["lon"]))
 
-    expira = como_utc(viaje["ts_oferta_emitida"]) + timedelta(seconds=OFERTA_EXPIRA_SEGUNDOS)
+    oferta_expira_segundos = (await obtener_parametro_sistema_vigente(db))["oferta_expira_segundos"]
+    expira = como_utc(viaje["ts_oferta_emitida"]) + timedelta(seconds=oferta_expira_segundos)
     segundos_restantes = max(0, int((expira - datetime.now(UTC)).total_seconds()))
 
     return {
@@ -333,6 +341,7 @@ async def responder_oferta(db: AsyncIOMotorDatabase, *, conductor_id: str, acept
                         "ts_asignacion": ahora,
                         "conductor_nombre": usuario["nombre"],
                         "conductor_calificacion": (usuario.get("conductor") or {}).get("calificacion_promedio"),
+                        "conductor_foto_url": (usuario.get("conductor") or {}).get("foto_url"),
                         "vehiculo_placa": vehiculo["placa"],
                         "vehiculo_marca": vehiculo["marca"],
                         "vehiculo_color": vehiculo["color"],

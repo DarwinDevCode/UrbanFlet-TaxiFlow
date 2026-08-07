@@ -87,6 +87,11 @@ function mockFetch(handlers: Ruta[]) {
     if (method === "GET" && path.startsWith("/viajes/oferta-actual")) {
       return responder(200, null);
     }
+    // Campana de notificaciones (Sección 4.2), montada globalmente en el
+    // header de AppShell -- fetch de fondo en cada test.
+    if (method === "GET" && path.startsWith("/notificaciones/mias")) {
+      return responder(200, { items: [], total: 0, no_leidas: 0 });
+    }
     throw new Error(`Llamada a fetch no esperada en este test: ${method} ${path}`);
   }) as unknown as typeof fetch;
 
@@ -197,5 +202,70 @@ describe("web-conductor — aceptar/rechazar oferta (CU-O06)", () => {
     const respuesta = llamadas.find((c) => c.path === "/viajes/oferta/responder");
     expect(respuesta?.body).toEqual({ aceptar: false });
     expect(llamadas.some((c) => c.path === "/viajes/conductor/activo")).toBe(false);
+  });
+});
+
+describe("web-conductor — Mi perfil (Sección 2.2 de ux_complementaria.md)", () => {
+  it("muestra el campo de foto de perfil y lo actualiza junto al resto del contacto", async () => {
+    const perfil = {
+      id: "conductor-test-1",
+      nombre: "Conductor Original",
+      telefono: "+593900000002",
+      email: null,
+      roles: ["conductor"],
+      fecha_registro: new Date().toISOString(),
+      foto_url: null,
+    };
+    const { llamadas } = mockFetch([
+      { method: "GET", path: "/viajes/conductor/activo", body: null },
+      { method: "GET", path: "/perfil", body: perfil },
+      { method: "GET", path: "/perfil/sesiones", body: [] },
+      { method: "PATCH", path: "/perfil", body: { ...perfil, foto_url: "https://storage.local/foto.jpg" } },
+    ]);
+    const user = userEvent.setup();
+
+    renderApp();
+    await user.click(await screen.findByRole("button", { name: "Mi perfil" }));
+
+    await user.click(await screen.findByRole("button", { name: "Editar" }));
+    const fotoInput = screen.getByLabelText("URL de foto de perfil (la ve el pasajero al asignarte un viaje)");
+    await user.type(fotoInput, "https://storage.local/foto.jpg");
+    await user.type(screen.getByLabelText("Contraseña actual (para confirmar el cambio)"), "clave-actual");
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => {
+      const patch = llamadas.find((c) => c.method === "PATCH" && c.path === "/perfil");
+      expect(patch?.body).toMatchObject({ foto_url: "https://storage.local/foto.jpg" });
+    });
+  });
+});
+
+describe("web-conductor — Ajustes / preferencias de turno (Sección 2.3 de ux_complementaria.md)", () => {
+  it("desactiva el sonido de nueva oferta", async () => {
+    const prefsBase = {
+      tema: "claro",
+      densidad_tablas: "comoda",
+      notificaciones_push: {},
+      sonido_oferta: true,
+      vibracion_oferta: true,
+      recordatorio_turno_hora: null,
+    };
+    const { llamadas } = mockFetch([
+      { method: "GET", path: "/viajes/conductor/activo", body: null },
+      { method: "GET", path: "/preferencias", body: prefsBase },
+      { method: "PATCH", path: "/preferencias", body: { ...prefsBase, sonido_oferta: false } },
+    ]);
+    const user = userEvent.setup();
+
+    renderApp();
+    await user.click(await screen.findByRole("button", { name: "Ajustes" }));
+
+    const checkboxSonido = await screen.findByLabelText("Sonido al llegar una nueva oferta");
+    await user.click(checkboxSonido);
+
+    await waitFor(() => {
+      const patch = llamadas.find((c) => c.method === "PATCH" && c.path === "/preferencias");
+      expect(patch?.body).toEqual({ sonido_oferta: false });
+    });
   });
 });

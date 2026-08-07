@@ -96,6 +96,12 @@ async def test_listar_solicitudes_requiere_admin_captacion(client):
 
 async def test_flujo_completo_tomar_y_aprobar_solicitud(client, db):
     headers = await _admin_headers(db)
+    await db.tipos_documento.insert_many(
+        [
+            {"_id": "td-licencia", "nombre": "LICENCIA", "descripcion": "", "aplica_a": "conductor", "activo": True},
+            {"_id": "td-matricula", "nombre": "MATRICULA", "descripcion": "", "aplica_a": "vehiculo", "activo": True},
+        ]
+    )
     creada = await client.post(
         "/captacion/solicitudes",
         json=_solicitud_payload(
@@ -262,3 +268,74 @@ async def test_listar_solicitudes_filtra_por_cedula(client, db):
     body = resp.json()
     assert body["total"] == 1
     assert body["items"][0]["cedula"] == "0911112222"
+
+
+async def test_crear_solicitud_con_tipo_documento_no_reconocido_devuelve_422(client, db):
+    payload = _solicitud_payload(
+        telefono="+593910000070",
+        cedula="0900000070",
+        vehiculo={**_VEHICULO, "placa": "TDN-0001"},
+        documentos=[
+            {
+                "tipo": "TIPO_INEXISTENTE",
+                "propietario_tipo": "CONDUCTOR",
+                "url_objeto": "https://storage.local/doc.pdf",
+                "hash_archivo": "abc123",
+            }
+        ],
+    )
+    resp = await client.post("/captacion/solicitudes", json=payload)
+
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "TIPO_DOCUMENTO_INVALIDO"
+
+
+async def test_crear_solicitud_con_tipo_documento_inactivo_devuelve_422(client, db):
+    await db.tipos_documento.insert_one(
+        {
+            "_id": "td-inactivo",
+            "nombre": "CERTIFICADO_ANTECEDENTES",
+            "descripcion": "",
+            "aplica_a": "conductor",
+            "activo": False,
+        }
+    )
+    payload = _solicitud_payload(
+        telefono="+593910000071",
+        cedula="0900000071",
+        vehiculo={**_VEHICULO, "placa": "TDN-0002"},
+        documentos=[
+            {
+                "tipo": "CERTIFICADO_ANTECEDENTES",
+                "propietario_tipo": "CONDUCTOR",
+                "url_objeto": "https://storage.local/doc.pdf",
+                "hash_archivo": "abc123",
+            }
+        ],
+    )
+    resp = await client.post("/captacion/solicitudes", json=payload)
+
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "TIPO_DOCUMENTO_INVALIDO"
+
+
+async def test_crear_solicitud_con_tipo_documento_activo_es_aceptado(client, db):
+    await db.tipos_documento.insert_one(
+        {"_id": "td-licencia-2", "nombre": "LICENCIA", "descripcion": "", "aplica_a": "conductor", "activo": True}
+    )
+    payload = _solicitud_payload(
+        telefono="+593910000072",
+        cedula="0900000072",
+        vehiculo={**_VEHICULO, "placa": "TDN-0003"},
+        documentos=[
+            {
+                "tipo": "LICENCIA",
+                "propietario_tipo": "CONDUCTOR",
+                "url_objeto": "https://storage.local/doc.pdf",
+                "hash_archivo": "abc123",
+            }
+        ],
+    )
+    resp = await client.post("/captacion/solicitudes", json=payload)
+
+    assert resp.status_code == 201

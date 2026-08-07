@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -14,6 +15,12 @@ class EventoAuditoriaOut(BaseModel):
     resultado: str
     ip: str | None
     dispositivo: str | None
+    # Módulo 6.1 de admin_sistema: "comparación antes/después" -- estos dos
+    # campos ya existían en EVENTO_AUDITORIA (core/audit.py), simplemente
+    # nunca se habían expuesto en la API de lectura porque ningún consumidor
+    # los necesitaba todavía.
+    datos_previos: dict[str, Any] | None = None
+    datos_posteriores: dict[str, Any] | None = None
 
 
 class EventosPage(BaseModel):

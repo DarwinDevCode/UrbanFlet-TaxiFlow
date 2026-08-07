@@ -139,11 +139,90 @@ async def obtener_vigente(db: AsyncIOMotorDatabase, *, tipo: str, fecha: datetim
     return documento
 
 
-async def crear_zona(db: AsyncIOMotorDatabase, *, nombre: str, geometria: dict) -> dict:
+class ZonaNoEncontradaError(DomainError):
+    def __init__(self) -> None:
+        super().__init__(code="ZONA_NO_ENCONTRADA", message="La zona no existe", status_code=404)
+
+
+class ZonaEnUsoError(DomainError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="ZONA_EN_USO",
+            message="No se puede eliminar: hay viajes que referencian esta zona (origen o destino)",
+            status_code=409,
+        )
+
+
+async def crear_zona(
+    db: AsyncIOMotorDatabase, *, actor_id: str, rol: str, nombre: str, geometria: dict
+) -> dict:
     documento = {"_id": str(uuid.uuid4()), "nombre": nombre, "geometria": geometria}
+    await write_audit_event(
+        db,
+        actor_id=actor_id,
+        rol=rol,
+        accion=AccionAuditoria.CATALOGO_CREACION,
+        entidad="zonas",
+        entidad_id=documento["_id"],
+        resultado=ResultadoAuditoria.OK,
+        datos_posteriores={"nombre": nombre},
+    )
     await db.zonas.insert_one(documento)
     return documento
 
 
 async def listar_zonas(db: AsyncIOMotorDatabase) -> list[dict]:
     return await db.zonas.find().to_list(length=1000)
+
+
+async def editar_zona(
+    db: AsyncIOMotorDatabase, *, actor_id: str, rol: str, zona_id: str, nombre: str, geometria: dict
+) -> dict:
+    anterior = await db.zonas.find_one({"_id": zona_id})
+    if anterior is None:
+        raise ZonaNoEncontradaError()
+
+    await write_audit_event(
+        db,
+        actor_id=actor_id,
+        rol=rol,
+        accion=AccionAuditoria.CATALOGO_EDICION,
+        entidad="zonas",
+        entidad_id=zona_id,
+        resultado=ResultadoAuditoria.OK,
+        datos_previos={"nombre": anterior["nombre"]},
+        datos_posteriores={"nombre": nombre},
+    )
+    await db.zonas.update_one({"_id": zona_id}, {"$set": {"nombre": nombre, "geometria": geometria}})
+    return await db.zonas.find_one({"_id": zona_id})
+
+
+async def eliminar_zona(db: AsyncIOMotorDatabase, *, actor_id: str, rol: str, zona_id: str) -> None:
+    zona = await db.zonas.find_one({"_id": zona_id})
+    if zona is None:
+        raise ZonaNoEncontradaError()
+
+    # "Eliminar un valor de catálogo que ya está en uso debe bloquearse...
+    # nunca un DELETE directo que rompa referencias existentes en
+    # fact_viaje/viajes" (spec Módulo 3.1). `zona_origen_id`/`zona_destino_id`
+    # existen en el schema de viajes (viajes/schemas.py) pero hoy nunca se
+    # resuelven (siempre None, ver viajes/service.py) -- este chequeo no
+    # bloquea nada todavía en la práctica, pero es la regla real y correcta
+    # para el día en que esa resolución se implemente.
+    en_uso = await db.viajes.count_documents(
+        {"$or": [{"zona_origen_id": zona_id}, {"zona_destino_id": zona_id}]}
+    )
+    if en_uso > 0:
+        raise ZonaEnUsoError()
+
+    await write_audit_event(
+        db,
+        actor_id=actor_id,
+        rol=rol,
+        accion=AccionAuditoria.CATALOGO_ELIMINACION,
+        entidad="zonas",
+        entidad_id=zona_id,
+        resultado=ResultadoAuditoria.OK,
+        datos_previos={"nombre": zona["nombre"]},
+    )
+    await db.zonas.delete_one({"_id": zona_id})

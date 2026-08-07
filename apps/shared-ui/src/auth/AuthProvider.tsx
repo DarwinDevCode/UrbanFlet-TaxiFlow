@@ -6,6 +6,11 @@ import { decodeJwtPayload } from "./decodeJwt";
 interface TokenPair {
   access_token: string;
   refresh_token: string;
+  // Módulo 1.1/1.3 de admin_sistema (specs/specs-administrativas/
+  // admin_sistema.md): un admin forzó el cambio de contraseña al crear/editar
+  // la cuenta, o la política de vencimiento periódico para roles de alto
+  // privilegio ya venció.
+  debe_cambiar_password?: boolean;
 }
 
 interface ActorClaims {
@@ -16,6 +21,7 @@ interface ActorClaims {
 
 interface AuthState {
   actor: ActorClaims | null;
+  debeCambiarPassword: boolean;
   // Login autocontenido: teléfono o correo (el que el usuario haya elegido
   // al registrarse) + contraseña — un solo mecanismo para los tres roles,
   // sin verificación externa de ningún tipo.
@@ -27,6 +33,7 @@ interface AuthState {
     versionConsentimiento: string;
   }) => Promise<void>;
   login: (identificador: string, password: string) => Promise<void>;
+  cambiarPassword: (passwordActual: string, passwordNueva: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -40,15 +47,18 @@ function actorFromStoredToken(): ActorClaims | null {
 
 export function AuthProvider({ children }: PropsWithChildren) {
   const [actor, setActor] = useState<ActorClaims | null>(actorFromStoredToken());
+  const [debeCambiarPassword, setDebeCambiarPassword] = useState(false);
 
   const applyTokens = (tokens: TokenPair) => {
     tokenStorage.set(tokens.access_token, tokens.refresh_token);
     setActor(decodeJwtPayload<ActorClaims>(tokens.access_token));
+    setDebeCambiarPassword(Boolean(tokens.debe_cambiar_password));
   };
 
   const value = useMemo<AuthState>(
     () => ({
       actor,
+      debeCambiarPassword,
       registrar: async ({ nombre, telefono, email, password, versionConsentimiento }) => {
         // CU-O02: registro de pasajero (no el /auth/registro genérico) —
         // es lo único que además captura el consentimiento LOPDP y asigna
@@ -67,12 +77,20 @@ export function AuthProvider({ children }: PropsWithChildren) {
         });
         applyTokens(tokens);
       },
+      cambiarPassword: async (passwordActual, passwordNueva) => {
+        await apiFetch("/auth/cambiar-password", {
+          method: "POST",
+          body: { password_actual: passwordActual, password_nueva: passwordNueva },
+        });
+        setDebeCambiarPassword(false);
+      },
       logout: () => {
         tokenStorage.clear();
         setActor(null);
+        setDebeCambiarPassword(false);
       },
     }),
-    [actor],
+    [actor, debeCambiarPassword],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

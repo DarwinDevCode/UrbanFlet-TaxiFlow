@@ -14,6 +14,15 @@ router = APIRouter(prefix="/parametros", tags=["parametros"])
 # tarifas/comisión — son "reglas de dinero y estado" (línea 123 arquitectura).
 _puede_escribir_parametros = require_roles("admin_plataforma", "gerencia")
 
+# Módulo 3.1 de admin_sistema (specs/specs-administrativas/admin_sistema.md):
+# gestión de catálogos -- zonas ya vivía en este router (creado antes de que
+# existiera el paquete de Administración del Sistema), así que se extiende
+# el acceso de escritura a `admin_sistema` en vez de duplicar un segundo
+# CRUD de zonas en otro módulo. Deliberadamente separado de
+# `_puede_escribir_parametros` (tarifa/comisión) -- admin_sistema no debe
+# poder tocar reglas de dinero, solo el catálogo de zonas.
+_puede_gestionar_zonas = require_roles("admin_plataforma", "gerencia", "admin_sistema")
+
 
 def _to_out(doc: dict) -> schemas.ParametroOut:
     return schemas.ParametroOut(
@@ -72,17 +81,50 @@ async def obtener_vigente(
     return _to_out(doc)
 
 
+def _zona_to_out(doc: dict) -> schemas.ZonaOut:
+    return schemas.ZonaOut(id=doc["_id"], nombre=doc["nombre"], geometria=doc["geometria"])
+
+
 @router.post("/zonas", response_model=schemas.ZonaOut, status_code=201)
 async def crear_zona(
     body: schemas.ZonaCreate,
-    actor: Actor = Depends(_puede_escribir_parametros),
+    actor: Actor = Depends(_puede_gestionar_zonas),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ):
-    doc = await service.crear_zona(db, nombre=body.nombre, geometria=body.geometria)
-    return schemas.ZonaOut(id=doc["_id"], nombre=doc["nombre"], geometria=doc["geometria"])
+    doc = await service.crear_zona(
+        db, actor_id=actor.usuario_id, rol=",".join(actor.roles), nombre=body.nombre, geometria=body.geometria
+    )
+    return _zona_to_out(doc)
 
 
 @router.get("/zonas", response_model=list[schemas.ZonaOut])
 async def listar_zonas(db: AsyncIOMotorDatabase = Depends(get_database)):
     docs = await service.listar_zonas(db)
-    return [schemas.ZonaOut(id=d["_id"], nombre=d["nombre"], geometria=d["geometria"]) for d in docs]
+    return [_zona_to_out(d) for d in docs]
+
+
+@router.patch("/zonas/{zona_id}", response_model=schemas.ZonaOut)
+async def editar_zona(
+    zona_id: str,
+    body: schemas.ZonaCreate,
+    actor: Actor = Depends(_puede_gestionar_zonas),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+):
+    doc = await service.editar_zona(
+        db,
+        actor_id=actor.usuario_id,
+        rol=",".join(actor.roles),
+        zona_id=zona_id,
+        nombre=body.nombre,
+        geometria=body.geometria,
+    )
+    return _zona_to_out(doc)
+
+
+@router.delete("/zonas/{zona_id}", status_code=204)
+async def eliminar_zona(
+    zona_id: str,
+    actor: Actor = Depends(_puede_gestionar_zonas),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+):
+    await service.eliminar_zona(db, actor_id=actor.usuario_id, rol=",".join(actor.roles), zona_id=zona_id)

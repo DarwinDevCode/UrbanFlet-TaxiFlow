@@ -1,12 +1,14 @@
+import secrets
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from src.core.config import get_settings
 from src.core.db_mongo import get_database
 from src.core.exceptions import DomainError
 from src.core.rbac import Actor, get_current_actor, require_roles
-from src.viajes import schemas, service, service_historial
+from src.viajes import schemas, service, service_compartir, service_historial
 
 router = APIRouter(prefix="/viajes", tags=["viajes"])
 
@@ -17,6 +19,24 @@ _conductor = require_roles("conductor")
 class RolNoDisponibleError(DomainError):
     def __init__(self, rol: str) -> None:
         super().__init__(code="ROL_NO_DISPONIBLE", message=f"Tu cuenta no tiene el rol '{rol}'", status_code=403)
+
+
+class TokenInternoInvalidoError(DomainError):
+    def __init__(self) -> None:
+        super().__init__(code="TOKEN_INTERNO_INVALIDO", message="Token interno inválido", status_code=403)
+
+
+# Sección 1.5 de ux_complementaria.md: `POST /viajes/{id}/disparar-programado`
+# lo llama `dag_disparar_viajes_programados` (Airflow, misma red interna de
+# docker-compose) -- nunca un usuario final, así que no tiene sentido pedirle
+# un Bearer token de sesión. Se protege con un secreto compartido simple
+# (`internal_api_token`, ver core/config.py) comparado con
+# `secrets.compare_digest` (evita timing attacks, mismo criterio que
+# cualquier comparación de secreto en este proyecto).
+async def _verificar_token_interno(x_internal_token: str | None = Header(default=None)) -> None:
+    esperado = get_settings().internal_api_token
+    if not x_internal_token or not secrets.compare_digest(x_internal_token, esperado):
+        raise TokenInternoInvalidoError()
 
 
 def to_out(doc: dict) -> schemas.ViajeOut:
@@ -33,6 +53,7 @@ def to_out(doc: dict) -> schemas.ViajeOut:
         destino_lon=doc.get("destino_lon"),
         destino_direccion=doc.get("destino_direccion"),
         franja=doc["franja"],
+        ts_programado=doc.get("ts_programado"),
         ts_solicitud=doc["ts_solicitud"],
         ts_asignacion=doc.get("ts_asignacion"),
         ts_llegada_origen=doc.get("ts_llegada_origen"),
@@ -45,6 +66,7 @@ def to_out(doc: dict) -> schemas.ViajeOut:
         motivo_cancelacion=doc.get("motivo_cancelacion"),
         conductor_nombre=doc.get("conductor_nombre"),
         conductor_calificacion=doc.get("conductor_calificacion"),
+        conductor_foto_url=doc.get("conductor_foto_url"),
         vehiculo_placa=doc.get("vehiculo_placa"),
         vehiculo_marca=doc.get("vehiculo_marca"),
         vehiculo_color=doc.get("vehiculo_color"),
@@ -72,6 +94,28 @@ async def cancelar_viaje(
 ):
     viaje = await service.cancelar_viaje_pasajero(db, pasajero_id=actor.usuario_id)
     return to_out(viaje)
+
+
+@router.post(
+    "/{viaje_id}/disparar-programado",
+    response_model=schemas.ViajeOut,
+    dependencies=[Depends(_verificar_token_interno)],
+)
+async def disparar_viaje_programado(
+    viaje_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_database),
+):
+    viaje = await service.disparar_viaje_programado(db, viaje_id=viaje_id)
+    return to_out(viaje)
+
+
+@router.post("/activo/compartir", response_model=schemas.CompartirViajeOut)
+async def compartir_viaje_activo(
+    actor: Actor = Depends(_pasajero),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+):
+    token = await service_compartir.generar_token_compartir(db, pasajero_id=actor.usuario_id)
+    return schemas.CompartirViajeOut(token=token)
 
 
 @router.get("/activo", response_model=schemas.ViajeOut | None)
@@ -123,13 +167,14 @@ async def obtener_estimacion_ruta(
     destino_lat: float,
     destino_lon: float,
     actor: Actor = Depends(get_current_actor),
+    db: AsyncIOMotorDatabase = Depends(get_database),
 ):
     # Directions API no soporta CORS — se pide siempre desde aquí, nunca
     # directo desde el navegador (hallazgo de pruebas reales, ver
     # service.estimar_ruta). Cualquier actor autenticado puede pedirla
     # (pasajero y conductor la usan ambos).
     return await service.estimar_ruta(
-        origen_lat=origen_lat, origen_lon=origen_lon, destino_lat=destino_lat, destino_lon=destino_lon
+        db, origen_lat=origen_lat, origen_lon=origen_lon, destino_lat=destino_lat, destino_lon=destino_lon
     )
 
 
@@ -180,3 +225,28 @@ async def obtener_tasa_cancelacion(
 ):
     filas = service.obtener_tasa_cancelacion()
     return [schemas.TasaCancelacionOut(**f) for f in filas]
+
+
+# Sección 3.3 de ux_complementaria.md: historial navegable de todos los
+# viajes de la cooperativa -- acceso restringido por rol (principio de
+# mínimo privilegio ya aplicado en Administración).
+_historial_global_roles = require_roles(
+    "coordinador_operaciones", "supervisor_cumplimiento", "gerencia", "admin_sistema"
+)
+
+
+@router.get("/historial-global", response_model=schemas.HistorialOut)
+async def listar_historial_global(
+    texto: str | None = None,
+    estado: str | None = Query(default=None, pattern="^(FINALIZADO|PAGADO|CANCELADO|SIN_CONDUCTOR)$"),
+    desde: datetime | None = None,
+    hasta: datetime | None = None,
+    pagina: int = Query(default=1, ge=1),
+    limite: int = Query(default=20, ge=1, le=100),
+    actor: Actor = Depends(_historial_global_roles),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+):
+    viajes, total = await service_historial.listar_historial_global(
+        db, texto=texto, estado=estado, desde=desde, hasta=hasta, pagina=pagina, limite=limite
+    )
+    return schemas.HistorialOut(viajes=[to_out(v) for v in viajes], total=total, pagina=pagina, limite=limite)

@@ -64,6 +64,15 @@ class MotivoRequeridoError(DomainError):
         )
 
 
+class TipoDocumentoInvalidoError(DomainError):
+    def __init__(self, tipos_invalidos: set[str]) -> None:
+        super().__init__(
+            code="TIPO_DOCUMENTO_INVALIDO",
+            message=f"Tipo(s) de documento no reconocidos en el catálogo: {', '.join(sorted(tipos_invalidos))}",
+            status_code=422,
+        )
+
+
 # ---------------------------------------------------------------------------
 # CU-O02 — Registrar un pasajero
 # ---------------------------------------------------------------------------
@@ -146,6 +155,21 @@ async def crear_solicitud(
     ya_socio = await db.usuarios.find_one({"conductor.cedula": cedula, "estado": "ACTIVO"})
     if ya_socio is not None:
         raise ApplicantAlreadyMemberError()
+
+    # Punto #3 de la ronda de usabilidad de admin_sistema (2026-08-07):
+    # `DocumentoInput.tipo` era texto libre sin validar contra el catálogo
+    # `tipos_documento` (Módulo 3.2) que ya existe -- se valida acá, antes
+    # de cualquier efecto de negocio, para no crear la cuenta/solicitud si
+    # el tipo no es reconocido.
+    if documentos:
+        tipos_pedidos = {d.tipo for d in documentos}
+        validos = {
+            t["nombre"]
+            async for t in db.tipos_documento.find({"nombre": {"$in": list(tipos_pedidos)}, "activo": True})
+        }
+        invalidos = tipos_pedidos - validos
+        if invalidos:
+            raise TipoDocumentoInvalidoError(invalidos)
 
     usuario = await auth_service.registrar_usuario(db, nombre=nombre, telefono=telefono, email=email, password=password)
 

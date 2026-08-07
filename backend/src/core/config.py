@@ -8,10 +8,24 @@ class Settings(BaseSettings):
 
     environment: str = "development"
 
+    # Módulo 8.1 de admin_sistema (specs/specs-administrativas/
+    # admin_sistema.md): visibilidad de versión. Mantenido a mano en sync
+    # con `backend/pyproject.toml::version` -- no hay introspección
+    # automática del paquete instalado, es un valor de configuración como
+    # cualquier otro en esta clase.
+    app_version: str = "0.1.0"
+
     jwt_secret: str = "change-me-in-every-environment-min-32-bytes"
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 15
     jwt_refresh_token_expire_days: int = 30
+
+    # Sección 1.5 de ux_complementaria.md: secreto compartido para el único
+    # endpoint del proyecto pensado para ser llamado por otro servicio del
+    # propio stack (Airflow, red interna de docker-compose), nunca por un
+    # usuario final -- ver `_verificar_token_interno` en
+    # `viajes/router_trips.py`. Mismo criterio de placeholder que jwt_secret.
+    internal_api_token: str = "change-me-in-every-environment"
 
     # replicaSet=rs0: las transacciones multi-documento (core/db_transaction.py)
     # exigen replica set incluso de un solo nodo (ver docker-compose.yml).
@@ -27,6 +41,18 @@ class Settings(BaseSettings):
     clickhouse_db: str = "urbanflet_gold"
     clickhouse_user: str = "default"
     clickhouse_password: str = ""
+
+    # Módulo 5 de admin_sistema: panel de estado de infraestructura --
+    # hostname interno del servicio `airflow-webserver` en la red de
+    # docker-compose.yml, no accesible desde fuera del stack.
+    airflow_url: str = "http://airflow-webserver:8080"
+
+    # Módulo 7.1 de admin_sistema: directorio de respaldos, en un volumen
+    # Docker dedicado (`respaldos_data`, ver docker-compose.yml) -- separado
+    # del bind mount de `./backend/src`, para que un respaldo real no viva
+    # dentro del código fuente ni se pierda si se recrea el contenedor sin
+    # el volumen con nombre.
+    respaldos_dir: str = "/app/respaldos"
 
     vapid_public_key: str = ""
     vapid_private_key: str = ""

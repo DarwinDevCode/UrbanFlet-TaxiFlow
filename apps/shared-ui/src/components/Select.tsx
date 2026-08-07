@@ -6,7 +6,7 @@ interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {
 }
 
 export function Select({ label, options, id, style, ...rest }: SelectProps) {
-  const fieldId = id ?? label.toLowerCase().replace(/\s+/g, "-");
+  const fieldId = id ?? label.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-1)", width: "100%" }}>
       <label htmlFor={fieldId} style={{ fontSize: "var(--font-size-sm)", color: "var(--color-text-muted)" }}>

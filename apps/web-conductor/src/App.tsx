@@ -1,20 +1,40 @@
 import {
+  AjustesPropios,
   ApiError,
   AppShell,
   Badge,
   apiFetch,
   Button,
   Card,
+  CentroAyuda,
   DataTable,
   DetailField,
   DetailPanel,
+  NotificacionesBell,
+  PerfilPropio,
   Select,
   TextArea,
   TextField,
   useAuth,
+  type PreguntaFrecuente,
 } from "@urbanflet/shared-ui";
 import { useEffect, useState } from "react";
 import { DriverMap } from "./DriverMap";
+
+const PREGUNTAS_FRECUENTES_CONDUCTOR: PreguntaFrecuente[] = [
+  {
+    pregunta: "¿Por qué no me llegan ofertas?",
+    respuesta: "Verifica que tu turno esté iniciado (\"Mi turno\") y que tengas buena señal de ubicación. El reparto de ofertas lo decide el sistema.",
+  },
+  {
+    pregunta: "¿Cómo veo mis ingresos del periodo actual?",
+    respuesta: "En \"Mis liquidaciones\" puedes consultar el detalle de cada periodo ya calculado.",
+  },
+  {
+    pregunta: "¿Cómo actualizo mi foto de perfil?",
+    respuesta: "Entra a \"Mi perfil\" y pega la URL de tu foto en el campo correspondiente, junto con tu contraseña actual.",
+  },
+];
 
 function PostulacionForm({ onEnviada }: { onEnviada: () => void }) {
   const [nombre, setNombre] = useState("");
@@ -769,10 +789,16 @@ function LiquidacionesView({ onVolver }: { onVolver: () => void }) {
   );
 }
 
-const NAV_ITEMS_CONDUCTOR: { id: "turno" | "historial" | "liquidaciones"; label: string }[] = [
+const NAV_ITEMS_CONDUCTOR: {
+  id: "turno" | "historial" | "liquidaciones" | "perfil" | "ajustes" | "ayuda";
+  label: string;
+}[] = [
   { id: "turno", label: "Mi turno" },
   { id: "historial", label: "Mis viajes" },
   { id: "liquidaciones", label: "Mis liquidaciones" },
+  { id: "perfil", label: "Mi perfil" },
+  { id: "ajustes", label: "Ajustes" },
+  { id: "ayuda", label: "Ayuda" },
 ];
 
 function PantallaTurno() {
@@ -784,7 +810,9 @@ function PantallaTurno() {
   const [oferta, setOferta] = useState<OfertaActual | null>(null);
   const [viajeAsignado, setViajeAsignado] = useState<ViajeAsignado | null>(null);
   const [pago, setPago] = useState<{ estado: string; diferencia: number | null } | null>(null);
-  const [vista, setVista] = useState<"turno" | "historial" | "liquidaciones">("turno");
+  const [vista, setVista] = useState<"turno" | "historial" | "liquidaciones" | "perfil" | "ajustes" | "ayuda">(
+    "turno",
+  );
   // Última posición propia geolocalizada — misma fuente que reportarPosicion
   // usa para POST /flota/posiciones, reutilizada acá solo para centrar/marcar
   // el mapa persistente (no dispara una segunda llamada de geolocalización).
@@ -947,6 +975,18 @@ function PantallaTurno() {
     contenido = <HistorialView onVolver={() => setVista("turno")} />;
   } else if (vista === "liquidaciones") {
     contenido = <LiquidacionesView onVolver={() => setVista("turno")} />;
+  } else if (vista === "perfil") {
+    contenido = <PerfilPropio mostrarFoto />;
+  } else if (vista === "ajustes") {
+    contenido = <AjustesPropios version="0.1.0" mostrarTurno />;
+  } else if (vista === "ayuda") {
+    contenido = (
+      <CentroAyuda
+        preguntas={PREGUNTAS_FRECUENTES_CONDUCTOR}
+        correoContacto="soporte@urbanfleet.example"
+        telefonoContacto="+593900000000"
+      />
+    );
   } else if (estado === "FUERA_DE_LINEA") {
     // Sin turno activo todavía no hay nada que centrar en un mapa (spec
     // deja a criterio de esta implementación el comportamiento en estado
@@ -1132,7 +1172,8 @@ function PantallaTurno() {
     <AppShell
       navItems={NAV_ITEMS_CONDUCTOR}
       activeId={vista}
-      onNavigate={(id) => setVista(id as "turno" | "historial" | "liquidaciones")}
+      onNavigate={(id) => setVista(id as "turno" | "historial" | "liquidaciones" | "perfil" | "ajustes" | "ayuda")}
+      headerActions={<NotificacionesBell />}
     >
       <div style={{ width: "100%" }}>{contenido}</div>
     </AppShell>

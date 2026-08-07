@@ -106,3 +106,40 @@ async def ensure_indexes() -> None:
     await db.ordenes.create_index("vehiculo_id")
 
     await db.parametros.create_index([("tipo", 1), ("vigente_desde", -1)])
+
+    # Módulo 1 de admin_sistema (specs/specs-administrativas/admin_sistema.md):
+    # búsqueda/filtro de cuentas por rol y por estado (GET /usuarios).
+    await db.usuarios.create_index("roles")
+    await db.usuarios.create_index("estado")
+
+    # Módulo 2.2 de admin_sistema: un flag es único por nombre (no hay
+    # versión histórica como en `parametros`, es un interruptor).
+    await db.feature_flags.create_index("nombre", unique=True)
+
+    # Módulo 3.2/3.3 de admin_sistema: catálogos de referencia, nombre único.
+    await db.tipos_documento.create_index("nombre", unique=True)
+    await db.motivos_cancelacion.create_index("nombre", unique=True)
+    # Punto #3 de la ronda de usabilidad (2026-08-07): mismo patrón para el
+    # catálogo de talleres.
+    await db.talleres.create_index("nombre", unique=True)
+
+    # Punto #6 de la ronda de usabilidad (2026-08-07): histórico de
+    # latencia/estado del panel de Monitoreo -- TTL de 7 días (aprobado
+    # explícitamente), un snapshot por componente en cada consulta real del
+    # panel (incl. el auto-refresco de 20s del frontend).
+    await db.historial_monitoreo.create_index("ts", expireAfterSeconds=7 * 24 * 60 * 60)
+    await db.historial_monitoreo.create_index([("componente", 1), ("ts", 1)])
+
+    # Sección 4.2 de ux_complementaria.md: bandeja de notificaciones in-app.
+    # TTL de 30 días (más generoso que el histórico de monitoreo -- esto es
+    # contenido visible al usuario final, no solo telemetría interna).
+    await db.notificaciones_usuario.create_index("ts", expireAfterSeconds=30 * 24 * 60 * 60)
+    await db.notificaciones_usuario.create_index([("usuario_id", 1), ("ts", -1)])
+    await db.notificaciones_usuario.create_index([("usuario_id", 1), ("leida", 1)])
+
+    # Sección 1.1 de ux_complementaria.md: direcciones favoritas del pasajero.
+    await db.direcciones_favoritas.create_index("usuario_id")
+
+    # Sección 1.2 de ux_complementaria.md: compartir viaje en tiempo real --
+    # sparse porque la mayoría de los viajes nunca tienen este campo.
+    await db.viajes.create_index("token_compartir", unique=True, sparse=True)

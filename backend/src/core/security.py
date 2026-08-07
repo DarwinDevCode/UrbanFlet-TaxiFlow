@@ -25,18 +25,32 @@ def verify_password(password: str, password_hash: str) -> bool:
 
 
 def create_token(
-    subject: str, roles: list[str], token_type: TokenType, extra_claims: dict[str, Any] | None = None
+    subject: str,
+    roles: list[str],
+    token_type: TokenType,
+    extra_claims: dict[str, Any] | None = None,
+    jti: str | None = None,
+    access_ttl_minutos: int | None = None,
+    refresh_ttl_dias: int | None = None,
 ) -> str:
     # `roles` viaja en el token solo como referencia informativa/de depuración.
     # CU-O18 A3 exige que la autorización real se resuelva por consulta de perfil
     # en cada petición (ver core/rbac.py), no por lo que diga el token, para que
     # un cambio de rol o una revocación apliquen de inmediato sin esperar expiración.
+    #
+    # Módulo 6.2 de admin_sistema: `access_ttl_minutos`/`refresh_ttl_dias` son
+    # el TTL configurado en `seguridad.service` (política de seguridad, con
+    # caché de 30s) -- si no se pasan (p. ej. contextos que no tocan Mongo),
+    # cae a los valores fijos de `Settings`, que son el mismo default de la
+    # política cuando nunca se publicó una versión.
     settings = get_settings()
     now = datetime.now(UTC)
     if token_type is TokenType.ACCESS:
-        expires_at = now + timedelta(minutes=settings.jwt_access_token_expire_minutes)
+        minutos = access_ttl_minutos if access_ttl_minutos is not None else settings.jwt_access_token_expire_minutes
+        expires_at = now + timedelta(minutes=minutos)
     else:
-        expires_at = now + timedelta(days=settings.jwt_refresh_token_expire_days)
+        dias = refresh_ttl_dias if refresh_ttl_dias is not None else settings.jwt_refresh_token_expire_days
+        expires_at = now + timedelta(days=dias)
 
     payload: dict[str, Any] = {
         "sub": subject,
@@ -44,7 +58,7 @@ def create_token(
         "type": token_type.value,
         "iat": now,
         "exp": expires_at,
-        "jti": secrets.token_hex(16),
+        "jti": jti or secrets.token_hex(16),
     }
     if extra_claims:
         payload.update(extra_claims)

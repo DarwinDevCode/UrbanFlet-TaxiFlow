@@ -14,12 +14,17 @@ router = APIRouter(prefix="/viajes/conductor", tags=["viajes"])
 _conductor = require_roles("conductor")
 
 
-async def _notificar_pasajero(dispatcher: NotificationDispatcher, viaje: dict) -> None:
+async def _notificar_pasajero(dispatcher: NotificationDispatcher, viaje: dict, evento_bandeja: str) -> None:
     # Mismo patrón que la notificación de asignación (Slice 3): un evento
     # genérico basta porque el cliente siempre refresca desde
     # GET /viajes/activo — una única fuente de verdad, sin duplicar el mapeo
     # de campos por tipo de evento en el WebSocket.
     await dispatcher.broadcast_channel(trip_passenger_channel(viaje["_id"]), "VIAJE_ACTUALIZADO", {})
+    # Además del evento efímero de arriba, se registra en la bandeja de
+    # notificaciones in-app del pasajero (Sección 4.2 de
+    # ux_complementaria.md) -- con un tipo distinto por transición, para que
+    # la bandeja sea legible ("Conductor en camino" vs. "Viaje finalizado").
+    await dispatcher.notify_user(viaje["pasajero_id"], evento_bandeja, {"viaje_id": viaje["_id"]})
 
 
 @router.post("/en-camino", response_model=schemas.ViajeOut)
@@ -29,7 +34,7 @@ async def marcar_en_camino(
     dispatcher: NotificationDispatcher = Depends(get_notification_dispatcher),
 ):
     viaje = await service_ejecucion.marcar_en_camino(db, conductor_id=actor.usuario_id)
-    await _notificar_pasajero(dispatcher, viaje)
+    await _notificar_pasajero(dispatcher, viaje, "CONDUCTOR_EN_CAMINO")
     return to_out(viaje)
 
 
@@ -40,7 +45,7 @@ async def marcar_llegada(
     dispatcher: NotificationDispatcher = Depends(get_notification_dispatcher),
 ):
     viaje = await service_ejecucion.marcar_llegada(db, conductor_id=actor.usuario_id)
-    await _notificar_pasajero(dispatcher, viaje)
+    await _notificar_pasajero(dispatcher, viaje, "CONDUCTOR_LLEGO")
     return to_out(viaje)
 
 
@@ -51,7 +56,7 @@ async def iniciar_viaje(
     dispatcher: NotificationDispatcher = Depends(get_notification_dispatcher),
 ):
     viaje = await service_ejecucion.iniciar_viaje(db, conductor_id=actor.usuario_id)
-    await _notificar_pasajero(dispatcher, viaje)
+    await _notificar_pasajero(dispatcher, viaje, "VIAJE_INICIADO")
     return to_out(viaje)
 
 
@@ -67,5 +72,5 @@ async def cancelar_por_conductor(
     dispatcher: NotificationDispatcher = Depends(get_notification_dispatcher),
 ):
     viaje = await service_ejecucion.cancelar_por_conductor(db, conductor_id=actor.usuario_id, motivo=body.motivo)
-    await _notificar_pasajero(dispatcher, viaje)
+    await _notificar_pasajero(dispatcher, viaje, "VIAJE_CANCELADO_CONDUCTOR")
     return to_out(viaje)

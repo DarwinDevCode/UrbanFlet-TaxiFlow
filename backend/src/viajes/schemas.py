@@ -4,7 +4,16 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 EstadoViaje = Literal[
-    "SOLICITADO", "OFERTADO", "ASIGNADO", "EN_CAMINO", "EN_CURSO", "FINALIZADO", "PAGADO", "CANCELADO", "SIN_CONDUCTOR"
+    "PROGRAMADO",
+    "SOLICITADO",
+    "OFERTADO",
+    "ASIGNADO",
+    "EN_CAMINO",
+    "EN_CURSO",
+    "FINALIZADO",
+    "PAGADO",
+    "CANCELADO",
+    "SIN_CONDUCTOR",
 ]
 Franja = Literal["DIURNA", "NOCTURNA"]
 
@@ -16,6 +25,10 @@ class SolicitarViajeRequest(BaseModel):
     destino_lat: float | None = Field(default=None, ge=-90, le=90)
     destino_lon: float | None = Field(default=None, ge=-180, le=180)
     destino_direccion: str | None = None
+    # Sección 1.5 de ux_complementaria.md: "Ahora" (None, comportamiento de
+    # siempre) vs. "Programar" (hora futura -- el viaje se crea en
+    # PROGRAMADO y el auto-despacho se dispara después, cerca de esa hora).
+    ts_programado: datetime | None = None
 
 
 class CalificacionOut(BaseModel):
@@ -37,6 +50,7 @@ class ViajeOut(BaseModel):
     destino_lon: float | None
     destino_direccion: str | None
     franja: Franja
+    ts_programado: datetime | None = None
     ts_solicitud: datetime
     ts_asignacion: datetime | None
     ts_llegada_origen: datetime | None = None
@@ -49,6 +63,9 @@ class ViajeOut(BaseModel):
     motivo_cancelacion: str | None
     conductor_nombre: str | None = None
     conductor_calificacion: float | None = None
+    # Sección 2.2 de la spec ux_complementaria.md: foto que el pasajero ve
+    # al ser asignado (CU-O05 P5), editable por el conductor en "Mi perfil".
+    conductor_foto_url: str | None = None
     vehiculo_placa: str | None = None
     vehiculo_marca: str | None = None
     vehiculo_color: str | None = None
@@ -68,6 +85,30 @@ class HistorialOut(BaseModel):
     total: int
     pagina: int
     limite: int
+
+
+# Sección 1.2 de ux_complementaria.md: compartir viaje en tiempo real.
+class CompartirViajeOut(BaseModel):
+    token: str
+
+
+class PosicionCompartidaOut(BaseModel):
+    lat: float
+    lon: float
+
+
+class ViajeCompartidoOut(BaseModel):
+    """Salida del endpoint público `GET /publico/viajes-compartidos/{token}`
+    -- deliberadamente mínima: nunca teléfono/correo, nunca datos del
+    pasajero (quien lo generó ya sabe quién es), solo lo que un contacto de
+    confianza necesita para verificar que el viaje va bien."""
+
+    conductor_nombre: str | None
+    conductor_calificacion: float | None
+    conductor_foto_url: str | None
+    vehiculo_placa: str | None
+    estado: EstadoViaje
+    posicion: PosicionCompartidaOut | None
 
 
 class CalificarViajeRequest(BaseModel):

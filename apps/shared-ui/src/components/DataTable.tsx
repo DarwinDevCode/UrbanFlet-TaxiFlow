@@ -36,7 +36,7 @@ export function DataTable<T>({ columns, rows, keyField, vacio = "Sin resultados"
                 key={c.header}
                 style={{
                   textAlign: "left",
-                  padding: "var(--space-2) var(--space-3)",
+                  padding: "var(--table-cell-padding-y, var(--space-2)) var(--table-cell-padding-x, var(--space-3))",
                   borderBottom: "1px solid var(--color-border)",
                   color: "var(--color-text-muted)",
                   fontSize: "var(--font-size-sm)",
@@ -57,7 +57,7 @@ export function DataTable<T>({ columns, rows, keyField, vacio = "Sin resultados"
                 <td
                   key={c.header}
                   style={{
-                    padding: "var(--space-2) var(--space-3)",
+                    padding: "var(--table-cell-padding-y, var(--space-2)) var(--table-cell-padding-x, var(--space-3))",
                     borderBottom: "1px solid var(--color-border)",
                     width: c.width,
                     maxWidth: c.width,

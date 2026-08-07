@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from src.core.db_mongo import get_database
@@ -32,10 +32,15 @@ async def terminar_turno(
 @router.post("/posiciones", response_model=schemas.PosicionReportarResponse)
 async def reportar_posicion(
     body: schemas.PosicionReportarRequest,
+    request: Request,
     actor: Actor = Depends(_conductor),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ):
-    return await service.reportar_posicion(db, conductor_id=actor.usuario_id, body=body)
+    # Módulo 6.3 de admin_sistema: el dispatcher se pasa hasta el service
+    # para poder disparar la alerta de GPS spoofing configurable (antes
+    # solo se auditaba, nunca se notificaba a nadie).
+    dispatcher = getattr(request.app.state, "notification_dispatcher", None)
+    return await service.reportar_posicion(db, conductor_id=actor.usuario_id, body=body, dispatcher=dispatcher)
 
 
 @router.get("/cercanos", response_model=list[schemas.VehiculoCercanoOut])

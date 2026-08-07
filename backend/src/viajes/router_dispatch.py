@@ -45,4 +45,9 @@ async def responder_oferta(
         # conectado, el próximo poll de GET /viajes/activo ya refleja
         # ASIGNADO de todas formas.)
         await dispatcher.broadcast_channel(trip_passenger_channel(viaje["_id"]), "VIAJE_ACTUALIZADO", {})
+        # Además del evento efímero de arriba (mapa en vivo), se registra en
+        # la bandeja de notificaciones in-app del pasajero (Sección 4.2 de
+        # ux_complementaria.md) -- distinto propósito: persistente, visible
+        # aunque el pasajero no tuviera la pestaña abierta en el momento.
+        await dispatcher.notify_user(viaje["pasajero_id"], "VIAJE_ASIGNADO", {"viaje_id": viaje["_id"]})
     return {"estado": viaje["estado"]}

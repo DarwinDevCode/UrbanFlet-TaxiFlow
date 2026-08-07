@@ -157,6 +157,10 @@ export interface RideMapProps {
   // aceptando clics para "elegir destino" — por defecto sigue habilitado
   // (comportamiento previo) y el padre lo desactiva explícitamente.
   clicksHabilitados?: boolean;
+  // Sección 1.2 de ux_complementaria.md (vista pública de "Compartir viaje"):
+  // sin sesión, sin clics de "elegir destino", sin botón de "mi ubicación"
+  // (no tiene sentido pedirle geolocalización a un contacto que solo mira).
+  soloLectura?: boolean;
 }
 
 export const ALTO_MAPA = 480;
@@ -171,6 +175,7 @@ export function RideMap({
   onUbicacionEncontrada,
   onUbicacionError,
   clicksHabilitados = true,
+  soloLectura = false,
 }: RideMapProps) {
   return (
     <div style={{ height: ALTO_MAPA, borderRadius: "var(--radius-md)", overflow: "hidden" }}>
@@ -180,8 +185,10 @@ export function RideMap({
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
         <Recentrar lat={origen.lat} lon={origen.lon} />
-        {clicksHabilitados && <ClicksDelMapa onClick={onMapaClick} />}
-        <ControlDeUbicacion onEncontrada={onUbicacionEncontrada} onError={onUbicacionError} />
+        {!soloLectura && clicksHabilitados && <ClicksDelMapa onClick={onMapaClick} />}
+        {!soloLectura && (
+          <ControlDeUbicacion onEncontrada={onUbicacionEncontrada} onError={onUbicacionError} />
+        )}
         <Marker position={[origen.lat, origen.lon]} />
         {destino && <Marker position={[destino.lat, destino.lon]} icon={destinoIcon} />}
         {ruta && ruta.length > 1 && <Polyline positions={ruta} pathOptions={{ color: "#1f6feb", weight: 4 }} />}

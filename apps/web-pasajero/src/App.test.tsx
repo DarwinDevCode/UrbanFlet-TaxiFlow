@@ -12,7 +12,7 @@
 // navigator.geolocation (mockeado), que es lo que habilita el botón
 // "Solicitar taxi" independientemente del mapa.
 import { AuthProvider } from "@urbanflet/shared-ui";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -51,6 +51,7 @@ interface ViajeFixture {
   vehiculo_marca: string | null;
   vehiculo_color: string | null;
   ts_solicitud: string;
+  ts_programado: string | null;
   ts_llegada_origen: string | null;
   calificacion_pasajero_a_conductor: null;
 }
@@ -74,6 +75,7 @@ function crearViaje(overrides: Partial<ViajeFixture> = {}): ViajeFixture {
     vehiculo_marca: null,
     vehiculo_color: null,
     ts_solicitud: new Date().toISOString(),
+    ts_programado: null,
     ts_llegada_origen: null,
     calificacion_pasajero_a_conductor: null,
     ...overrides,
@@ -115,6 +117,17 @@ function mockFetch(handlers: Ruta[]) {
       return responder(200, { valores: { arrancada: 1, costo_km: 0.5, carrera_minima: 1.5 } });
     }
     if (method === "GET" && path.startsWith("/flota/cercanos")) {
+      return responder(200, []);
+    }
+    // Campana de notificaciones (Sección 4.2), montada globalmente en el
+    // header de AppShell -- fetch de fondo en cada test.
+    if (method === "GET" && path.startsWith("/notificaciones/mias")) {
+      return responder(200, { items: [], total: 0, no_leidas: 0 });
+    }
+    // Direcciones favoritas (Sección 1.1) -- se cargan apenas VistaViaje
+    // monta sin viaje activo, sin relación con el foco de la mayoría de
+    // los tests existentes.
+    if (method === "GET" && path.startsWith("/direcciones")) {
       return responder(200, []);
     }
     throw new Error(`Llamada a fetch no esperada en este test: ${method} ${path}`);
@@ -276,6 +289,169 @@ describe("web-pasajero — reintentar búsqueda tras SIN_CONDUCTOR (CU-O05 A3)",
       origen_lon: viajeAgotado.origen_lon,
       destino_lat: viajeAgotado.destino_lat,
       destino_lon: viajeAgotado.destino_lon,
+    });
+  });
+});
+
+describe("web-pasajero — Programar un viaje (Sección 1.5 de ux_complementaria.md)", () => {
+  it("al elegir 'Programar' y una fecha futura, envía ts_programado y muestra el estado 'Viaje programado'", async () => {
+    mockGeolocationExitoso();
+    // El valor esperado se calcula con la misma conversión local->ISO que
+    // hace el propio componente (`new Date(valor).toISOString()`), en vez
+    // de un literal fijo -- evita que el test dependa de la zona horaria
+    // de la máquina donde corre.
+    const valorLocal = "2030-01-01T10:00";
+    const tsEsperado = new Date(valorLocal).toISOString();
+    const viajeProgramado = crearViaje({ estado: "PROGRAMADO", ts_programado: tsEsperado });
+    const { llamadas } = mockFetch([
+      { method: "GET", path: "/viajes/activo", body: null },
+      { method: "POST", path: "/viajes", body: viajeProgramado },
+    ]);
+    const user = userEvent.setup();
+
+    renderApp();
+    await user.click(await screen.findByRole("button", { name: "Programar" }));
+
+    const inputFecha = await screen.findByLabelText("Fecha y hora");
+    fireEvent.change(inputFecha, { target: { value: valorLocal } });
+
+    const botonProgramar = screen.getByRole("button", { name: "Programar viaje" });
+    await waitFor(() => expect(botonProgramar).toBeEnabled());
+    await user.click(botonProgramar);
+
+    expect(await screen.findByText("Viaje programado")).toBeInTheDocument();
+    const post = llamadas.find((c) => c.method === "POST" && c.path === "/viajes");
+    expect(post?.body).toMatchObject({ ts_programado: tsEsperado });
+  });
+});
+
+describe("web-pasajero — Mi perfil (Sección 1.3 de ux_complementaria.md)", () => {
+  it("edita el nombre propio exigiendo la contraseña actual", async () => {
+    mockGeolocationExitoso();
+    const perfil = {
+      id: "pasajero-test-1",
+      nombre: "Pasajera Original",
+      telefono: "+593900000001",
+      email: null,
+      roles: ["pasajero"],
+      fecha_registro: new Date().toISOString(),
+      foto_url: null,
+    };
+    const { llamadas } = mockFetch([
+      { method: "GET", path: "/viajes/activo", body: null },
+      { method: "GET", path: "/perfil", body: perfil },
+      { method: "GET", path: "/perfil/sesiones", body: [] },
+      { method: "PATCH", path: "/perfil", body: { ...perfil, nombre: "Pasajera Actualizada" } },
+    ]);
+    const user = userEvent.setup();
+
+    renderApp();
+    await user.click(await screen.findByRole("button", { name: "Mi perfil" }));
+
+    await user.click(await screen.findByRole("button", { name: "Editar" }));
+    const nombre = screen.getByLabelText("Nombre");
+    await user.clear(nombre);
+    await user.type(nombre, "Pasajera Actualizada");
+    await user.type(screen.getByLabelText("Contraseña actual (para confirmar el cambio)"), "clave-actual");
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => {
+      const patch = llamadas.find((c) => c.method === "PATCH" && c.path === "/perfil");
+      expect(patch?.body).toMatchObject({ nombre: "Pasajera Actualizada", password_actual: "clave-actual" });
+    });
+    expect(await screen.findByText("Datos actualizados.")).toBeInTheDocument();
+  });
+});
+
+describe("web-pasajero — Ajustes (Sección 1.4 de ux_complementaria.md)", () => {
+  it("cambia el tema a oscuro y lo aplica al documento", async () => {
+    mockGeolocationExitoso();
+    const prefsBase = {
+      tema: "claro",
+      densidad_tablas: "comoda",
+      notificaciones_push: {},
+      sonido_oferta: true,
+      vibracion_oferta: true,
+      recordatorio_turno_hora: null,
+    };
+    mockFetch([
+      { method: "GET", path: "/viajes/activo", body: null },
+      { method: "GET", path: "/preferencias", body: prefsBase },
+      { method: "PATCH", path: "/preferencias", body: { ...prefsBase, tema: "oscuro" } },
+    ]);
+    const user = userEvent.setup();
+
+    renderApp();
+    await user.click(await screen.findByRole("button", { name: "Ajustes" }));
+
+    const selectTema = await screen.findByLabelText("Tema");
+    await user.selectOptions(selectTema, "oscuro");
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe("dark");
+    });
+  });
+});
+
+describe("web-pasajero — campana de notificaciones (Sección 4.2 de ux_complementaria.md)", () => {
+  it("muestra el contador de no leídas y lo baja al marcar una como leída", async () => {
+    mockGeolocationExitoso();
+    const notificacion = {
+      id: "notif-1",
+      tipo: "VIAJE_ASIGNADO",
+      categoria: "viaje",
+      payload: { viaje_id: "v-1" },
+      ts: new Date().toISOString(),
+      leida: false,
+    };
+    const { llamadas } = mockFetch([
+      { method: "GET", path: "/viajes/activo", body: null },
+      { method: "GET", path: "/notificaciones/mias", body: { items: [], total: 1, no_leidas: 1 } },
+      { method: "GET", path: "/notificaciones/mias", body: { items: [notificacion], total: 1, no_leidas: 1 } },
+      { method: "PATCH", path: "/notificaciones/mias/notif-1/leida", body: { ...notificacion, leida: true } },
+    ]);
+    const user = userEvent.setup();
+
+    renderApp();
+    expect(await screen.findByText("1")).toBeInTheDocument();
+
+    await user.click(await screen.findByRole("button", { name: "Bandeja de notificaciones" }));
+    expect(await screen.findByText("Se asignó un conductor a tu viaje")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Marcar leída" }));
+
+    await waitFor(() => {
+      const patch = llamadas.find((c) => c.method === "PATCH" && c.path === "/notificaciones/mias/notif-1/leida");
+      expect(patch).toBeDefined();
+    });
+    expect(screen.queryByRole("button", { name: "Marcar leída" })).not.toBeInTheDocument();
+  });
+});
+
+describe("web-pasajero — Direcciones favoritas (Sección 1.1 de ux_complementaria.md)", () => {
+  it("un toque en una dirección favorita fija el destino sin tocar el mapa", async () => {
+    mockGeolocationExitoso();
+    const favorita = { id: "fav-1", etiqueta: "Casa", direccion: "Casa color melón", lat: -0.2, lon: -78.5 };
+    const { llamadas } = mockFetch([
+      { method: "GET", path: "/viajes/activo", body: null },
+      { method: "GET", path: "/direcciones", body: [favorita] },
+      { method: "POST", path: "/viajes", body: crearViaje({ estado: "SOLICITADO" }) },
+    ]);
+    const user = userEvent.setup();
+
+    renderApp();
+    const chip = await screen.findByRole("button", { name: "Casa" });
+    await user.click(chip);
+
+    expect(await screen.findByDisplayValue("Casa color melón")).toBeInTheDocument();
+
+    const botonSolicitar = screen.getByRole("button", { name: "Solicitar taxi" });
+    await waitFor(() => expect(botonSolicitar).toBeEnabled());
+    await user.click(botonSolicitar);
+
+    await waitFor(() => {
+      const post = llamadas.find((c) => c.method === "POST" && c.path === "/viajes");
+      expect(post?.body).toMatchObject({ destino_lat: -0.2, destino_lon: -78.5, destino_direccion: "Casa color melón" });
     });
   });
 });

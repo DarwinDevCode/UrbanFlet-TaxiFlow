@@ -22,6 +22,10 @@ export interface AppShellProps {
   onNavigate: (id: string) => void;
   /** Título del header. Si no se da, usa la etiqueta del ítem activo. */
   title?: string;
+  /** Slot para acciones del header (ej. campana de notificaciones, Sección
+   * 4.2 de ux_complementaria.md) -- se renderiza entre el título y el
+   * nombre del usuario, visible desde cualquier pantalla. */
+  headerActions?: ReactNode;
   children: ReactNode;
 }
 
@@ -44,7 +48,7 @@ function agruparNavItems(items: AppShellNavItem[]): NavGroup[] {
   return grupos;
 }
 
-export function AppShell({ navItems, activeId, onNavigate, title, children }: AppShellProps) {
+export function AppShell({ navItems, activeId, onNavigate, title, headerActions, children }: AppShellProps) {
   const { actor, logout } = useAuth();
   const [sidebarAbierto, setSidebarAbierto] = useState(false);
   const grupos = agruparNavItems(navItems);
@@ -164,17 +168,20 @@ export function AppShell({ navItems, activeId, onNavigate, title, children }: Ap
               {tituloHeader}
             </h1>
           </div>
-          <span
-            style={{
-              color: "var(--color-text-muted)",
-              fontSize: "var(--font-size-sm)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {actor?.nombre ?? actor?.sub}
-          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", flexShrink: 0 }}>
+            {headerActions}
+            <span
+              style={{
+                color: "var(--color-text-muted)",
+                fontSize: "var(--font-size-sm)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {actor?.nombre ?? actor?.sub}
+            </span>
+          </div>
         </header>
 
         <main className="shell-content">{children}</main>

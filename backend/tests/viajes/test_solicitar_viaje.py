@@ -137,12 +137,16 @@ async def test_sin_viaje_activo_devuelve_200_vacio(client, db):
 # determinístico en CI.
 
 async def test_estimacion_ruta_sin_key_configurada_usa_linea_recta(client, db, monkeypatch):
-    from src.viajes import service as viajes_service
+    from src.integraciones import service as integraciones_service
 
     class _SettingsSinKey:
         google_maps_api_key = ""
 
-    monkeypatch.setattr(viajes_service, "get_settings", lambda: _SettingsSinKey())
+    # Módulo 4.2 de admin_sistema: la key se resuelve vía
+    # `integraciones.service.obtener_google_maps_api_key` (override en
+    # Mongo si se rotó, si no cae a `Settings`) -- el mock apunta ahí, no a
+    # `viajes.service`.
+    monkeypatch.setattr(integraciones_service, "get_settings", lambda: _SettingsSinKey())
     headers = await _pasajero_headers(db, usuario_id="p6", telefono="+593960000006")
 
     resp = await client.get(
@@ -202,13 +206,14 @@ class _HttpxFalso:
 
 
 async def test_estimacion_ruta_con_respuesta_real_de_google(client, db, monkeypatch):
+    from src.integraciones import service as integraciones_service
     from src.viajes import service as viajes_service
 
     class _SettingsConKey:
         google_maps_api_key = "fake-key-para-test"
 
     _ClienteFalso.falla = None
-    monkeypatch.setattr(viajes_service, "get_settings", lambda: _SettingsConKey())
+    monkeypatch.setattr(integraciones_service, "get_settings", lambda: _SettingsConKey())
     monkeypatch.setattr(viajes_service, "httpx", _HttpxFalso)
     headers = await _pasajero_headers(db, usuario_id="p7", telefono="+593960000007")
 
@@ -228,13 +233,14 @@ async def test_estimacion_ruta_con_respuesta_real_de_google(client, db, monkeypa
 async def test_estimacion_ruta_google_falla_cae_a_linea_recta(client, db, monkeypatch):
     import httpx
 
+    from src.integraciones import service as integraciones_service
     from src.viajes import service as viajes_service
 
     class _SettingsConKey:
         google_maps_api_key = "fake-key-para-test"
 
     _ClienteFalso.falla = httpx.ConnectTimeout("simulado")
-    monkeypatch.setattr(viajes_service, "get_settings", lambda: _SettingsConKey())
+    monkeypatch.setattr(integraciones_service, "get_settings", lambda: _SettingsConKey())
     monkeypatch.setattr(viajes_service, "httpx", _HttpxFalso)
     headers = await _pasajero_headers(db, usuario_id="p8", telefono="+593960000008")
 

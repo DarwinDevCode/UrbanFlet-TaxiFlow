@@ -175,7 +175,12 @@ async def cancelar_por_conductor(db: AsyncIOMotorDatabase, *, conductor_id: str,
                     "vehiculo_color": None,
                     "ts_asignacion": None,
                     "conductores_descartados": descartados,
-                }
+                },
+                # Sección 1.2: el viaje vuelve al pool de despacho y puede
+                # terminar EN_CAMINO de nuevo con OTRO conductor -- un token
+                # ya compartido no debe seguir mostrando esa posición nueva
+                # sin que el pasajero lo vuelva a pedir explícitamente.
+                "$unset": {"token_compartir": "", "token_compartir_expira_en": ""},
             },
             session=session,
         )

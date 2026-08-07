@@ -12,7 +12,7 @@ Cortes de alcance explícitos en este slice:
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -23,11 +23,16 @@ from src.core.config import get_settings
 from src.core.db_clickhouse import fetch_latest_snapshot, get_clickhouse_client
 from src.core.exceptions import DomainError
 from src.core.geo import distancia_km
+from src.core.tiempo import como_utc
 from src.parametros import service as parametros_service
 from src.parametros.service import ParametroNoVigenteError
 from src.viajes import schemas, service_dispatch
 
-ESTADOS_ACTIVOS = frozenset({"SOLICITADO", "OFERTADO", "ASIGNADO", "EN_CAMINO", "EN_CURSO"})
+# Sección 1.5 de ux_complementaria.md: un viaje PROGRAMADO cuenta como
+# "activo" (el pasajero no puede tener dos a la vez, aparece en GET
+# /viajes/activo, es cancelable) desde el momento en que se crea, no solo
+# desde que el auto-despacho lo toma.
+ESTADOS_ACTIVOS = frozenset({"PROGRAMADO", "SOLICITADO", "OFERTADO", "ASIGNADO", "EN_CAMINO", "EN_CURSO"})
 
 
 class ViajeActivoExistenteError(DomainError):
@@ -46,7 +51,9 @@ class SinViajeActivoError(DomainError):
 # conductor confirmado. A partir de ASIGNADO el conductor ya se puso en
 # marcha — cancelar esa cola (CU-O07 A2, con eventual compensación por
 # distancia recorrida) queda fuera de alcance de este slice a propósito.
-ESTADOS_CANCELABLES_PASAJERO = frozenset({"SOLICITADO", "OFERTADO"})
+# PROGRAMADO se agrega por la Sección 1.5 (D2 ya aprobado): un viaje que
+# todavía no disparó su auto-despacho es, con más razón, cancelable.
+ESTADOS_CANCELABLES_PASAJERO = frozenset({"PROGRAMADO", "SOLICITADO", "OFERTADO"})
 
 
 class ViajeNoCancelableError(DomainError):
@@ -56,6 +63,25 @@ class ViajeNoCancelableError(DomainError):
             message="El viaje ya tiene un conductor asignado y no se puede cancelar desde aquí",
             status_code=409,
         )
+
+
+# Sección 1.5: ventana válida para "Programar" -- un mínimo razonable para
+# que tenga sentido distinto de "Ahora" (y le da margen a la cadencia del DAG
+# de disparo, cada 1-2 min, sin que el viaje quede esperando mucho de más) y
+# un máximo para no aceptar una fecha absurdamente lejana sin ningún caso de
+# uso real detrás.
+MARGEN_MINIMO_PROGRAMACION_MINUTOS = 15
+MARGEN_MAXIMO_PROGRAMACION_DIAS = 7
+
+
+class TsProgramadoInvalidoError(DomainError):
+    def __init__(self, mensaje: str) -> None:
+        super().__init__(code="TS_PROGRAMADO_INVALIDO", message=mensaje, status_code=422)
+
+
+class ViajeNoProgramadoError(DomainError):
+    def __init__(self) -> None:
+        super().__init__(code="VIAJE_NO_PROGRAMADO", message="El viaje no está en estado PROGRAMADO", status_code=404)
 
 
 def resolver_franja(ahora_utc: datetime | None = None) -> str:
@@ -86,18 +112,39 @@ async def obtener_viaje_activo_conductor(db: AsyncIOMotorDatabase, *, conductor_
 
 
 async def solicitar_viaje(db: AsyncIOMotorDatabase, *, pasajero_id: str, body: schemas.SolicitarViajeRequest) -> dict:
-    # A3: el pasajero no puede tener más de un viaje activo a la vez.
+    # A3: el pasajero no puede tener más de un viaje activo a la vez (ya
+    # incluye PROGRAMADO, ver ESTADOS_ACTIVOS arriba).
     if await obtener_viaje_activo(db, pasajero_id=pasajero_id) is not None:
         raise ViajeActivoExistenteError()
 
     ahora = datetime.now(UTC)
-    franja = resolver_franja(ahora)
+
+    ts_programado = None
+    if body.ts_programado is not None:
+        ts_programado = como_utc(body.ts_programado)
+        if ts_programado < ahora + timedelta(minutes=MARGEN_MINIMO_PROGRAMACION_MINUTOS):
+            raise TsProgramadoInvalidoError(
+                f"La hora programada debe ser al menos {MARGEN_MINIMO_PROGRAMACION_MINUTOS} minutos en el futuro"
+            )
+        if ts_programado > ahora + timedelta(days=MARGEN_MAXIMO_PROGRAMACION_DIAS):
+            raise TsProgramadoInvalidoError(
+                f"La hora programada no puede ser más de {MARGEN_MAXIMO_PROGRAMACION_DIAS} días en el futuro"
+            )
+
+    # La franja/tarifa de vista previa se resuelve sobre la hora en que el
+    # viaje realmente va a despacharse (la programada, si aplica) — no sobre
+    # el momento en que el pasajero arma la solicitud. La tarifa final se
+    # vuelve a calcular igual al finalizar (service_finalizacion.py), esto es
+    # solo la vista previa.
+    franja = resolver_franja(ts_programado or ahora)
 
     tarifa_estimada = None
     tarifa_version_id = None
     if body.destino_lat is not None and body.destino_lon is not None:
         try:
-            tarifa = await parametros_service.obtener_vigente(db, tipo="tarifa", fecha=ahora, franja=franja)
+            tarifa = await parametros_service.obtener_vigente(
+                db, tipo="tarifa", fecha=ts_programado or ahora, franja=franja
+            )
         except ParametroNoVigenteError:
             tarifa = None
         if tarifa is not None:
@@ -108,12 +155,13 @@ async def solicitar_viaje(db: AsyncIOMotorDatabase, *, pasajero_id: str, body: s
             tarifa_version_id = tarifa["_id"]
 
     viaje_id = str(uuid.uuid4())
+    estado_inicial = "PROGRAMADO" if ts_programado is not None else "SOLICITADO"
     viaje = {
         "_id": viaje_id,
         "pasajero_id": pasajero_id,
         "conductor_id": None,
         "vehiculo_id": None,
-        "estado": "SOLICITADO",
+        "estado": estado_inicial,
         "origen_lat": body.origen_lat,
         "origen_lon": body.origen_lon,
         "origen_direccion": body.origen_direccion,
@@ -124,6 +172,7 @@ async def solicitar_viaje(db: AsyncIOMotorDatabase, *, pasajero_id: str, body: s
         "zona_destino_id": None,
         "franja": franja,
         "tarifa_version_id": tarifa_version_id,
+        "ts_programado": ts_programado,
         "ts_solicitud": ahora,
         "ts_asignacion": None,
         "ts_llegada_origen": None,
@@ -164,7 +213,10 @@ async def solicitar_viaje(db: AsyncIOMotorDatabase, *, pasajero_id: str, body: s
         entidad="viajes",
         entidad_id=viaje_id,
         resultado=ResultadoAuditoria.OK,
-        datos_posteriores={"estado": "SOLICITADO"},
+        datos_posteriores={
+            "estado": estado_inicial,
+            "ts_programado": ts_programado.isoformat() if ts_programado else None,
+        },
     )
     await db.viajes.insert_one(viaje)
 
@@ -173,9 +225,49 @@ async def solicitar_viaje(db: AsyncIOMotorDatabase, *, pasajero_id: str, body: s
     # misma transacción: SOLICITADO sin oferta todavía es un estado válido de
     # la propia máquina de estados (no un estado parcial inválido), así que si
     # el despacho no encuentra candidatos ahora, el próximo poll lo reintenta.
-    viaje = await service_dispatch.avanzar_despacho(db, viaje)
+    # Sección 1.5: un viaje PROGRAMADO NO dispara despacho ahora — eso ocurre
+    # más tarde, vía disparar_viaje_programado() (llamado por el DAG cerca de
+    # ts_programado), que reutiliza este mismo avanzar_despacho.
+    if estado_inicial == "SOLICITADO":
+        viaje = await service_dispatch.avanzar_despacho(db, viaje)
 
     return viaje
+
+
+async def disparar_viaje_programado(db: AsyncIOMotorDatabase, *, viaje_id: str) -> dict:
+    """Sección 1.5: punto de entrada llamado por `dag_disparar_viajes_
+    programados` (Airflow) cerca de `ts_programado` -- transiciona
+    PROGRAMADO -> SOLICITADO y entra por el mismo punto de entrada de
+    siempre (`avanzar_despacho`, CU-O05), sin reimplementar nada de lógica
+    de despacho acá. `ts_solicitud` se actualiza a AHORA (no al momento de
+    creación del registro PROGRAMADO): es el instante real en que el viaje
+    entra a la cola de despacho, mismo significado que tiene ese campo para
+    cualquier otro viaje del sistema -- necesario para que
+    `rpt_tiempo_asignacion`/`rpt_tasa_cancelacion` (que particionan
+    fact_ciclo_viaje por ts_solicitud) no mezclen "cuándo se programó" con
+    "cuándo entró realmente a buscar conductor". `ts_programado` se
+    conserva tal cual, como registro de la hora que pidió el pasajero."""
+    viaje = await db.viajes.find_one({"_id": viaje_id, "estado": "PROGRAMADO"})
+    if viaje is None:
+        raise ViajeNoProgramadoError()
+
+    ahora = datetime.now(UTC)
+    await write_audit_event(
+        db,
+        actor_id=None,
+        rol=None,
+        accion=AccionAuditoria.VIAJE_TRANSICION_ESTADO,
+        entidad="viajes",
+        entidad_id=viaje_id,
+        resultado=ResultadoAuditoria.OK,
+        datos_previos={"estado": "PROGRAMADO"},
+        datos_posteriores={"estado": "SOLICITADO", "disparado_por": "dag_disparar_viajes_programados"},
+    )
+    await db.viajes.update_one({"_id": viaje_id}, {"$set": {"estado": "SOLICITADO", "ts_solicitud": ahora}})
+    viaje["estado"] = "SOLICITADO"
+    viaje["ts_solicitud"] = ahora
+
+    return await service_dispatch.avanzar_despacho(db, viaje)
 
 
 async def cancelar_viaje_pasajero(db: AsyncIOMotorDatabase, *, pasajero_id: str) -> dict:
@@ -280,16 +372,24 @@ def _ruta_linea_recta(
 
 
 async def estimar_ruta(
-    *, origen_lat: float, origen_lon: float, destino_lat: float, destino_lon: float
+    db: AsyncIOMotorDatabase, *, origen_lat: float, origen_lon: float, destino_lat: float, destino_lon: float
 ) -> schemas.EstimacionRutaOut:
     """CU-O04 P3, corregido tras hallazgo en pruebas reales: Directions API
     de Google no envía cabeceras CORS (a diferencia de Geocoding, que sí) —
     llamarla directo desde el navegador falla siempre, silenciosamente, y el
     cliente caía al respaldo de línea recta sin que nadie lo supiera. Ahora
     se pide siempre desde aquí, con la key server-side (nunca en el bundle
-    del cliente)."""
-    settings = get_settings()
-    if not settings.google_maps_api_key:
+    del cliente).
+
+    Módulo 4.2 de admin_sistema: la key se lee vía
+    `integraciones.service.obtener_google_maps_api_key` (override en Mongo
+    si se rotó desde el panel, si no cae a `Settings`) -- no directo de
+    `Settings`, para que una rotación tenga efecto sin reiniciar el backend.
+    """
+    from src.integraciones.service import obtener_google_maps_api_key
+
+    api_key = await obtener_google_maps_api_key(db)
+    if not api_key:
         return _ruta_linea_recta(origen_lat, origen_lon, destino_lat, destino_lon)
 
     try:
@@ -299,7 +399,7 @@ async def estimar_ruta(
                 params={
                     "origin": f"{origen_lat},{origen_lon}",
                     "destination": f"{destino_lat},{destino_lon}",
-                    "key": settings.google_maps_api_key,
+                    "key": api_key,
                 },
             )
         data = resp.json()
@@ -324,12 +424,22 @@ async def estimar_ruta(
 # Panel táctico de Despacho -- CU-T07/T08 (specs/nivel-tactico/tactico_operaciones_despacho.md)
 # ---------------------------------------------------------------------------
 
-ESTADOS_ACTIVOS = ("SOLICITADO", "OFERTADO", "ASIGNADO", "EN_CAMINO", "EN_CURSO")
+# Nombre deliberadamente distinto del ESTADOS_ACTIVOS de arriba (línea 35):
+# antes de la Sección 1.5 este archivo redefinía el mismo nombre acá con un
+# valor idéntico (bug de sombra real, aunque inofensivo hasta ahora, porque
+# como es una reasignación a nivel de módulo, TODAS las funciones que
+# referencian "ESTADOS_ACTIVOS" resuelven contra esta segunda definición al
+# ejecutarse, no la primera) -- se corrige acá porque agregar PROGRAMADO
+# solo arriba, sin renombrar esta, lo habría dejado sin efecto en
+# obtener_viaje_activo/cancelar_viaje_pasajero. Este segundo conjunto es
+# intencionalmente SIN PROGRAMADO: un viaje programado que todavía no
+# disparó su despacho no es "un viaje en curso ahora" para este panel.
+ESTADOS_ACTIVOS_PANEL = ("SOLICITADO", "OFERTADO", "ASIGNADO", "EN_CAMINO", "EN_CURSO")
 
 
 async def listar_viajes_activos(db: AsyncIOMotorDatabase) -> list[dict]:
     """Informe simple (MongoDB) -- viajes en curso ahora, cualquier estado activo."""
-    cursor = db.viajes.find({"estado": {"$in": list(ESTADOS_ACTIVOS)}}).sort("ts_solicitud", -1)
+    cursor = db.viajes.find({"estado": {"$in": list(ESTADOS_ACTIVOS_PANEL)}}).sort("ts_solicitud", -1)
     return await cursor.to_list(length=500)
 
 

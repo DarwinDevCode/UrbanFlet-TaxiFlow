@@ -19,6 +19,11 @@ from src.core.db_redis import get_redis
 from src.core.exceptions import DomainError, InsufficientRoleError, SessionSuspendedError
 from src.core.security import TokenType, decode_token
 
+# Import perezoso (dentro de la función, no a nivel de módulo) para evitar un
+# ciclo: `seguridad.service` importa de `parametros.service`, que en algún
+# momento podría crecer para depender de algo en `core` -- mantener este
+# import lazy es más robusto que confiar en que el grafo actual no cambie.
+
 # Catálogo de roles verbatim de CU-O18 (precondición).
 ROLES = frozenset(
     {
@@ -34,12 +39,14 @@ ROLES = frozenset(
         "gerencia",
         "integracion_externa",
         "admin_plataforma",
+        # Módulo de Administración del Sistema (specs/specs-administrativas/
+        # admin_sistema.md) — deliberadamente distinto de `admin_plataforma`
+        # (que administra pipeline/indicadores de negocio, no seguridad de
+        # infraestructura), por principio de mínimo privilegio. Decisión
+        # confirmada con el usuario antes de agregarse, ver PLAN_ADMIN_SISTEMA.md.
+        "admin_sistema",
     }
 )
-
-_DENIAL_WINDOW_SECONDS = 10 * 60
-_DENIAL_THRESHOLD = 5
-_SUSPENSION_SECONDS = 30 * 60
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -64,6 +71,11 @@ async def _is_session_suspended(usuario_id: str) -> bool:
     return bool(await redis.get(f"rbac:suspended:{usuario_id}"))
 
 
+async def _is_session_revoked(jti: str) -> bool:
+    redis = get_redis()
+    return bool(await redis.get(f"sesion:revocada:{jti}"))
+
+
 async def get_current_actor(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
@@ -85,6 +97,14 @@ async def get_current_actor(
     if await _is_session_suspended(usuario_id):
         raise SessionSuspendedError()
 
+    # Módulo 1.4 (admin_sistema): un administrador puede cerrar remotamente
+    # una sesión específica sin esperar a que el access token expire por su
+    # cuenta -- ver core/sessions.py. Solo rechaza si ESTE jti puntual fue
+    # revocado, no toda la cuenta (eso ya lo cubre _is_session_suspended).
+    jti = payload.get("jti")
+    if jti and await _is_session_revoked(jti):
+        raise InvalidTokenError("Sesión cerrada por un administrador")
+
     # Resolución de rol "por petición": se ignoran los roles del token y se
     # consultan en Mongo, tal como exige CU-O18 A3.
     usuario = await db.usuarios.find_one({"_id": usuario_id})
@@ -97,17 +117,27 @@ async def get_current_actor(
 
 
 async def _alertar_supervisores_cumplimiento(request: Request, db: AsyncIOMotorDatabase, motivo: str) -> None:
+    # Módulo 6.3 de admin_sistema: canal/destinatarios/activo ya no están
+    # hardcodeados acá -- delega a `notificaciones.service.disparar_alerta`,
+    # el punto único de disparo configurable (import lazy, mismo motivo que
+    # el de `seguridad` arriba).
+    from src.notificaciones.service import disparar_alerta
+
     dispatcher = getattr(request.app.state, "notification_dispatcher", None)
-    if dispatcher is None:
-        return
-    async for supervisor in db.usuarios.find({"roles": "supervisor_cumplimiento"}):
-        await dispatcher.notify_user(supervisor["_id"], "ALERTA_SEGURIDAD", {"motivo": motivo})
+    await disparar_alerta(db, dispatcher, tipo_alerta="denegaciones_rbac", motivo=motivo)
 
 
 async def _register_denial_and_maybe_suspend(
     request: Request, db: AsyncIOMotorDatabase, actor: Actor, entidad: str
 ) -> None:
+    # Módulo 6.2 de admin_sistema: umbral/ventana/duración de suspensión ya
+    # no son constantes fijas (import lazy, ver comentario junto a los demás
+    # imports -- evita que `core/rbac.py`, foundational, dependa de
+    # `seguridad` a nivel de módulo).
+    from src.seguridad.service import obtener_politica_seguridad_vigente
+
     redis = get_redis()
+    politica_seguridad = await obtener_politica_seguridad_vigente(db)
     key = f"rbac:denials:{actor.usuario_id}"
 
     # Write-ahead (CU-O17): "role-denied attempts" está en el catálogo mínimo
@@ -125,12 +155,16 @@ async def _register_denial_and_maybe_suspend(
 
     count = await redis.incr(key)
     if count == 1:
-        await redis.expire(key, _DENIAL_WINDOW_SECONDS)
+        await redis.expire(key, politica_seguridad["rbac_ventana_minutos"] * 60)
 
-    if count >= _DENIAL_THRESHOLD:
-        await redis.set(f"rbac:suspended:{actor.usuario_id}", "1", ex=_SUSPENSION_SECONDS)
+    if count >= politica_seguridad["rbac_umbral_denegaciones"]:
+        await redis.set(
+            f"rbac:suspended:{actor.usuario_id}", "1", ex=politica_seguridad["rbac_suspension_minutos"] * 60
+        )
         # CU-O18 A4: "cinco denegaciones del mismo actor en 10 minutos:
         # el sistema suspende la sesión y alerta al Supervisor de Cumplimiento."
+        # (umbral/ventana ahora configurables, el valor por defecto sigue
+        # siendo exactamente ese).
         await _alertar_supervisores_cumplimiento(
             request, db, motivo=f"Sesión de {actor.usuario_id} suspendida por accesos denegados repetidos"
         )

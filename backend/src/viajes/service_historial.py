@@ -45,6 +45,59 @@ async def enriquecer_con_pasajero(db: AsyncIOMotorDatabase, viaje: dict) -> dict
     }
 
 
+async def listar_historial_global(
+    db: AsyncIOMotorDatabase,
+    *,
+    texto: str | None,
+    estado: str | None,
+    desde: datetime | None,
+    hasta: datetime | None,
+    pagina: int,
+    limite: int,
+) -> tuple[list[dict], int]:
+    """Sección 3.3 de `specs/specs-administrativas/ux_complementaria.md` —
+    historial navegable de TODOS los viajes de la cooperativa (no solo los
+    propios), para roles con visibilidad autorizada. `texto` busca por
+    nombre de pasajero (resuelto vía `usuarios`, ya que `pasajero_nombre`
+    no vive en el propio documento del viaje -- a diferencia de
+    `conductor_nombre`, que sí se snapshotea al asignar) o por nombre de
+    conductor (directo sobre el snapshot). Filtro por zona: **gap
+    conocido, no implementado** -- `viajes.zona_origen_id`/`zona_destino_id`
+    existen en el schema pero nunca se resuelven (mismo límite ya
+    documentado para el panel táctico de Flota), así que no se ofrece un
+    parámetro que prometería un filtro que no funciona.
+    """
+    filtro: dict = {"estado": {"$in": list(ESTADOS_HISTORIAL)}}
+    if estado:
+        filtro["estado"] = estado
+    if desde or hasta:
+        rango: dict = {}
+        if desde:
+            rango["$gte"] = desde
+        if hasta:
+            rango["$lte"] = hasta
+        filtro["ts_solicitud"] = rango
+    if texto:
+        pasajero_ids = [
+            u["_id"] async for u in db.usuarios.find({"nombre": {"$regex": texto, "$options": "i"}}, {"_id": 1})
+        ]
+        filtro["$or"] = [
+            {"pasajero_id": {"$in": pasajero_ids}},
+            {"conductor_nombre": {"$regex": texto, "$options": "i"}},
+        ]
+
+    total = await db.viajes.count_documents(filtro)
+    cursor = db.viajes.find(filtro).sort("ts_solicitud", -1).skip((pagina - 1) * limite).limit(limite)
+    viajes = await cursor.to_list(length=limite)
+
+    # Mismo enriquecimiento "contraparte limitada" que ya usa CU-O14 A2
+    # (nombre de pila + calificación del pasajero, nunca teléfono) -- ni
+    # siquiera un rol administrativo con este acceso necesita el contacto
+    # completo del pasajero para consultar el historial (mismo principio de
+    # mínimo privilegio ya aplicado en Administración).
+    return [await enriquecer_con_pasajero(db, v) for v in viajes], total
+
+
 async def listar_historial(
     db: AsyncIOMotorDatabase,
     *,

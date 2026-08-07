@@ -8,17 +8,22 @@ autenticación viaja como query param `token` (mismo JWT que el resto de la API)
 """
 
 import jwt
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel
 
 from src.core.db_mongo import get_database
-from src.core.rbac import Actor, get_current_actor
+from src.core.rbac import Actor, get_current_actor, require_roles
 from src.core.security import TokenType, decode_token
+from src.notificaciones import schemas as alertas_schemas
+from src.notificaciones import service
 from src.notificaciones.connection_manager import connection_manager
 from src.notificaciones.service import TABLERO_FLOTA_CHANNEL, trip_passenger_channel, user_channel
 
 router = APIRouter(tags=["notificaciones"])
+
+# Módulo 6.3 de admin_sistema -- alto privilegio, exclusivo admin_sistema.
+_admin_sistema = require_roles("admin_sistema")
 
 
 async def _actor_from_ws_token(token: str, db: AsyncIOMotorDatabase) -> Actor | None:
@@ -110,3 +115,65 @@ async def suscribir_push(
         upsert=True,
     )
     return {"estado": "SUSCRITO"}
+
+
+@router.get("/notificaciones/alertas-config", response_model=list[alertas_schemas.ConfiguracionAlertaOut])
+async def listar_alertas_config(
+    actor: Actor = Depends(_admin_sistema), db: AsyncIOMotorDatabase = Depends(get_database)
+):
+    return await service.listar_configuraciones_alerta(db)
+
+
+@router.patch("/notificaciones/alertas-config/{tipo_alerta}", response_model=alertas_schemas.ConfiguracionAlertaOut)
+async def actualizar_alerta_config(
+    tipo_alerta: alertas_schemas.TipoAlerta,
+    body: alertas_schemas.ConfiguracionAlertaActualizar,
+    actor: Actor = Depends(_admin_sistema),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+):
+    return await service.actualizar_configuracion_alerta(
+        db,
+        actor_id=actor.usuario_id,
+        rol=",".join(actor.roles),
+        tipo_alerta=tipo_alerta,
+        canal=body.canal,
+        destinatarios_adicionales=body.destinatarios_adicionales,
+        activo=body.activo,
+    )
+
+
+def _notificacion_to_out(doc: dict) -> alertas_schemas.NotificacionOut:
+    return alertas_schemas.NotificacionOut(
+        id=doc["_id"], tipo=doc["tipo"], categoria=doc["categoria"], payload=doc["payload"],
+        ts=doc["ts"], leida=doc["leida"],
+    )
+
+
+@router.get("/notificaciones/mias", response_model=alertas_schemas.NotificacionListOut)
+async def listar_mias(
+    pagina: int = Query(default=1, ge=1),
+    limite: int = Query(default=20, ge=1, le=100),
+    actor: Actor = Depends(get_current_actor),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+):
+    items, total, no_leidas = await service.listar_notificaciones(
+        db, usuario_id=actor.usuario_id, pagina=pagina, limite=limite
+    )
+    return alertas_schemas.NotificacionListOut(
+        items=[_notificacion_to_out(d) for d in items], total=total, no_leidas=no_leidas
+    )
+
+
+@router.patch("/notificaciones/mias/{notificacion_id}/leida", response_model=alertas_schemas.NotificacionOut)
+async def marcar_leida(
+    notificacion_id: str,
+    actor: Actor = Depends(get_current_actor),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+):
+    doc = await service.marcar_leida(db, usuario_id=actor.usuario_id, notificacion_id=notificacion_id)
+    return _notificacion_to_out(doc)
+
+
+@router.get("/notificaciones/categorias", response_model=list[alertas_schemas.CategoriaNotificacionOut])
+async def listar_categorias(actor: Actor = Depends(get_current_actor)):
+    return [alertas_schemas.CategoriaNotificacionOut(**c) for c in service.CATEGORIAS_CONFIGURABLES]

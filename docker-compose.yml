@@ -83,6 +83,10 @@ services:
       - "8000:8000"
     volumes:
       - ./backend/src:/app/src
+      # Módulo 7.1 de admin_sistema (respaldos): volumen con nombre, separado
+      # del bind mount de código -- un respaldo real debe sobrevivir a
+      # recrear el contenedor, y nunca debe mezclarse con el código fuente.
+      - respaldos_data:/app/respaldos
     depends_on:
       mongo:
         condition: service_healthy
@@ -151,6 +155,12 @@ services:
       MONGO_URI: mongodb://mongo:27017
       POCKETBASE_URL: http://pocketbase:8090
       CLICKHOUSE_HOST: clickhouse
+      # Sección 1.5 de ux_complementaria.md: dag_disparar_viajes_programados
+      # llama al backend por la red interna de docker-compose (mismo
+      # hostname que usa Settings.airflow_url en sentido inverso, backend ->
+      # airflow) -- nunca expuesto fuera del stack.
+      BACKEND_URL: http://backend:8000
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-change-me-in-every-environment}
       _PIP_ADDITIONAL_REQUIREMENTS: "clickhouse-connect==0.7.19 pymongo==4.8.0"
     volumes:
       - ./analytics/dags:/opt/airflow/dags
@@ -196,3 +206,4 @@ volumes:
   pocketbase_data:
   clickhouse_data:
   airflow_db_data:
+  respaldos_data:

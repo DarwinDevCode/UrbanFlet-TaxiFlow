@@ -69,6 +69,48 @@
   --shell-header-height: 64px;
 }
 
+/* Sección 1.4/3.2 de ux_complementaria.md: tema oscuro. `data-theme="dark"`
+   se estampa en <html> por `theme.ts` (aplicación sincrónica al cargar,
+   antes del primer render, para no parpadear en claro) -- nunca se decide
+   por `prefers-color-scheme` sola, porque la preferencia real vive en
+   `preferencias_usuario` (servidor), no solo en el sistema operativo.
+   Paleta de gráficos/estado re-calibrada para contraste sobre fondo oscuro
+   (misma identidad de matiz que la paleta clara, luminosidad ajustada) --
+   mismo criterio de la skill dataviz aplicado al modo oscuro. El sidebar
+   del AppShell ya era oscuro por diseño en ambos temas, sin cambios. */
+:root[data-theme="dark"] {
+  --color-bg: #0f1115;
+  --color-surface: #1a1d24;
+  --color-text: #e8e9ec;
+  --color-text-muted: #9aa0ad;
+  --color-border: #2c303a;
+  --color-accent: #5b9de8;
+  --color-accent-contrast: #0f1115;
+  --color-danger: #f2635f;
+  --color-success: #35c235;
+  --color-warning: #d99a3d;
+
+  --status-good: #35c235;
+  --status-warning: #d99a3d;
+  --status-serious: #e8834f;
+  --status-critical: #f2635f;
+
+  --chart-series-1: #5b9de8;
+  --chart-series-2: #f28a5c;
+  --chart-series-3: #3ecb96;
+  --chart-series-4: #f2b93d;
+  --chart-series-5: #f09dc0;
+  --chart-series-6: #4fbf4f;
+  --chart-series-7: #8b7bd8;
+  --chart-series-8: #ec7170;
+  --chart-grid: #2c303a;
+  --chart-axis: #454a56;
+  --chart-muted: #8a8f9c;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
 * {
   box-sizing: border-box;
 }

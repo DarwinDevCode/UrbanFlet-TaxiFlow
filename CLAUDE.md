@@ -1009,6 +1009,31 @@ Estas 3 credenciales quedan como la referencia única y vigente — si una
 sesión futura cambia cualquier password, actualizar esta tabla en el mismo
 commit, no dejarla desincronizada.
 
+**Cobertura completa de los 12 roles de `rbac.py::ROLES`** — ampliada en
+una sesión posterior a pedido explícito ("credenciales de cada
+usuario/rol que existe en el sistema"). Los 3 roles que quedaban sin
+cuenta de demo dedicada (`admin_plataforma`, `gerencia`,
+`integracion_externa`) ahora también tienen una, verificada con login
+real:
+
+| Rol | Identificador | Password | Nota |
+|---|---|---|---|
+| `admin_plataforma` | `+593911998822` (cuenta ya existente de sesión previa, "Admin Plataforma QA") | `AdminPlataforma123!` | Ve Flota + Indicadores + 3 dashboards tácticos (Flota/Auditoría/Plataforma) vía los OR-gates de RBAC — confirmado en navegador real |
+| `gerencia` | `+593900000010` (`gerencia-demo-01`, cuenta nueva) | `Gerencia123!` | Mismas 3 pantallas tácticas que `admin_plataforma` vía OR-gate (`gerencia` aparece en el `$or` de Auditoría/Plataforma), sin pantalla propia exclusiva |
+| `integracion_externa` | `+593900000011` (`integracion-externa-demo-01`, cuenta nueva) | `Integracion123!` | Login funciona, pero no tiene ninguna pantalla de `web-interno` gateada a este rol — es un rol pensado para acceso de API/máquina-a-máquina, no para el portal |
+
+Con esto, los 12 roles del sistema tienen credenciales reales verificadas
+— 3 cuentas cubren los 9 roles "principales" (§8.7 arriba) + 3 cuentas
+individuales para estos 3 roles residuales.
+
+**Rol 13 agregado en sesión posterior**: `admin_sistema` (ver §9, módulo de
+Administración del Sistema) — separado de `admin_plataforma` por principio
+de mínimo privilegio, no reutiliza ninguna de las cuentas de arriba.
+
+| Rol | Identificador | Password | Nota |
+|---|---|---|---|
+| `admin_sistema` | `+593900000099` (`Admin Sistema QA`) | `AdminSistema123!` | `web-interno` → "Administración → Usuarios" y "→ Políticas de autenticación" (Módulo 1, IAM) — único rol con acceso, sin OR-gate con ningún otro |
+
 ### 8.8 Datos ricos para demo — sembrados esta sesión, todo vía servicios reales
 
 Pedido explícito del usuario: más volumen en todos los dominios (no solo
@@ -1106,3 +1131,538 @@ Suite backend sin regresión tras los 3 scripts nuevos: no se corrió
 `pytest` de nuevo después de este bloque específico (los scripts no
 tocan código de producción, solo lo invocan) — la última corrida limpia
 registrada es la de §8.1 (177 passed, 8 skipped), antes de este bloque.
+
+## 9. Módulo de Administración del Sistema — en construcción activa
+
+Nuevo paquete transversal (`specs/specs-administrativas/admin_sistema.md`,
+8 módulos: IAM, Configuración General, Catálogos, Integraciones Externas,
+Monitoreo, Auditoría y Seguridad, Respaldos y Continuidad, Mantenimiento y
+Gobernanza de Datos) — infraestructura de gobierno del sistema mismo, no
+un caso de uso de negocio de la cooperativa. Plan de trabajo completo,
+estimaciones de esfuerzo y los 6 recortes de alcance ya aprobados por el
+usuario viven en [PLAN_ADMIN_SISTEMA.md](PLAN_ADMIN_SISTEMA.md) — ese
+archivo es la fuente de verdad de qué falta, no lo dupliques aquí. Esta
+sección solo resume decisiones de arquitectura y estado por si una sesión
+sin el plan a mano necesita contexto rápido.
+
+**Decisión de arquitectura (confirmada explícitamente por el usuario antes
+de tocar código)**: se creó el rol nuevo `admin_sistema`
+(`backend/src/core/rbac.py::ROLES`), **separado** de `admin_plataforma`
+(que administra pipeline/indicadores de negocio, CU-T14/OT8.1) — principio
+de mínimo privilegio ya declarado en `operativo_cumplimiento.md`. Todos los
+endpoints de los 8 módulos se gatean exclusivamente a `admin_sistema`
+(nunca combinado con otro rol vía OR-gate, a diferencia de la mayoría de
+los demás routers del proyecto) salvo donde la spec pide explícitamente
+que `gerencia` también vea algo — en la práctica, terminó siendo un único
+caso real: Módulo 7.2 (plan de continuidad), el único OR-gate
+`admin_sistema`/`gerencia` de todo el bloque. Módulo 8.2 (gobernanza de
+datos) NO lo necesitó pese a una nota de planificación temprana que lo
+sugería — su texto de spec real nunca menciona `gerencia`, confirmado al
+construirlo (ver §17).
+
+**Módulo 1 (IAM) — cerrado y verificado.** Gestión de cuentas de personal
+interno, roles, políticas de contraseña/bloqueo configurables y sesiones
+activas revocables. Detalle completo (qué se construyó, hallazgos reales,
+verificación en navegador) en
+[PLAN_ADMIN_SISTEMA.md §7](PLAN_ADMIN_SISTEMA.md). Piezas nuevas más
+relevantes para el resto del proyecto: `backend/src/core/sessions.py`
+(primer registro de sesiones activas en Redis del proyecto — JWT era
+puramente stateless hasta ahora), `POST /auth/cambiar-password` nuevo, y
+`AuthProvider` (shared-ui) ganó `debeCambiarPassword`/`cambiarPassword`
+genéricos (sin wirear en `web-pasajero`/`web-conductor` todavía). Cuenta de
+demo: ver tabla de credenciales en §8.7.
+
+**Módulo 2 (Configuración General) — cerrado y verificado.** Parámetros
+globales del sistema (radios de despacho, expiración de oferta, idioma,
+zona horaria — versionados, mismo patrón que tarifa/comisión) y feature
+flags (activar/desactivar por % o rol). Detalle completo en
+[PLAN_ADMIN_SISTEMA.md §8](PLAN_ADMIN_SISTEMA.md). Pieza más relevante
+para el resto del proyecto: `viajes/service_dispatch.py` ya no tiene
+`RADIOS_M`/`OFERTA_EXPIRA_SEGUNDOS` como constantes fijas — se leen en
+caliente de `configuracion.service`, con los mismos valores como fallback
+(`configuracion/service.py::DEFAULTS`) si nunca se publicó una versión.
+`core/feature_flags.py::is_enabled()` es un helper genérico nuevo, todavía
+sin ningún consumidor real (por diseño — ver alcance de 2.2 en el plan).
+
+**Módulo 6.1 (Auditoría de cambios administrativos) — cerrado y
+verificado.** Vista filtrada de la misma bitácora de CU-O17, sin segundo
+almacén — reutiliza `GET /auditoria/eventos`, ampliado para aceptar varias
+`accion` a la vez. Detalle completo en
+[PLAN_ADMIN_SISTEMA.md §9](PLAN_ADMIN_SISTEMA.md). Pieza más relevante
+para el resto del proyecto: `EventoAuditoriaOut` ahora expone
+`datos_previos`/`datos_posteriores` (ya existían en Mongo desde CU-O17,
+nunca se habían leído por API) — cualquier pantalla futura puede
+mostrarlos sin cambios de backend. Se corrigió de paso un cruce real:
+Módulo 2.1 reutilizaba la acción de auditoría de tarifa/comisión
+(`PARAMETRO_CAMBIO`) para los parámetros de sistema — ahora tiene su
+propia acción (`PARAMETRO_SISTEMA_CAMBIO`) para no mezclarse en el filtro
+administrativo.
+
+**Módulo 3 (Catálogos y Parámetros de Negocio) — cerrado y verificado.**
+Zonas de despacho (CRUD completo, extendiendo el router `parametros/`
+ya existente en vez de duplicarlo — nueva dependencia
+`_puede_gestionar_zonas` que suma `admin_sistema` sin darle acceso a
+tarifa/comisión) + tipos de documento y motivos de cancelación/incidencia
+(módulo nuevo `catalogos/`, solo activar/desactivar, sin DELETE — ambos
+alimentan campos hoy de texto libre sin FK real, confirmado con
+investigación de código antes de construir). Detalle completo en
+[PLAN_ADMIN_SISTEMA.md §10](PLAN_ADMIN_SISTEMA.md). Hallazgo real de
+paso: `viajes.zona_origen_id`/`zona_destino_id` existen en el schema pero
+nunca se resuelven (siempre `None`) — el guard "no eliminar zona en uso"
+es código real y correcto, pero no bloquea nada todavía en la práctica.
+
+**Módulo 8.1 (Versión/Despliegue) — cerrado y verificado.** `GET
+/sistema/version` (backend + 3 frontends, valores mantenidos a mano en
+sync con `pyproject.toml`/`package.json`, sin introspección automática) +
+`GET`/`POST /sistema/despliegues` (registro manual, alcance recortado
+aprobado — no hay CI/CD real en el proyecto). Detalle completo en
+[PLAN_ADMIN_SISTEMA.md §11](PLAN_ADMIN_SISTEMA.md).
+
+**Corrección estructural post-8.1 (§12 del plan)**: el mirror de
+`ACCIONES_ADMINISTRATIVAS` en `AuditoriaAdmin.tsx` se había desincronizado
+del backend (Módulo 3 agregó 3 acciones nuevas que quedaron invisibles en
+el filtro, sin que ningún test lo detectara). A pedido del usuario, se
+eliminó la causa raíz en vez de solo agregar un test que la detecte:
+`GET /auditoria/acciones-administrativas` (nuevo) expone
+`core/audit.py::ACCIONES_ADMINISTRATIVAS` directamente — `AuditoriaAdmin.tsx`
+ya no declara ningún array hardcodeado, lo consume de ahí. **No queda
+ningún archivo en `apps/web-interno` que deba tocarse a mano cuando un
+módulo futuro (4/5/6.2/6.3/7/8.2) agregue una acción administrativa
+nueva** — a diferencia de `usuarios/permisos_matriz.py` y `ROLES_STAFF`
+(Módulo 1.2), que siguen siendo mirrors manuales reales por decisión
+explícita ya aprobada (alcance recortado, no un descuido).
+
+**Módulo 6.2 (Políticas de seguridad) — cerrado y verificado.** TTL de
+access/refresh token y umbrales de los 3 mecanismos de rate limiting que
+ya existían (login, ya cubierto por Módulo 1.3; refresh y denegaciones
+RBAC, cubiertos aquí) dejaron de ser constantes fijas. Detalle completo en
+[PLAN_ADMIN_SISTEMA.md §13](PLAN_ADMIN_SISTEMA.md). Piezas más relevantes
+para el resto del proyecto: `core/security.py::create_token` acepta TTL
+opcionales; `auth/service.py::_emitir_tokens` cambió de firma (ahora
+requiere `db`); `core/rbac.py` importa `seguridad.service` de forma
+perezosa (dentro de la función, no a nivel de módulo) para no acoplar el
+archivo más foundational del proyecto a un dominio de negocio. Hallazgo
+real corregido de paso: `core/sessions.py` (registro de sesiones activas,
+Módulo 1.4) seguía leyendo el TTL fijo de `Settings` en vez de la política
+vigente — ahora sigue al mismo TTL configurado que el token real.
+Verificado con un login real decodificando el JWT emitido (TTL de 420s
+para una política de 7 minutos, no los 900s por defecto).
+
+**Módulo 6.3 (Alertas y notificaciones del sistema) — cerrado y
+verificado.** Detalle completo en
+[PLAN_ADMIN_SISTEMA.md §14](PLAN_ADMIN_SISTEMA.md). Hallazgo real más
+relevante: de las 3 alertas que la spec asume que "el sistema ya genera",
+solo las denegaciones RBAC (5 en 10 min) estaban realmente conectadas a
+una notificación — el spoofing GPS solo se auditaba, nunca notificaba a
+nadie, y se corrigió (`flota/service.py::reportar_posicion` ahora dispara
+una alerta real vía `notificaciones.service.disparar_alerta`). "Corrida de
+pipeline fallida" es enteramente del lado de Airflow (sin webhook al
+backend) y queda solo configurable, sin disparo real, documentado como tal
+en vez de simulado. `canal` quedó limitado a `web_push` en el schema
+(único canal con entrega real en el codebase — no hay envío de correo en
+ningún lado) en vez de aceptar "correo"/"ambos" como sugiere la spec.
+
+**Módulo 4 (Integraciones Externas) — cerrado y verificado.** CRUD real de
+credenciales de integración (secreto mostrado una sola vez, hash bcrypt
+irreversible, revocación idempotente-protegida con 409 en el segundo
+intento) + estado/rotación de servicios externos. Detalle completo en
+[PLAN_ADMIN_SISTEMA.md §15](PLAN_ADMIN_SISTEMA.md). Confirmado antes de
+construir, a pedido explícito del usuario: `GET /ext/v1/...` que la spec
+asumía existente **no existe en el código** — el CRUD se construyó sin el
+middleware de validación contra ese endpoint, `usos_registrados` queda en
+0 con ese motivo explícito. Pieza más relevante para el resto del
+proyecto: `viajes/service.py::estimar_ruta` ya no lee la key de Google
+Maps solo de `Settings` — ahora la resuelve vía
+`integraciones/service.py::obtener_google_maps_api_key(db)`, que consulta
+un override en `servicios_externos_config` (Mongo) antes que la variable
+de entorno. Esto permite rotar la key desde la UI con efecto inmediato sin
+reiniciar el backend — verificado en navegador real inspeccionando la
+petición saliente real a `maps.googleapis.com` en el log del contenedor,
+confirmando que llevaba la key recién rotada, no la del `.env`.
+
+**Módulo 5 (Monitoreo y Observabilidad) — cerrado y verificado.** Panel de
+estado de infraestructura (backend, Mongo, Redis, ClickHouse, Airflow) con
+ping real y latencia medida, más umbrales configurables que colorean cada
+tarjeta al abrir o actualizar el panel. Detalle completo en
+[PLAN_ADMIN_SISTEMA.md §16](PLAN_ADMIN_SISTEMA.md). Alcance confirmado
+(re-aprobado explícitamente): **evaluación bajo demanda, no vigilancia
+continua** — no hay proceso de background que sondee umbrales ni dispare
+alertas push automáticas (no hay worker/cron apto en este stack sin
+agregar infraestructura nueva tipo Celery beat). Pieza más relevante para
+el resto del proyecto: `sistema/service.py` extiende el módulo de Módulo
+8.1 (no crea uno nuevo) con `obtener_salud`/`obtener_umbrales`/
+`actualizar_umbral`; `Settings.airflow_url` nuevo apunta al hostname
+interno `airflow-webserver:8080` de docker-compose. Verificado en
+navegador real bajando el umbral de Mongo y confirmando con
+`getComputedStyle` que la tarjeta pasó de verde a rojo (`--status-critical`
+real) mientras las otras 4 se mantuvieron en verde — el color reacciona al
+umbral real, no a un estado fijo.
+
+**Módulo 8.2 (Gobernanza de datos) — cerrado y verificado.** Anonimización
+irreversible de una cuenta (derechos ARCO/LOPDP, CU-O17 A2) con doble
+confirmación real (`Literal["ANONIMIZAR"]` en el schema, no solo del lado
+del cliente) + política de retención de solo lectura por tipo de dato.
+Detalle completo en [PLAN_ADMIN_SISTEMA.md §17](PLAN_ADMIN_SISTEMA.md).
+Decisión de diseño clave: `bitacora.actor_id` ya era un UUID opaco desde
+siempre (nunca el dato personal en sí), así que "seudonimizar el
+identificador en la bitácora" (CU-O17 A2) se cumple sin tocar ningún
+evento ya escrito — lo que sí se diseñó con cuidado fue que el propio
+evento `USUARIO_ANONIMIZACION` **nunca** lleva el nombre/teléfono/correo
+real que se está purgando (`bitacora` es insert-only y permanente; grabar
+ahí el dato purgado derrotaría el propósito de la anonimización). El TTL
+de `posiciones` en la política de retención se lee real de
+`db.posiciones.index_information()`, nunca hardcodeado como texto. Bug
+real encontrado y corregido de paso en `shared-ui/TextField.tsx`: el `id`
+autogenerado a partir del label no sanitizaba comillas/puntuación,
+generando un `id` HTML inválido para labels como `Escribe "ANONIMIZAR"
+para confirmar` — corregido de forma general (`.replace(/[^a-z0-9-]/g,
+"")`), verificado sin romper build/lint/test en ninguna de las 3 apps.
+
+**Módulo 7 (Respaldos y Continuidad) — cerrado y verificado. Con este
+cierre, los 8 módulos del paquete de administración del sistema quedan
+completos.** Detalle completo en
+[PLAN_ADMIN_SISTEMA.md §18](PLAN_ADMIN_SISTEMA.md). El recorte de alcance
+más grande del documento, repasado en detalle con el usuario antes de
+construir, con un ajuste real: verificado que la imagen del backend no
+tiene `mongodump`/`mongorestore`/`clickhouse-client` instalados —
+**aprobada explícitamente la Opción B**: exportación vía los drivers que
+el backend ya usa en producción (`motor`/`bson.json_util` para Mongo,
+`clickhouse_connect`/pickle para ClickHouse) en vez de instalar binarios
+nuevos y reconstruir la imagen. Alcance de qué se respalda decidido con
+datos reales del entorno: Mongo respalda **todas** las colecciones de
+negocio (incluida `bitacora`); ClickHouse respalda solo las tablas
+`rpt_*` + referencia — excluye deliberadamente `bronze_*`/`fact_*`/
+`cuarentena_*` (en este entorno ya suman más de 6M de filas, 100%
+re-derivables re-ejecutando los DAGs de Airflow, no son la fuente de
+verdad). La restauración de prueba tiene la base de destino
+**hardcodeada en el código** (`urbanflet_restore_test`/
+`urbanflet_gold_restore_test`) — nunca acepta un nombre de base del
+cliente, así que "nunca toca producción" es una garantía de código, no
+solo de la UI. Cifrado en reposo: no implementado, documentado
+explícitamente. Bug real encontrado y corregido (afecta producción, no
+solo tests): Mongo devuelve `datetime` naive en UTC al leer, restar
+contra un `datetime.now(UTC)` aware reventaba con `TypeError` — cada
+respaldo real fallaba silenciosamente a `estado="error"` hasta el fix.
+Verificado con un respaldo real completo contra los ~2.6M documentos
+reales del entorno (Mongo 78.5s/2.4GB, ClickHouse 0.09s/529KB), hash
+verificado dos veces (API + navegador), y una restauración real completa
+a las bases de prueba aisladas con conteos exactos confirmados por
+consulta directa — y confirmando que las bases reales no se movieron ni
+un documento.
+
+**Ronda de usabilidad post-cierre (2026-08-07) — en curso.** Tras probar
+personalmente los 8 módulos, el usuario pidió 7 mejoras transversales de
+usabilidad/automatización ("reducir el trabajo manual del administrador y
+evitar errores humanos, no solo exponer campos editables"), aplicadas al
+módulo completo de administración (algunas también auditadas contra el
+resto del sistema). Detalle completo por punto en
+[PLAN_ADMIN_SISTEMA.md §19+](PLAN_ADMIN_SISTEMA.md). Estado:
+
+- ✅ **P1 — Manejo de errores transversal**: handler global nuevo
+  (`backend/src/core/validation.py`) traduce los 422 de Pydantic a mensajes
+  en español, uno por campo — antes esos errores eran completamente
+  silenciosos en el frontend (solo aparecían en la consola del navegador).
+  `ApiError` (shared-ui) ahora expone `fieldErrors`; nuevo helper
+  `fieldError(error, campo)` + `hint`/`rangeHint` en `TextField` para
+  mostrar el límite válido junto al campo antes de enviar. Aplicado a los
+  formularios de Administración con campos numéricos/validados
+  (`PoliticasAuth`, `PoliticasSeguridad`, `ParametrosGlobales`,
+  `Monitoreo`).
+- ✅ **P2 — Selects para valores finitos**: `idioma`/`zona_horaria` en
+  Parámetros Globales pasaron de texto libre a `Select` con opciones
+  curadas (`América/Guayaquil` por defecto). Backend se dejó permisivo
+  (`str`, sin `Literal`) porque no existe ningún consumidor real de
+  `idioma` en el código — confirmado con grep antes de decidir no forzarlo
+  a nivel de esquema.
+- ✅ **P3 — Catálogo `talleres` + validación de `tipos_documento` en
+  Captación** — cerrado, ver detalle en PLAN_ADMIN_SISTEMA.md §19. Nuevo
+  catálogo (mismo patrón que `tipos_documento`/`motivos_cancelacion`, solo
+  activar/desactivar) + `captacion/service.py::crear_solicitud` ahora
+  rechaza con 422 `TIPO_DOCUMENTO_INVALIDO` cualquier `documentos[].tipo`
+  que no exista o esté inactivo en el catálogo — antes era texto 100%
+  libre sin ninguna validación. **No se tocó ninguna máquina de estado**
+  (confirmado explícitamente con el usuario antes de construir). `canal`
+  (dimensión de captación) quedó fuera de este punto a propósito, para una
+  sesión aparte.
+- ✅ **P4 — Modo solo-lectura por defecto**: patrón nuevo reutilizable
+  (`apps/shared-ui/src/components/ReadOnlyGate.tsx` — hook
+  `useReadOnlyGate()` + componente `<ReadOnlyActions>`) aplicado a las 3
+  pantallas de configuración sensible (`PoliticasAuth`, `PoliticasSeguridad`,
+  `ParametrosGlobales`): campos bloqueados al entrar, botón "Editar"
+  explícito para desbloquear, se re-bloquean al guardar/cancelar.
+  `VersionSistema.tsx` quedó fuera a propósito — es un log de registro
+  append-only, no configuración editable en vivo.
+- ✅ **P5 — Selector real de usuarios**: `UserPicker` nuevo
+  (`apps/shared-ui/src/components/UserPicker.tsx`) — busca por nombre/rol/
+  correo, multi-select, guarda solo IDs pero siempre muestra nombres
+  legibles. Reemplazó el campo de texto libre de IDs crudos en
+  `ConfiguracionAlertas.tsx` (destinatarios adicionales de alertas).
+- ✅ **P6 — Monitoreo: indicadores + histórico + auto-refresco** — cerrado,
+  ver detalle en PLAN_ADMIN_SISTEMA.md §20. Nuevos `GET /sistema/indicadores`
+  (Mongo vía `serverStatus`/`dbStats`, Redis vía `INFO`, ClickHouse vía
+  `system.metrics`/`system.asynchronous_metrics` — sin Airflow por ahora,
+  degradan a "no disponible" sin propagar el error real, mismo patrón que
+  el panel de salud original) y `GET /sistema/historial-latencia`
+  (`historial_monitoreo`, TTL de 7 días, un snapshot por componente en cada
+  consulta real del panel — sin worker/cron nuevo). Frontend:
+  auto-refresco de 20s con pausa manual, tarjetas de indicadores
+  adicionales por motor, y gráfico de tendencia de latencia (`TrendLineChart`
+  ya existente). **Bug real encontrado y corregido en navegador**: el
+  metric name inicial de ClickHouse (`MemoryTracking`) no existe en la
+  versión real del stack (24.x) — corregido a `MemoryResident`, confirmado
+  con `clickhouse-client` directo.
+- ✅ **P7 — Gestión de conductores/pasajeros en Usuarios**: confirmado que
+  el formulario de creación NO debe ofrecer estos 2 roles (correcto tal
+  cual, por CU-O01/CU-O02 de autorregistro) — pero ahora son visibles y
+  gestionables en el listado de `Usuarios.tsx` (filtro por rol, detalle,
+  suspender/reactivar/dar de baja, sesiones), con sus roles mostrados en
+  modo solo-lectura (`title` explicando por qué, mismo patrón de tooltip
+  ya usado en el resto de pantallas WorkPanel) en vez de editables.
+
+**Con esto, los 7 puntos de la ronda de usabilidad post-cierre
+(2026-08-07) quedan completos.**
+
+## 10. Funcionalidades complementarias de UX — cerrado (los 7 puntos completos)
+
+Nuevo paquete transversal (`specs/specs-administrativas/ux_complementaria.md`,
+4 secciones: Pasajero, Conductor, Personal interno, Transversal) — cierra
+brechas frente a una app de transporte comercial real (perfil propio,
+ajustes, notificaciones in-app, historial global, direcciones favoritas,
+compartir viaje, programar viaje). Plan de trabajo completo, las 3
+decisiones aprobadas (D1/D2/D3) y el desglose de tareas por funcionalidad
+viven en [PLAN_UX_COMPLEMENTARIA.md](PLAN_UX_COMPLEMENTARIA.md) — esa es la
+fuente de verdad de qué falta, no lo dupliques aquí. Esta sección solo
+resume decisiones de arquitectura y estado.
+
+**Hallazgo real de la Fase 0 (verificación de la spec contra el código)**:
+la spec asumía que el registro de pasajero/conductor usa OTP para
+reverificar un teléfono nuevo — **ya no existe** ningún mecanismo de OTP en
+el sistema (el login migró a usuario+contraseña, ver §4 arriba) ni
+infraestructura de envío de SMS/correo. Decisión D1 (aprobada): editar el
+propio contacto exige la contraseña actual en vez de OTP, mismo nivel de
+exigencia que ya tenía `POST /auth/cambiar-password`.
+
+**Perfil propio editable (1.3/2.2/3.1) — cerrado y verificado.** Nuevo
+dominio backend `perfil/` (autoservicio: `GET`/`PATCH /perfil`, `GET`/
+`DELETE /perfil/sesiones/{jti}`), separado de `usuarios/` (exclusivamente
+administrativo, Módulo 1 de admin_sistema) y de `auth/` (tokens/
+credenciales). Reutiliza `usuarios/service.py::editar_usuario` (ahora con
+un parámetro `accion` opcional, default `USUARIO_EDICION`, para que
+`perfil/service.py` pueda pasar la acción de auditoría nueva
+`PERFIL_EDICION` sin duplicar la lógica de unicidad de teléfono/correo) y
+`core/sessions.py` tal cual. Frontend: componente único `PerfilPropio`
+(nuevo en `shared-ui`) reutilizado por las 3 apps — "Mi perfil" en
+pasajero/conductor, "Mi cuenta" en `web-interno` (visible para los 13
+roles vía un sentinel `ROL_CUALQUIERA = "*"`, agregado al final de
+`SECCIONES` a propósito para no convertirse en la sección por defecto de
+ningún rol ya existente). Foto de perfil del conductor (2.2): campo de URL
+en `usuarios.conductor.foto_url` (mismo patrón `url_objeto` ya usado por
+documentos de captación, sin upload propio — no existe esa infraestructura
+en el backend), propagada a `ViajeOut.conductor_foto_url` para que el
+pasajero la vea al ser asignado (CU-O05 P5). Nunca expone `roles` en el
+schema de edición — un usuario no puede cambiar su propio rol desde aquí.
+Verificado en navegador real en las 3 apps con cuentas reales (login real,
+edición real con contraseña correcta/incorrecta, evento `PERFIL_EDICION`
+confirmado en Mongo, sesiones activas reales con IP/user-agent reales).
+Backend 282/282 tests + ruff limpio (subió de 274); frontend build/lint/
+test limpios en las 3 apps + `shared-ui` lint (21 tests en `web-interno`,
+6 en `web-pasajero`, 4 en `web-conductor`).
+
+**Ajustes básicos + Centro de ayuda (1.4/2.3/3.2/4.1) — cerrado y
+verificado.** Nuevo dominio backend `preferencias/` (documento único por
+cuenta en `preferencias_usuario`, sin auditoría — son ajustes de interfaz,
+no acciones de seguridad). Frontend: 2 componentes nuevos en `shared-ui`
+reutilizados por las 3 apps — `AjustesPropios` (tema, densidad de tablas
+solo en `web-interno`, preferencias de turno solo en `web-conductor`) y
+`CentroAyuda` (FAQ + contacto, distinto por app). **Tema oscuro real**:
+paleta completa nueva en `tokens.css` (`:root[data-theme="dark"]`,
+recalibrando color/estado/gráficos para contraste sobre fondo oscuro) +
+`theme.ts` (aplicación síncrona en `main.tsx` antes del primer render, para
+no parpadear en claro). **Densidad de tablas**: implementada vía variables
+CSS (`--table-cell-padding-y/x`, mecanismo `densidad.ts` idéntico a
+`theme.ts`) en vez de una prop nueva en `DataTable` — una variable global
+aplica a las ~15 pantallas con tabla sin tocar ninguna, ajuste real sobre
+el diseño original del plan. **Centro de ayuda**: implementado como nav
+item más (no como ícono flotante en el header, que hubiera exigido un
+popover nuevo desde cero) — mismo patrón que "Mi perfil"/"Ajustes", sigue
+siendo un clic desde cualquier pantalla. Contacto con **placeholder
+documentado** (`soporte@urbanfleet.example` / `+593900000000`) — decisión
+final confirmada por el usuario al cierre de todo el bloque de UX
+complementaria (§10 abajo): UrbanFleet es un proyecto académico, no una
+cooperativa real operando, así que no existe ningún dato de contacto real
+que reemplazar — el placeholder se queda tal cual, permanentemente, no es
+un TODO pendiente.
+Verificado en navegador real: tema oscuro confirmado con `getComputedStyle`
+(`rgb(15, 17, 21)`), densidad confirmada sobre una celda real de la tabla
+de Usuarios (8px→3px), preferencias de turno guardadas de verdad en Mongo
+en `web-conductor`. Backend 288/288 tests + ruff limpio (subió de 282);
+frontend build/lint/test limpios en las 3 apps + `shared-ui` lint.
+
+**Centro de notificaciones in-app + cierre de push por categoría (4.2/1.4)
+— cerrado y verificado.** `NotificationService.notify_user()`
+(`notificaciones/service.py`) ahora persiste SIEMPRE en la nueva colección
+`notificaciones_usuario` (TTL 30 días) antes de intentar la entrega en
+vivo — un solo punto de cambio, ningún call site existente tocado.
+Taxonomía de categorías (`captacion`, `cumplimiento`, `mantenimiento`,
+`viaje`, `seguridad` — esta última nunca configurable por el usuario) +
+eventos nuevos de ciclo de vida del viaje agregados junto al
+`broadcast_channel` ya existente (`VIAJE_ASIGNADO`, `CONDUCTOR_EN_CAMINO`,
+`CONDUCTOR_LLEGO`, `VIAJE_INICIADO`, `VIAJE_CANCELADO_CONDUCTOR`,
+`VIAJE_FINALIZADO`) en `router_dispatch.py`/`router_ejecucion.py`/
+`router_finalizacion.py`. Frontend: `NotificacionesBell` (nuevo en
+`shared-ui`, primer consumidor real del slot `AppShell.headerActions`) con
+contador de no leídas y panel desplegable, en las 3 apps; toggles de push
+por categoría agregados a `AjustesPropios`. **Bug real encontrado y
+corregido**: el `aria-label` de la campana colisionaba con el nombre
+accesible del nav item "Notificaciones" ya existente en `web-interno`
+(Módulo 6.3) — corregido a "Bandeja de notificaciones". Verificado en
+navegador real: una orden de mantenimiento real creada contra el vehículo
+del conductor demo generó una notificación real, visible como "🔔1" al
+loguearse como ese conductor, marcada como leída con un `PATCH` real (200)
+y el contador volviendo a 0; toggle de categoría "Estado del viaje"
+confirmado en Mongo. Backend 296/296 tests + ruff limpio (subió de 288);
+frontend build/lint/test limpios en las 3 apps + `shared-ui` lint.
+
+**Historial global de viajes (3.3) — cerrado y verificado.** Nuevo
+`listar_historial_global` en `viajes/service_historial.py` (mismo shape
+que `listar_historial` de CU-O14, sin fijar `pasajero_id`/`conductor_id`
+al actor) + `GET /viajes/historial-global` (`router_trips.py`, gateado a
+`coordinador_operaciones`/`supervisor_cumplimiento`/`gerencia`/
+`admin_sistema`). Reutiliza `to_out()`/`HistorialOut`/
+`enriquecer_con_pasajero` ya existentes — sin schema ni enriquecimiento
+nuevo. Sin filtro de zona (gap ya conocido, `zona_origen_id`/
+`zona_destino_id` nunca se resuelven). Frontend: nuevo work panel
+"Historial de viajes" en `web-interno`, patrón WorkPanel estándar,
+agregado a `SECCIONES` en un grupo propio ("Historial") **al final de la
+lista** — mismo motivo que "Mi cuenta" (no debe volverse la sección por
+defecto de ningún rol). **Bug real encontrado y corregido durante los
+tests**: la primera versión lo insertó antes del grupo "Administración",
+lo que desplazó la sección por defecto de `admin_sistema` de "Usuarios" a
+"Historial de viajes" y rompió 4 tests preexistentes sin relación
+aparente — mismo patrón de bug ya visto (y corregido) al agregar "Mi
+cuenta". Verificado en navegador real contra el stack completo (tras un
+reinicio real de Docker Desktop a mitad de sesión): 1,334,885 viajes
+históricos reales cargados con paginación real, búsqueda por texto
+("Conductor Prueba" → 267,014 resultados reales), detalle completo de un
+viaje real. Backend 302/302 tests + ruff limpio (subió de 296); frontend
+build/lint/test limpios en las 3 apps + `shared-ui` lint.
+
+**Direcciones favoritas (1.1) — cerrado y verificado.** Nuevo dominio
+backend `direcciones/` (exclusivo `pasajero`), colección
+`direcciones_favoritas` con límite de 10 por cuenta (409 real al superarlo)
+y purga automática al anonimizar una cuenta (`usuarios/service.py::
+anonimizar_usuario` ahora también la limpia). Frontend en `web-pasajero`:
+chips de acceso rápido (Casa/Trabajo/Otro) sobre el campo de destino en el
+flujo de solicitud — un toque fija el destino sin geocodificar, ya viene
+con lat/lon guardados. **Ajuste real sobre el diseño del plan**: en vez de
+un formulario de alta con lat/lon a mano, se agregó un botón "☆ Guardar
+como favorita" junto al destino ya elegido en el mapa — reutiliza las
+coordenadas que el flujo de solicitud ya resolvió, evita pedirle al
+pasajero un dato que no puede dar fácilmente sin un mapa. Gestión (ver/
+eliminar) integrada en "Mi perfil" vía el slot `extra` de `PerfilPropio`.
+Verificado en navegador real con la cuenta demo de pasajero: crear/listar/
+eliminar direcciones reales confirmado contra Mongo, y el flujo completo
+de seleccionar un chip + guardar una nueva favorita desde la pantalla de
+viaje, ambos con llamadas reales (200/201/204). Backend 309/309 tests +
+ruff limpio (subió de 302); frontend build/lint/test limpios en las 3
+apps + `shared-ui` lint.
+
+**Compartir viaje en tiempo real (1.2) — cerrado y verificado.** Enlace de
+solo lectura, sin cuenta, mientras el viaje está `EN_CAMINO`/`EN_CURSO`.
+Diseño anti-enumeración de tokens aprobado explícitamente antes de
+construir: `secrets.token_urlsafe(32)` (256 bits, mismo generador que
+`integraciones/service.py`), un único 404 genérico sin distinguir la causa
+(mismo criterio que el login), rate limiting de 20 fallos/15min por IP
+reutilizando el patrón de `_registrar_fallo_login`. Nuevo
+`POST /viajes/activo/compartir` (autenticado, pasajero, idempotente
+mientras el token siga vigente) + primer endpoint público del proyecto sin
+`Depends(get_current_actor)` fuera de auth (`GET
+/publico/viajes-compartidos/{token}`, `viajes/router_publico.py`),
+documentado como patrón nuevo. El token se invalida explícitamente (no
+solo por el techo de 4h, `TECHO_EXPIRACION_HORAS`) al finalizar el viaje y
+al cancelarlo por conductor — en este segundo caso porque el viaje puede
+terminar reasignado a OTRO conductor y un token viejo no debe seguir
+mostrando esa posición nueva sin que el pasajero lo vuelva a compartir.
+Acción de auditoría nueva `VIAJE_COMPARTIR_ACTIVADO` (write-ahead),
+deliberadamente fuera de `ACCIONES_ADMINISTRATIVAS` (autoservicio de
+pasajero, no acción de `admin_sistema`). Frontend: `RideMap` ganó el prop
+`soloLectura` (suprime el botón de ubicación y los clics de "elegir
+destino"); página pública nueva `VistaCompartida` sin usar ningún router
+(el proyecto no tiene uno) — un chequeo de `window.location.pathname`
+contra `/^\/compartido\/(.+)$/` al inicio de `App()` en `web-pasajero`,
+primera ruta pública real de las 3 apps, con polling cada 8s. Bug real
+encontrado y corregido en la prueba: comparar el `expira_en` naive leído
+de Mongo contra un `datetime.now(UTC)` aware reventaba con `TypeError` en
+el chequeo de idempotencia — corregido con `como_utc()` (mismo helper ya
+usado en el resto del proyecto para este problema conocido de PyMongo).
+Verificado en navegador real: viaje real llevado hasta `EN_CAMINO`
+(cuentas demo pasajero/conductor), botón "Compartir viaje" generó el
+enlace real, abierto en una pestaña nueva sin sesión — 200 real sin ningún
+header de autorización, datos del conductor/vehículo correctos, mapa sin
+botón "Ir a mi ubicación". Un token inventado mostró el mensaje genérico;
+el mismo enlace real devolvió ese mismo 404 genérico tras finalizar el
+viaje por el flujo completo del conductor — confirmado en Mongo que
+ambos campos de token quedan ausentes del documento y que el evento de
+bitácora real existe con actor/rol/expiración correctos. Backend 317/317
+tests + ruff limpio (subió de 309); frontend build/lint/test limpios en
+`web-pasajero` (9/9) + `shared-ui` lint. Detalle completo en
+[PLAN_UX_COMPLEMENTARIA.md §8](PLAN_UX_COMPLEMENTARIA.md).
+
+**Programar un viaje (1.5) — cerrado y verificado. Con este cierre, los 7
+puntos del bloque de UX complementaria quedan completos.** Enfoque D2 ya
+aprobado: nuevo estado `PROGRAMADO` en `EstadoViaje` + disparo diferido vía
+Airflow + HTTP interno. `solicitar_viaje` con `ts_programado` (ventana
+15min-7días, `TS_PROGRAMADO_INVALIDO` fuera de rango) crea el viaje en
+`PROGRAMADO` sin disparar despacho; `disparar_viaje_programado` (nuevo)
+transiciona a `SOLICITADO` actualizando `ts_solicitud` a AHORA (no a la
+hora de creación — evita que `rpt_tiempo_asignacion`/`rpt_tasa_cancelacion`
+mezclen "cuándo se programó" con "cuándo entró a la cola real") y reusa
+`avanzar_despacho` tal cual, sin duplicar lógica de CU-O05. Sin conductor a
+la hora programada → `SIN_CONDUCTOR`, mismo comportamiento de siempre, sin
+reintento especial (CU-O05 A3 sigue en backlog). Nuevo
+`POST /viajes/{id}/disparar-programado`, primer endpoint del proyecto para
+ser llamado por otro servicio del stack (no un usuario) — protegido por
+`X-Internal-Token` (`core/config.py::internal_api_token`,
+`secrets.compare_digest`). **Bug real encontrado y corregido, necesario
+para que la feature funcionara**: `viajes/service.py` tenía dos
+definiciones a nivel de módulo del nombre `ESTADOS_ACTIVOS` (una para
+`obtener_viaje_activo`/cancelación, otra para el panel táctico de
+Despacho) — la segunda sombreaba la primera en tiempo de ejecución (mismo
+nombre reasignado a nivel de módulo), así que agregar `PROGRAMADO` solo a
+la primera no habría tenido ningún efecto real; corregido renombrando la
+segunda a `ESTADOS_ACTIVOS_PANEL` (deliberadamente sin `PROGRAMADO`, un
+viaje no disparado no es "en curso" para ese panel). `analytics/dags/
+dag_disparar_viajes_programados.py` (nuevo) — a diferencia de los otros 7
+DAGs, no es un pipeline Bronze→Silver→Gold, es un disparador operativo
+puro (`schedule_interval="*/2 * * * *"`, consulta Mongo directo con
+`pymongo`, POST al backend con el token interno por cada `PROGRAMADO`
+vencido, nunca reimplementa despacho). Frontend (`web-pasajero`): toggle
+"Ahora"/"Programar" en `PanelSolicitar` con `<input type="datetime-local">`,
+`PanelViajeActivo` muestra "Programado para: <hora>", cancelación reusa el
+botón existente. Verificado en navegador real: 422 real al programar a 30
+días ("La hora programada no puede ser más de 7 días en el futuro"), viaje
+real creado en `PROGRAMADO` confirmado en Mongo sin despacho disparado.
+**Cadena Airflow→backend verificada con una corrida real del DAG** (no un
+curl manual simulando el disparo): `ts_programado` de un viaje real
+adelantado en Mongo para simular vencimiento, `airflow dags trigger`
+disparó la tarea real, que encontró el candidato vía pymongo y llamó al
+endpoint interno real — log de la tarea "1 disparados, 0 fallidos, 1
+candidatos", viaje confirmado pasando a `OFERTADO` en Mongo con
+`ts_solicitud` actualizado al instante del disparo y `ts_programado`
+preservado; corridas automáticas de la cadencia de 2 minutos confirmadas
+corriendo solas en verde de fondo. Backend 327/327 tests + ruff limpio
+(subió de 317); frontend build/lint/test limpios en `web-pasajero` (10/10,
+subió de 9) + `shared-ui` lint. Detalle completo en
+[PLAN_UX_COMPLEMENTARIA.md §9](PLAN_UX_COMPLEMENTARIA.md).
+
+**Con el cierre de "Programar un viaje", los 7 puntos del paquete de UX
+complementaria (`specs/specs-administrativas/ux_complementaria.md`) quedan
+completos** — plan detallado completo en
+[PLAN_UX_COMPLEMENTARIA.md](PLAN_UX_COMPLEMENTARIA.md). **Decisión final
+sobre el contacto del Centro de ayuda** (preguntada explícitamente al
+cierre de todo el bloque, como quedó acordado): el placeholder
+(`soporte@urbanfleet.example` / `+593900000000`) se queda tal cual, de
+forma permanente — UrbanFleet es un proyecto académico, no una cooperativa
+real en operación, así que no existe ningún dato de contacto real que
+reemplazar. No es un TODO pendiente; no reabrir este punto salvo pedido
+explícito de un dato de contacto real.

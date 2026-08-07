@@ -26,6 +26,7 @@ escribir en ellas).
 """
 
 from datetime import UTC, datetime
+from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -138,7 +139,7 @@ async def terminar_turno(db: AsyncIOMotorDatabase, *, conductor_id: str) -> dict
 
 
 async def reportar_posicion(
-    db: AsyncIOMotorDatabase, *, conductor_id: str, body: schemas.PosicionReportarRequest
+    db: AsyncIOMotorDatabase, *, conductor_id: str, body: schemas.PosicionReportarRequest, dispatcher: Any = None
 ) -> schemas.PosicionReportarResponse:
     usuario = await db.usuarios.find_one({"_id": conductor_id})
     estado_servicio = (usuario.get("conductor") or {}).get("estado_servicio", "FUERA_DE_LINEA")
@@ -174,6 +175,18 @@ async def reportar_posicion(
                 datos_previos={"lat": float(anterior_raw["lat"]), "lon": float(anterior_raw["lon"])},
                 datos_posteriores={"lat": body.lat, "lon": body.lon, "distancia_km": round(distancia, 2)},
             )
+            # Módulo 6.3 de admin_sistema: antes esto solo se auditaba --
+            # nunca notificaba a nadie, pese a que la spec lista "spoofing
+            # GPS" entre las alertas que "el sistema ya genera". Ahora sí
+            # dispara una notificación real (configurable: canal,
+            # destinatarios adicionales, activo/inactivo).
+            from src.notificaciones.service import disparar_alerta
+
+            motivo = (
+                f"Posible GPS spoofing: vehículo {vehiculo_id}, "
+                f"salto de {distancia:.1f} km entre reportes consecutivos"
+            )
+            await disparar_alerta(db, dispatcher, tipo_alerta="gps_spoofing", motivo=motivo)
             return schemas.PosicionReportarResponse(
                 aceptada=False, motivo_descarte=f"salto de {distancia:.1f} km entre reportes consecutivos"
             )

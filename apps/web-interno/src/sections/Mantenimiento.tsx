@@ -227,10 +227,14 @@ export function SeccionMantenimiento() {
 
   const buscarVehiculo = async () => {
     if (!placaBuscada) return;
-    const datos = await apiFetch<VehiculoBusqueda[]>(
-      `/mantenimiento/vehiculos/buscar?placa=${encodeURIComponent(placaBuscada)}`,
-    );
-    setResultadosVehiculo(datos);
+    try {
+      const datos = await apiFetch<VehiculoBusqueda[]>(
+        `/mantenimiento/vehiculos/buscar?placa=${encodeURIComponent(placaBuscada)}`,
+      );
+      setResultadosVehiculo(datos);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "No se pudo buscar el vehículo");
+    }
   };
 
   const crearOrden = async () => {

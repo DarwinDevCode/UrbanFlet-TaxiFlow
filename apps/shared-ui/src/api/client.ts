@@ -5,9 +5,27 @@ export class ApiError extends Error {
     public readonly code: string,
     message: string,
     public readonly status: number,
+    // Presente solo en 422 de validación (ver backend/src/core/validation.py)
+    // -- permite mostrar el mensaje junto al campo exacto que falló, en vez
+    // de un banner genérico. Vacío para el resto de errores (403/404/409/...).
+    public readonly fieldErrors: Record<string, string> = {},
   ) {
     super(message);
   }
+}
+
+interface ErrorCampo {
+  campo: string;
+  mensaje: string;
+}
+
+/** Mensaje de un campo específico dentro de un ApiError de validación, o
+ * `undefined` si el error no aplica a ese campo (u otro tipo de error). Uso
+ * típico: `error={fieldError(error, "umbral_intentos_fallidos")}` pasado
+ * directo al prop `error` de `TextField`. */
+export function fieldError(error: unknown, campo: string): string | undefined {
+  if (!(error instanceof ApiError)) return undefined;
+  return error.fieldErrors[campo];
 }
 
 interface TokenPair {
@@ -42,7 +60,13 @@ export function getGoogleMapsApiKey(): string {
 
 async function parseError(response: Response): Promise<never> {
   const body = await response.json().catch(() => ({ code: "UNKNOWN", message: response.statusText }));
-  throw new ApiError(body.code ?? "UNKNOWN", body.message ?? response.statusText, response.status);
+  const fieldErrors: Record<string, string> = {};
+  if (Array.isArray(body.errores)) {
+    for (const e of body.errores as ErrorCampo[]) {
+      if (e && typeof e.campo === "string" && typeof e.mensaje === "string") fieldErrors[e.campo] = e.mensaje;
+    }
+  }
+  throw new ApiError(body.code ?? "UNKNOWN", body.message ?? response.statusText, response.status, fieldErrors);
 }
 
 async function refreshTokens(): Promise<boolean> {

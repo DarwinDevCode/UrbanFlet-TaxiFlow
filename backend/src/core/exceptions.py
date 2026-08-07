@@ -37,6 +37,15 @@ class TooManyLoginAttemptsError(DomainError):
         super().__init__(code="TOO_MANY_LOGIN_ATTEMPTS", message=message, status_code=429)
 
 
+class WeakPasswordError(DomainError):
+    def __init__(self, longitud_minima: int) -> None:
+        super().__init__(
+            code="WEAK_PASSWORD",
+            message=f"La contraseña debe tener al menos {longitud_minima} caracteres (política vigente)",
+            status_code=422,
+        )
+
+
 class IdempotencyConflictError(DomainError):
     def __init__(self, message: str = "La Idempotency-Key ya fue usada con un cuerpo de petición distinto") -> None:
         super().__init__(code="IDEMPOTENCY_KEY_CONFLICT", message=message, status_code=409)

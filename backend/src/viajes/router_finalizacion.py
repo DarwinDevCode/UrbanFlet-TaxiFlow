@@ -32,6 +32,8 @@ async def finalizar_viaje(
 ):
     viaje = await service_finalizacion.finalizar_viaje(db, conductor_id=actor.usuario_id)
     await dispatcher.broadcast_channel(trip_passenger_channel(viaje["_id"]), "VIAJE_ACTUALIZADO", {})
+    # Bandeja de notificaciones in-app (Sección 4.2 de ux_complementaria.md).
+    await dispatcher.notify_user(viaje["pasajero_id"], "VIAJE_FINALIZADO", {"viaje_id": viaje["_id"]})
     return to_out(viaje)
 
 

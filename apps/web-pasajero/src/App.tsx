@@ -1,12 +1,16 @@
 import {
+  AjustesPropios,
   ApiError,
   AppShell,
   Badge,
   Button,
   Card,
+  CentroAyuda,
   DataTable,
   DetailField,
   DetailPanel,
+  NotificacionesBell,
+  PerfilPropio,
   Select,
   TextArea,
   TextField,
@@ -14,6 +18,7 @@ import {
   getApiBaseUrl,
   tokenStorage,
   useAuth,
+  type PreguntaFrecuente,
 } from "@urbanflet/shared-ui";
 import { useEffect, useState, type CSSProperties } from "react";
 import { ALTO_MAPA, RideMap } from "./RideMap";
@@ -203,6 +208,7 @@ function LoginCard() {
 }
 
 type EstadoViaje =
+  | "PROGRAMADO"
   | "SOLICITADO"
   | "OFERTADO"
   | "ASIGNADO"
@@ -212,6 +218,14 @@ type EstadoViaje =
   | "PAGADO"
   | "CANCELADO"
   | "SIN_CONDUCTOR";
+
+interface DireccionFavorita {
+  id: string;
+  etiqueta: "Casa" | "Trabajo" | "Otro";
+  direccion: string;
+  lat: number;
+  lon: number;
+}
 
 interface Viaje {
   id: string;
@@ -231,6 +245,7 @@ interface Viaje {
   vehiculo_marca: string | null;
   vehiculo_color: string | null;
   ts_solicitud: string;
+  ts_programado: string | null;
   ts_llegada_origen: string | null;
   calificacion_pasajero_a_conductor: { puntaje: number } | null;
 }
@@ -245,6 +260,7 @@ const ESTADOS_CON_CONDUCTOR_LOCALIZABLE: EstadoViaje[] = ["ASIGNADO", "EN_CAMINO
 const ESTADOS_BUSCANDO_CONDUCTOR: EstadoViaje[] = ["SOLICITADO", "OFERTADO"];
 
 const ESTADO_TONO: Record<EstadoViaje, "neutral" | "exito" | "advertencia" | "peligro"> = {
+  PROGRAMADO: "neutral",
   SOLICITADO: "neutral",
   OFERTADO: "advertencia",
   ASIGNADO: "exito",
@@ -257,6 +273,7 @@ const ESTADO_TONO: Record<EstadoViaje, "neutral" | "exito" | "advertencia" | "pe
 };
 
 const ESTADO_TEXTO: Record<EstadoViaje, string> = {
+  PROGRAMADO: "Viaje programado",
   SOLICITADO: "Buscando conductor…",
   OFERTADO: "Ofrecido a un conductor…",
   ASIGNADO: "Conductor asignado",
@@ -276,6 +293,18 @@ const ESTADO_TEXTO: Record<EstadoViaje, string> = {
 function resolverFranjaAproximada(): "DIURNA" | "NOCTURNA" {
   const hora = new Date().getHours();
   return hora >= 5 && hora < 22 ? "DIURNA" : "NOCTURNA";
+}
+
+// Sección 1.5: mismo margen mínimo que MARGEN_MINIMO_PROGRAMACION_MINUTOS
+// en backend/src/viajes/service.py -- solo para fijar el `min` del input de
+// fecha/hora en el cliente (evita que el usuario elija algo que el backend
+// va a rechazar de todos modos); la validación real sigue siendo del
+// servidor. Formato "YYYY-MM-DDTHH:mm" en hora LOCAL, el que espera
+// <input type="datetime-local">.
+function minimoProgramacionLocal(): string {
+  const fecha = new Date(Date.now() + 15 * 60 * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${fecha.getFullYear()}-${pad(fecha.getMonth() + 1)}-${pad(fecha.getDate())}T${pad(fecha.getHours())}:${pad(fecha.getMinutes())}`;
 }
 
 interface TarifaVigente {
@@ -326,6 +355,18 @@ interface PanelSolicitarProps {
   viajeActivoExistente: boolean;
   cargando: boolean;
   solicitar: () => void;
+  favoritas: DireccionFavorita[];
+  onSeleccionarFavorita: (fav: DireccionFavorita) => void;
+  onGuardarFavorita: (etiqueta: DireccionFavorita["etiqueta"]) => void;
+  guardandoFavorita: boolean;
+  // Sección 1.5 de ux_complementaria.md: "Ahora" (comportamiento de
+  // siempre) vs. "Programar" (hora futura, valor crudo de un
+  // <input type="datetime-local">, en hora LOCAL del navegador -- se
+  // convierte a ISO/UTC recién al enviar, ver `solicitar()`).
+  modo: "ahora" | "programar";
+  setModo: (v: "ahora" | "programar") => void;
+  tsProgramadoLocal: string;
+  setTsProgramadoLocal: (v: string) => void;
 }
 
 // Contenido del panel "¿A dónde vamos?" — el mapa en sí (con el marcador de
@@ -351,7 +392,17 @@ function PanelSolicitar({
   viajeActivoExistente,
   cargando,
   solicitar,
+  favoritas,
+  onSeleccionarFavorita,
+  onGuardarFavorita,
+  guardandoFavorita,
+  modo,
+  setModo,
+  tsProgramadoLocal,
+  setTsProgramadoLocal,
 }: PanelSolicitarProps) {
+  const [mostrandoGuardar, setMostrandoGuardar] = useState(false);
+  const [etiquetaNueva, setEtiquetaNueva] = useState<DireccionFavorita["etiqueta"]>("Otro");
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
       <h1 style={{ fontSize: "var(--font-size-lg)", margin: 0 }}>¿A dónde vamos?</h1>
@@ -376,12 +427,71 @@ function PanelSolicitar({
         value={origenDireccion}
         onChange={(e) => setOrigenDireccion(e.target.value)}
       />
+      {favoritas.length > 0 && (
+        <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
+          {favoritas.map((fav) => (
+            <button
+              key={fav.id}
+              type="button"
+              onClick={() => onSeleccionarFavorita(fav)}
+              title={fav.direccion}
+              style={{
+                border: "1px solid var(--color-border)",
+                background: "var(--color-surface)",
+                color: "var(--color-text)",
+                borderRadius: "999px",
+                padding: "4px 12px",
+                fontSize: "var(--font-size-sm)",
+                cursor: "pointer",
+              }}
+            >
+              {fav.etiqueta}
+            </button>
+          ))}
+        </div>
+      )}
       <TextField
         label="Destino"
         value={geocodificando ? "Buscando dirección…" : destinoDireccion}
         onChange={(e) => setDestinoDireccion(e.target.value)}
         placeholder={destinoLat === null ? "Toca el mapa para elegir un destino" : undefined}
       />
+      {destinoLat !== null && !geocodificando && (
+        <div>
+          {!mostrandoGuardar ? (
+            <Button variant="secondary" onClick={() => setMostrandoGuardar(true)}>
+              ☆ Guardar como favorita
+            </Button>
+          ) : (
+            <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "flex-end", flexWrap: "wrap" }}>
+              <div style={{ minWidth: 140 }}>
+                <Select
+                  label="Etiqueta"
+                  value={etiquetaNueva}
+                  onChange={(e) => setEtiquetaNueva(e.target.value as DireccionFavorita["etiqueta"])}
+                  options={[
+                    { value: "Casa", label: "Casa" },
+                    { value: "Trabajo", label: "Trabajo" },
+                    { value: "Otro", label: "Otro" },
+                  ]}
+                />
+              </div>
+              <div style={{ minWidth: 100 }}>
+                <Button
+                  variant="secondary"
+                  loading={guardandoFavorita}
+                  onClick={() => {
+                    onGuardarFavorita(etiquetaNueva);
+                    setMostrandoGuardar(false);
+                  }}
+                >
+                  Guardar
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {estimacion && (
         <div
           style={{
@@ -411,8 +521,39 @@ function PanelSolicitar({
           Ya tenías un viaje en curso — te llevamos a él.
         </span>
       )}
-      <Button onClick={solicitar} loading={cargando} disabled={origenLat === null}>
-        Solicitar taxi
+      {/* Sección 1.5 de ux_complementaria.md: "Ahora" vs. "Programar" —
+          nueva opción en el flujo de solicitud, junto al botón final. */}
+      <div style={{ display: "flex", gap: "var(--space-2)" }}>
+        <Button
+          variant={modo === "ahora" ? "primary" : "secondary"}
+          onClick={() => setModo("ahora")}
+          style={{ width: "auto", flex: 1 }}
+        >
+          Ahora
+        </Button>
+        <Button
+          variant={modo === "programar" ? "primary" : "secondary"}
+          onClick={() => setModo("programar")}
+          style={{ width: "auto", flex: 1 }}
+        >
+          Programar
+        </Button>
+      </div>
+      {modo === "programar" && (
+        <TextField
+          label="Fecha y hora"
+          type="datetime-local"
+          value={tsProgramadoLocal}
+          min={minimoProgramacionLocal()}
+          onChange={(e) => setTsProgramadoLocal(e.target.value)}
+        />
+      )}
+      <Button
+        onClick={solicitar}
+        loading={cargando}
+        disabled={origenLat === null || (modo === "programar" && !tsProgramadoLocal)}
+      >
+        {modo === "programar" ? "Programar viaje" : "Solicitar taxi"}
       </Button>
     </div>
   );
@@ -421,8 +562,9 @@ function PanelSolicitar({
 // CU-O04 A4: cancelar solo tiene sentido antes de que haya un conductor
 // confirmado — coincide con ESTADOS_CANCELABLES_PASAJERO en el backend
 // (backend/src/viajes/service.py). A partir de ASIGNADO es CU-O07 A2, fuera
-// de alcance de este slice.
-const ESTADOS_CANCELABLES_PASAJERO: EstadoViaje[] = ["SOLICITADO", "OFERTADO"];
+// de alcance de este slice. PROGRAMADO (Sección 1.5) se agrega por el mismo
+// motivo: con más razón es cancelable antes de disparar el despacho.
+const ESTADOS_CANCELABLES_PASAJERO: EstadoViaje[] = ["PROGRAMADO", "SOLICITADO", "OFERTADO"];
 
 // Contenido del panel del viaje activo — igual que PanelSolicitar, flota
 // sobre el mapa persistente en vez de reemplazarlo. Además de lo que ya
@@ -444,6 +586,35 @@ function PanelViajeActivo({
   const [detalleAbierto, setDetalleAbierto] = useState(false);
   const [reintentando, setReintentando] = useState(false);
   const [errorReintentar, setErrorReintentar] = useState<string | null>(null);
+  const [compartiendo, setCompartiendo] = useState(false);
+  const [errorCompartir, setErrorCompartir] = useState<string | null>(null);
+  const [enlaceCompartir, setEnlaceCompartir] = useState<string | null>(null);
+  const [enlaceCopiado, setEnlaceCopiado] = useState(false);
+
+  const compartir = async () => {
+    setErrorCompartir(null);
+    setCompartiendo(true);
+    try {
+      const { token } = await apiFetch<{ token: string }>("/viajes/activo/compartir", { method: "POST" });
+      setEnlaceCompartir(`${window.location.origin}/compartido/${token}`);
+      setEnlaceCopiado(false);
+    } catch (e) {
+      setErrorCompartir(e instanceof ApiError ? e.message : "No se pudo generar el enlace para compartir");
+    } finally {
+      setCompartiendo(false);
+    }
+  };
+
+  const copiarEnlace = async () => {
+    if (!enlaceCompartir) return;
+    try {
+      await navigator.clipboard.writeText(enlaceCompartir);
+      setEnlaceCopiado(true);
+    } catch {
+      // Sin permiso de portapapeles: el enlace ya está visible en el campo
+      // de texto de abajo para copiar a mano, no bloquea nada.
+    }
+  };
 
   const reintentar = async () => {
     setErrorReintentar(null);
@@ -493,6 +664,14 @@ function PanelViajeActivo({
           </span>
         )}
       </div>
+      {/* Sección 1.5 de ux_complementaria.md: mientras PROGRAMADO, la hora
+          pedida es el dato más relevante del panel -- el auto-despacho
+          todavía no arrancó. */}
+      {viaje.estado === "PROGRAMADO" && viaje.ts_programado && (
+        <p style={{ margin: "var(--space-1) 0" }}>
+          Programado para: {new Date(viaje.ts_programado).toLocaleString()}
+        </p>
+      )}
       <p style={{ color: "var(--color-text-muted)", margin: "var(--space-1) 0" }}>Origen: {viaje.origen_direccion}</p>
       {viaje.destino_direccion && (
         <p style={{ color: "var(--color-text-muted)", margin: "var(--space-1) 0" }}>Destino: {viaje.destino_direccion}</p>
@@ -533,6 +712,28 @@ function PanelViajeActivo({
                 </p>
               )}
             </div>
+          )}
+        </div>
+      )}
+      {/* Sección 1.2 de ux_complementaria.md: solo tiene sentido compartir
+          mientras el vehículo se mueve — antes de EN_CAMINO no hay nada que
+          seguir en vivo, y después de EN_CURSO el viaje ya terminó. */}
+      {(viaje.estado === "EN_CAMINO" || viaje.estado === "EN_CURSO") && (
+        <div style={{ margin: "var(--space-2) 0" }}>
+          {errorCompartir && (
+            <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)" }}>{errorCompartir}</p>
+          )}
+          {enlaceCompartir ? (
+            <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "flex-end", flexWrap: "wrap" }}>
+              <TextField label="Enlace para compartir" value={enlaceCompartir} readOnly onChange={() => {}} />
+              <Button variant="secondary" onClick={copiarEnlace}>
+                {enlaceCopiado ? "¡Copiado!" : "Copiar enlace"}
+              </Button>
+            </div>
+          ) : (
+            <Button variant="secondary" onClick={compartir} loading={compartiendo}>
+              Compartir viaje
+            </Button>
           )}
         </div>
       )}
@@ -598,6 +799,33 @@ function VistaViaje({ viaje, setViaje }: { viaje: Viaje | null; setViaje: (v: Vi
   const [viajeActivoExistente, setViajeActivoExistente] = useState<Viaje | null>(null);
   const [conductorPos, setConductorPos] = useState<{ lat: number; lon: number } | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [favoritas, setFavoritas] = useState<DireccionFavorita[]>([]);
+  // Sección 1.5 de ux_complementaria.md: "Ahora" vs. "Programar".
+  const [modoSolicitud, setModoSolicitud] = useState<"ahora" | "programar">("ahora");
+  const [tsProgramadoLocal, setTsProgramadoLocal] = useState("");
+
+  // Se reinicia a los valores por defecto cada vez que no hay un viaje en
+  // curso (cubre los 4 puntos donde el viaje vuelve a null: cancelar,
+  // calificar, SIN_CONDUCTOR resuelto, error de refresco) sin tener que
+  // tocar cada uno de esos call sites por separado.
+  useEffect(() => {
+    if (viaje === null) {
+      setModoSolicitud("ahora");
+      setTsProgramadoLocal("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viaje === null]);
+
+  // Sección 1.1 de ux_complementaria.md: accesos rápidos sobre el buscador
+  // de destino -- solo tiene sentido cargarlas mientras no hay un viaje ya
+  // en curso (el destino ya está fijado en ese caso).
+  useEffect(() => {
+    if (viaje) return;
+    apiFetch<DireccionFavorita[]>("/direcciones")
+      .then(setFavoritas)
+      .catch(() => setFavoritas([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viaje === null]);
 
   // CU-O04 paso 1: la ubicación se pide como parte de cargar esta pantalla,
   // no detrás de un botón — el mapa debe aparecer ya centrado apenas el
@@ -780,6 +1008,34 @@ function VistaViaje({ viaje, setViaje }: { viaje: Viaje | null; setViaje: (v: Vi
       .finally(() => setGeocodificando(false));
   };
 
+  // Sección 1.1: un toque sobre una dirección favorita fija el destino
+  // directo (sin geocodificación, ya viene con lat/lon guardados) -- mismo
+  // resultado final que un clic en el mapa, sin tocar el mapa.
+  const seleccionarFavorita = (fav: DireccionFavorita) => {
+    if (viaje) return;
+    setDestinoLat(fav.lat);
+    setDestinoLon(fav.lon);
+    setDestinoDireccion(fav.direccion);
+  };
+
+  const [guardandoFavorita, setGuardandoFavorita] = useState(false);
+
+  const guardarFavorita = async (etiqueta: DireccionFavorita["etiqueta"]) => {
+    if (destinoLat === null || destinoLon === null || !destinoDireccion) return;
+    setGuardandoFavorita(true);
+    try {
+      const nueva = await apiFetch<DireccionFavorita>("/direcciones", {
+        method: "POST",
+        body: { etiqueta, direccion: destinoDireccion, lat: destinoLat, lon: destinoLon },
+      });
+      setFavoritas((prev) => [...prev, nueva]);
+    } catch {
+      /* silencioso -- no bloquea el flujo de solicitar el viaje */
+    } finally {
+      setGuardandoFavorita(false);
+    }
+  };
+
   const tarifaEstimadaCliente =
     tarifaVigente && estimacion
       ? Math.max(tarifaVigente.arrancada + tarifaVigente.costo_km * estimacion.distanciaKm, tarifaVigente.carrera_minima)
@@ -803,6 +1059,9 @@ function VistaViaje({ viaje, setViaje }: { viaje: Viaje | null; setViaje: (v: Vi
                 destino_lon: destinoLon,
                 destino_direccion: destinoDireccion || null,
               }
+            : {}),
+          ...(modoSolicitud === "programar" && tsProgramadoLocal
+            ? { ts_programado: new Date(tsProgramadoLocal).toISOString() }
             : {}),
         },
       });
@@ -955,6 +1214,14 @@ function VistaViaje({ viaje, setViaje }: { viaje: Viaje | null; setViaje: (v: Vi
               viajeActivoExistente={viajeActivoExistente !== null}
               cargando={cargando}
               solicitar={solicitar}
+              favoritas={favoritas}
+              onSeleccionarFavorita={seleccionarFavorita}
+              onGuardarFavorita={guardarFavorita}
+              guardandoFavorita={guardandoFavorita}
+              modo={modoSolicitud}
+              setModo={setModoSolicitud}
+              tsProgramadoLocal={tsProgramadoLocal}
+              setTsProgramadoLocal={setTsProgramadoLocal}
             />
           )}
         </div>
@@ -1266,14 +1533,103 @@ function HistorialView({ onVolver }: { onVolver: () => void }) {
   );
 }
 
-const NAV_ITEMS_PASAJERO: { id: "viaje" | "historial"; label: string }[] = [
+// Sección 1.1 de ux_complementaria.md: gestión (ver/eliminar) de
+// direcciones favoritas, dentro de "Mi perfil" (slot `extra` de
+// `PerfilPropio`). Agregar una nueva se hace desde el flujo de solicitud
+// ("Guardar como favorita" junto al destino elegido en el mapa) -- no
+// desde aquí, para no pedirle lat/lon a mano sin un mapa a la vista.
+function GestionDireccionesFavoritas() {
+  const [favoritas, setFavoritas] = useState<DireccionFavorita[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const cargar = () =>
+    apiFetch<DireccionFavorita[]>("/direcciones")
+      .then(setFavoritas)
+      .catch(() => setError("No se pudieron cargar tus direcciones favoritas"));
+
+  useEffect(() => {
+    cargar();
+  }, []);
+
+  const eliminar = async (id: string) => {
+    setError(null);
+    try {
+      await apiFetch(`/direcciones/${id}`, { method: "DELETE" });
+      setFavoritas((prev) => prev.filter((f) => f.id !== id));
+    } catch {
+      setError("No se pudo eliminar la dirección");
+    }
+  };
+
+  return (
+    <Card>
+      <h3 style={{ marginTop: 0, fontSize: "var(--font-size-md)" }}>Direcciones favoritas</h3>
+      <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
+        Se agregan desde la pantalla de viaje, con el botón "☆ Guardar como favorita" junto al destino elegido.
+      </p>
+      {error && <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)" }}>{error}</p>}
+      {favoritas.length === 0 ? (
+        <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
+          Todavía no guardaste ninguna dirección favorita.
+        </p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+          {favoritas.map((f) => (
+            <div
+              key={f.id}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "var(--space-2)",
+                padding: "var(--space-2) var(--space-3)",
+                border: "1px solid var(--color-border)",
+                borderRadius: "var(--radius-sm)",
+              }}
+            >
+              <div>
+                <div style={{ fontSize: "var(--font-size-sm)", fontWeight: 600 }}>{f.etiqueta}</div>
+                <div style={{ fontSize: "var(--font-size-sm)", color: "var(--color-text-muted)" }}>{f.direccion}</div>
+              </div>
+              <div style={{ minWidth: 90 }}>
+                <Button variant="danger" onClick={() => eliminar(f.id)}>
+                  Eliminar
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+const NAV_ITEMS_PASAJERO: { id: "viaje" | "historial" | "perfil" | "ajustes" | "ayuda"; label: string }[] = [
   { id: "viaje", label: "Viaje" },
   { id: "historial", label: "Mis viajes" },
+  { id: "perfil", label: "Mi perfil" },
+  { id: "ajustes", label: "Ajustes" },
+  { id: "ayuda", label: "Ayuda" },
+];
+
+const PREGUNTAS_FRECUENTES_PASAJERO: PreguntaFrecuente[] = [
+  {
+    pregunta: "¿Cómo cancelo un viaje que ya pedí?",
+    respuesta: "Desde la pantalla de viaje activo, usa el botón \"Cancelar solicitud\" mientras el estado sea SOLICITADO.",
+  },
+  {
+    pregunta: "¿Por qué no encuentra conductor?",
+    respuesta: "Puede que no haya socios disponibles cerca en este momento. Puedes reintentar la búsqueda con el mismo origen y destino.",
+  },
+  {
+    pregunta: "¿Cómo cambio mi contraseña?",
+    respuesta: "Entra a \"Mi perfil\" y edita tus datos con tu contraseña actual.",
+  },
 ];
 
 function InicioAutenticado() {
   const [viaje, setViaje] = useState<Viaje | null | undefined>(undefined);
-  const [vista, setVista] = useState<"viaje" | "historial">("viaje");
+  const [vista, setVista] = useState<"viaje" | "historial" | "perfil" | "ajustes" | "ayuda">("viaje");
 
   useEffect(() => {
     let cancelado = false;
@@ -1337,10 +1693,21 @@ function InicioAutenticado() {
     <AppShell
       navItems={NAV_ITEMS_PASAJERO}
       activeId={vista}
-      onNavigate={(id) => setVista(id as "viaje" | "historial")}
+      onNavigate={(id) => setVista(id as "viaje" | "historial" | "perfil" | "ajustes" | "ayuda")}
+      headerActions={<NotificacionesBell />}
     >
       <div style={{ width: "100%" }}>
-        {viaje === undefined ? (
+        {vista === "perfil" ? (
+          <PerfilPropio extra={<GestionDireccionesFavoritas />} />
+        ) : vista === "ajustes" ? (
+          <AjustesPropios version="0.1.0" />
+        ) : vista === "ayuda" ? (
+          <CentroAyuda
+            preguntas={PREGUNTAS_FRECUENTES_PASAJERO}
+            correoContacto="soporte@urbanfleet.example"
+            telefonoContacto="+593900000000"
+          />
+        ) : viaje === undefined ? (
           <Card>
             <p style={{ color: "var(--color-text-muted)" }}>Cargando…</p>
           </Card>
@@ -1354,8 +1721,120 @@ function InicioAutenticado() {
   );
 }
 
+// Sección 1.2 de ux_complementaria.md: página pública de "Compartir viaje" —
+// sin sesión. Cadencia de refresco más corta que el resto del polling del
+// proyecto (15s) porque acá el propósito completo de la página es ver la
+// posición en vivo, no un dato secundario mientras se hace otra cosa.
+const INTERVALO_COMPARTIDO_MS = 8000;
+
+interface ViajeCompartido {
+  conductor_nombre: string | null;
+  conductor_calificacion: number | null;
+  conductor_foto_url: string | null;
+  vehiculo_placa: string | null;
+  estado: EstadoViaje;
+  posicion: { lat: number; lon: number } | null;
+}
+
+function VistaCompartida({ token }: { token: string }) {
+  const [datos, setDatos] = useState<ViajeCompartido | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [cargando, setCargando] = useState(true);
+
+  useEffect(() => {
+    let cancelado = false;
+    const cargar = () => {
+      apiFetch<ViajeCompartido>(`/publico/viajes-compartidos/${token}`, { auth: false })
+        .then((r) => {
+          if (cancelado) return;
+          setDatos(r);
+          setError(null);
+          setCargando(false);
+        })
+        .catch((e) => {
+          if (cancelado) return;
+          setError(e instanceof ApiError ? e.message : "Enlace no válido o expirado");
+          setCargando(false);
+        });
+    };
+    cargar();
+    const id = setInterval(cargar, INTERVALO_COMPARTIDO_MS);
+    return () => {
+      cancelado = true;
+      clearInterval(id);
+    };
+  }, [token]);
+
+  return (
+    <div
+      style={{
+        minHeight: "100dvh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "var(--space-4)",
+      }}
+    >
+      <div style={{ width: "min(480px, 100%)" }}>
+        <Card>
+          <h1 style={{ fontSize: "var(--font-size-lg)", margin: 0, marginBottom: "var(--space-3)" }}>
+            Viaje en curso
+          </h1>
+          {cargando && <p style={{ color: "var(--color-text-muted)" }}>Cargando…</p>}
+          {error && !cargando && <p style={{ color: "var(--color-danger)" }}>{error}</p>}
+          {datos && !error && (
+            <>
+              <div style={{ marginBottom: "var(--space-2)" }}>
+                <Badge texto={ESTADO_TEXTO[datos.estado]} tono={ESTADO_TONO[datos.estado]} />
+              </div>
+              {datos.conductor_foto_url && (
+                <img
+                  src={datos.conductor_foto_url}
+                  alt="Foto del conductor"
+                  style={{
+                    width: 64,
+                    height: 64,
+                    borderRadius: "50%",
+                    objectFit: "cover",
+                    marginBottom: "var(--space-2)",
+                  }}
+                />
+              )}
+              {datos.conductor_nombre && <p style={{ margin: 0 }}>Conductor: {datos.conductor_nombre}</p>}
+              {datos.conductor_calificacion !== null && (
+                <p style={{ margin: 0 }}>Calificación: {datos.conductor_calificacion.toFixed(1)}★</p>
+              )}
+              {datos.vehiculo_placa && (
+                <p style={{ margin: 0, marginBottom: "var(--space-3)" }}>Placa: {datos.vehiculo_placa}</p>
+              )}
+              {datos.posicion ? (
+                <RideMap
+                  origen={datos.posicion}
+                  destino={null}
+                  ruta={null}
+                  cercanos={[]}
+                  onMapaClick={() => {}}
+                  onUbicacionEncontrada={() => {}}
+                  onUbicacionError={() => {}}
+                  soloLectura
+                />
+              ) : (
+                <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
+                  Posición no disponible por el momento.
+                </p>
+              )}
+            </>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const { actor } = useAuth();
+  const compartidoMatch = window.location.pathname.match(/^\/compartido\/(.+)$/);
+  if (compartidoMatch) return <VistaCompartida token={compartidoMatch[1]} />;
   if (actor) return <InicioAutenticado />;
   return (
     <div

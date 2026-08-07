@@ -136,7 +136,16 @@ async def finalizar_viaje(db: AsyncIOMotorDatabase, *, conductor_id: str) -> dic
             datos_posteriores={"estado": "FINALIZADO", "tarifa_final": tarifa_final},
             session=session,
         )
-        await db.viajes.update_one({"_id": viaje["_id"]}, {"$set": updates}, session=session)
+        # Sección 1.2 de ux_complementaria.md: un viaje FINALIZADO ya no debe
+        # ser consultable vía un enlace compartido -- el filtro de estado en
+        # `service_compartir.py` ya lo bloquearía, pero se limpia el token
+        # explícitamente como defensa en profundidad (higiene de datos, no
+        # dejar un token vivo indefinidamente en un documento cerrado).
+        await db.viajes.update_one(
+            {"_id": viaje["_id"]},
+            {"$set": updates, "$unset": {"token_compartir": "", "token_compartir_expira_en": ""}},
+            session=session,
+        )
         await db.usuarios.update_one(
             {"_id": conductor_id}, {"$set": {"conductor.estado_servicio": "DISPONIBLE"}}, session=session
         )
