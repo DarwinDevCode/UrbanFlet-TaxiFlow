@@ -135,6 +135,59 @@ hay spec de nivel táctico en el repo** que defina esta agregación
 en el docstring del DAG y de las 2 funciones `refrescar_*` en
 `analytics/plugins/indicadores.py`.
 
+**Piloto de Parquet versionado por corrida (2026-08-08, Fase 2 de
+`AUDITORIA_NIVEL_ESTRATEGICO.md` §10, requisito de
+`specs/nivel-estrategico/nivel_estrategico.md` §5) — cerrado, solo en
+`dag_mantenimiento_gold`, no extendido a los otros 6 DAGs de dominio.**
+Nueva tarea `exportar_parquet` (entre `gold` y `metricas`) que escribe 3
+archivos Parquet por corrida — uno por etapa Medallion (Bronze crudo,
+Silver validado, Gold agregado) — en
+`datos/<extraccion|transformacion|carga>/mantenimiento/<fecha_logica>/<lote_id>.parquet`,
+tal cual la estructura de carpetas que pide la spec. Implementado como
+`medallion.exportar_parquet()` nuevo (reutilizable por cualquier DAG futuro
+que quiera el mismo patrón, sin acoplarse a mantenimiento). `lote_id`
+(`registrar_inicio_corrida`, ya único por corrida: `dag_id+fecha_logica+uuid
+corto`) se reusa tal cual como nombre de archivo — nunca sobrescribe una
+corrida anterior, sin necesidad de un segundo identificador de versión.
+**Sin dependencias nuevas**: `pandas` (2.1.4) y `pyarrow` (16.1.0) ya venían
+instalados en la imagen base `apache/airflow:2.9.3-python3.11` (arrastrados
+por `apache-airflow-providers-google`/`snowflake`), confirmado con `pip show`
+antes de tocar el Dockerfile — no hizo falta modificar
+`_PIP_ADDITIONAL_REQUIREMENTS` ni ninguna imagen. **Nuevo bind-mount**
+`./analytics/exports:/opt/airflow/exports` agregado solo a
+`airflow-scheduler` en `docker-compose.yml` (LocalExecutor ejecuta las
+tareas por `fork()` ahí mismo, `airflow-webserver`/`airflow-init` nunca
+corren tareas) — los archivos quedan también en el host en
+`analytics/exports/datos/...`, verificables sin entrar al contenedor.
+Verificado con una corrida real completa (`airflow dags trigger`, fecha
+lógica 2026-08-08): las 6 tareas (las 5 ya existentes + `exportar_parquet`)
+terminaron en `success`; los 3 Parquet de esa corrida quedaron escritos (0
+filas cada uno, correcto — no hubo órdenes `CERRADA` ese día lógico, pero el
+archivo con schema real se escribió igual, no se omitió). Verificado también
+contra una fecha con datos reales (2026-08-01, 3 órdenes): Parquet de
+`carga` con 8,567 bytes reales, leído de vuelta con `pandas.read_parquet`
+dentro del contenedor confirmando 3 filas con columnas y tipos correctos
+(`orden_id`, `costo_total`, `cumple_plazo`, etc.). Idempotencia/no-colisión
+confirmada re-disparando la misma fecha lógica (`airflow tasks clear` +
+recorrida) — quedaron 4 archivos Parquet distintos en la misma carpeta
+`2026-08-01/` (uno de la prueba con `tasks test` + 3 de reintentos
+automáticos de la segunda corrida real), cada uno con su propio `lote_id`
+en el nombre, ninguno sobrescrito. Sin ningún import error nuevo en los
+otros 8 DAGs tras el cambio (`airflow dags list-import-errors` limpio,
+`airflow dags list` con los 9 DAGs intactos) — el piloto no tocó
+`dag_viajes_core`/`dag_finanzas_gold`/`dag_captacion_gold`/
+`dag_cumplimiento_gold`/`dag_flota_gold`/`dag_historico_nyc` ni
+`dag_publicar_indicadores`. **Recomendación explícita, no extender el piloto
+a los 6 DAGs restantes todavía**: el riesgo de I/O que preveía la Sección 12
+de la auditoría no se materializó a esta escala (mantenimiento es un dominio
+pequeño, milisegundos de escritura por archivo), pero **no se probó a la
+escala real de `dag_viajes_core`/`dag_historico_nyc`** (fact_viaje_historico
+sola tiene 1.3M+ filas) — escribir un Parquet de ese tamaño por corrida,
+encima de un chunk de 20,000 filas por vez, es un escenario de I/O
+cualitativamente distinto que este piloto no midió; extender el patrón a
+esos 2 DAGs sin medir antes el costo real de esa escala sería repetir el
+riesgo que la Sección 12 ya advertía, no algo ya descartado.
+
 **Bug corregido en `dag_flota_gold`**: `extraer` asumía que `posiciones`
 traía `estado_servicio` en el propio documento — nunca lo trae (ese campo
 vive en `usuarios.conductor.estado_servicio`, un dato de turno del socio, no

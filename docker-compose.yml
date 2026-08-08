@@ -199,6 +199,14 @@ services:
       - ./analytics/plugins:/opt/airflow/plugins
       - ./analytics/seed_data:/opt/airflow/seed_data
       - ./data/nyc_taxi:/opt/airflow/nyc_data:ro
+      # nivel_estrategico.md Sección 5 -- Parquet versionado por corrida
+      # (piloto en dag_mantenimiento_gold, ver CLAUDE.md). Bind-mount para
+      # que el archivo quede en el host, verificable fuera del contenedor
+      # -- LocalExecutor ejecuta las tareas por fork() dentro de este mismo
+      # contenedor (ver nota de infraestructura en CLAUDE.md §3), así que
+      # basta con este único servicio, no hace falta duplicarlo en
+      # airflow-webserver/airflow-init (que nunca ejecutan tareas).
+      - ./analytics/exports:/opt/airflow/exports
     command: scheduler
 
 volumes:

@@ -335,6 +335,61 @@ def ensure_schema() -> None:
 # Ciclo de vida de una corrida
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Parquet versionado por corrida (nivel_estrategico.md Sección 5)
+# ---------------------------------------------------------------------------
+
+EXPORTS_ROOT = os.environ.get("PARQUET_EXPORTS_ROOT", "/opt/airflow/exports/datos")
+
+# Nombre de carpeta por etapa, tal cual lo pide la spec (español, no el
+# nombre interno de la etapa Medallion) -- "extraccion"=Bronze crudo,
+# "transformacion"=Silver validado, "carga"=Gold agregado.
+ETAPAS_PARQUET = {"bronze": "extraccion", "silver": "transformacion", "gold": "carga"}
+
+
+def exportar_parquet(etapa: str, dominio: str, fecha_logica, lote_id: str, registros: list[dict]) -> str | None:
+    """Escribe `registros` como un archivo Parquet versionado por corrida, en
+    `datos/<etapa-es>/<dominio>/<fecha_logica>/<lote_id>.parquet` (ver
+    nivel_estrategico.md Sección 5). `lote_id` ya es único por corrida
+    (`registrar_inicio_corrida`: dag_id+fecha_logica+uuid corto) y además
+    referencia directamente la fila de `corridas` de esa misma corrida, así
+    que se usa tal cual como nombre de archivo -- cumple "versionado por
+    corrida" sin inventar un segundo identificador.
+
+    No sobrescribe nunca: cada corrida tiene un `lote_id` nuevo, así que cada
+    llamada escribe un archivo nuevo, nunca pisa uno anterior (confirmado en
+    la prueba de segunda corrida, ver CLAUDE.md). Si `registros` está vacío
+    igual escribe un Parquet con 0 filas pero con el schema esperado (mejor
+    que omitir el archivo -- un archivo ausente sería ambiguo entre "corrida
+    sin datos" y "el paso de export falló").
+
+    Devuelve la ruta absoluta escrita, o None si `etapa` es inválida."""
+    etapa_es = ETAPAS_PARQUET.get(etapa)
+    if etapa_es is None:
+        raise ValueError(f"etapa Parquet inválida: {etapa!r} (válidas: {list(ETAPAS_PARQUET)})")
+
+    import pandas as pd
+
+    directorio = os.path.join(EXPORTS_ROOT, etapa_es, dominio, str(fecha_logica))
+    os.makedirs(directorio, exist_ok=True)
+    ruta = os.path.join(directorio, f"{lote_id}.parquet")
+
+    df = pd.DataFrame(registros)
+    # Columnas Parquet no toleran bien tipos mixtos (p.ej. `fecha_programada`
+    # con `date` reales y `None` en la misma columna se serializan bien con
+    # pyarrow, pero se fuerza a string cualquier objeto no nativo -- date,
+    # datetime, Decimal -- para evitar que pyarrow infiera un tipo distinto
+    # entre corridas con datos distintos y falle al leer versiones futuras
+    # con un schema incompatible).
+    for col in df.columns:
+        if df[col].map(lambda v: isinstance(v, (date, datetime))).any():
+            df[col] = df[col].map(lambda v: v.isoformat() if isinstance(v, (date, datetime)) else v)
+
+    df.to_parquet(ruta, engine="pyarrow", index=False)
+    LOGGER.info("Parquet %s escrito: %s (%d filas)", etapa_es, ruta, len(df))
+    return ruta
+
+
 def registrar_inicio_corrida(dag_id: str, fecha_logica) -> str:
     """Genera un lote_id único y deja constancia del inicio de la corrida.
     La fila de `corridas` se completa (estado, métricas, fin) en finalizar_corrida;

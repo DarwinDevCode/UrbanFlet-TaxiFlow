@@ -35,6 +35,21 @@ spec, igual que finanzas/flota):
   - TIPO_INVALIDO: tipo fuera de {PREVENTIVA, CORRECTIVA}.
   - MONTO_NEGATIVO: costo_total < 0.
   - Dedup por orden_id dentro del lote y contra Gold.
+
+Piloto de Parquet versionado (`specs/nivel-estrategico/nivel_estrategico.md`
+Sección 5, ver CLAUDE.md nota Airflow): este es el único de los 7 DAGs de
+dominio con el paso `exportar_parquet` -- decisión consciente de probar
+primero sobre el dominio de menor volumen/riesgo antes de tocar los 6
+restantes (varios con historial de producción real, incluida la carga de
+1.3M filas NYC). Escribe 3 archivos Parquet por corrida (uno por etapa:
+Bronze crudo, Silver validado, Gold agregado) en
+`/opt/airflow/exports/datos/<etapa-es>/mantenimiento/<fecha_logica>/<lote_id>.parquet`
+(bind-mount `./analytics/exports` en `docker-compose.yml`, solo en
+`airflow-scheduler` -- LocalExecutor ejecuta las tareas por fork() ahí
+mismo). `lote_id` ya es único por corrida, así que nunca sobrescribe un
+archivo anterior. Ver `medallion.py::exportar_parquet` para el detalle de
+implementación (pandas + pyarrow, ambos ya presentes en la imagen base de
+Airflow, sin dependencia nueva).
 """
 from __future__ import annotations
 
@@ -178,7 +193,37 @@ def _gold(**context):
     n = medallion.cargar_gold_idempotente("fact_orden_mantenimiento", filas, fecha_logica, lote_id)
     dur = time.time() - t0
     ti.xcom_push(key="duracion_gold_seg", value=dur)
+    # Se re-empuja `filas` (no solo la duración) porque `_exportar_parquet`
+    # necesita el mismo contenido Gold ya con fecha_programada/fecha_cierre
+    # normalizados a `date` real -- recalcularlo en la tarea de export
+    # duplicaría esta lógica de normalización sin ganar nada.
+    ti.xcom_push(key="filas", value=filas)
     LOGGER.info("Gold mantenimiento: %d filas en fact_orden_mantenimiento (fecha=%s)", n, fecha_logica)
+
+
+def _exportar_parquet(**context):
+    """CU-O15 + nivel_estrategico.md Sección 5 (piloto): escribe un Parquet
+    versionado por corrida para cada una de las 3 etapas Medallion de esta
+    corrida (Bronze crudo, Silver validado, Gold agregado) -- respaldo/
+    control de versiones granular por corrida ETL, independiente del
+    respaldo completo de base de datos del Módulo 7 de Administración (ver
+    nivel_estrategico.md §5). No reemplaza ninguna tabla de ClickHouse ya
+    cargada por las tareas anteriores, es un paso adicional de solo
+    escritura a disco."""
+    ti = context["ti"]
+    lote_id = ti.xcom_pull(task_ids="extraer", key="lote_id")
+    fecha_logica = context["ds"]
+    crudos = ti.xcom_pull(task_ids="extraer", key="crudos") or []
+    validos = ti.xcom_pull(task_ids="silver_y_cuarentena", key="validos") or []
+    gold_filas = ti.xcom_pull(task_ids="gold", key="filas") or []
+
+    rutas = {
+        "extraccion": medallion.exportar_parquet("bronze", "mantenimiento", fecha_logica, lote_id, crudos),
+        "transformacion": medallion.exportar_parquet("silver", "mantenimiento", fecha_logica, lote_id, validos),
+        "carga": medallion.exportar_parquet("gold", "mantenimiento", fecha_logica, lote_id, gold_filas),
+    }
+    ti.xcom_push(key="rutas_parquet", value=rutas)
+    LOGGER.info("Parquet versionado escrito para lote_id=%s: %s", lote_id, rutas)
 
 
 def _metricas(**context):
@@ -221,6 +266,12 @@ with DAG(
     extraer = PythonOperator(task_id="extraer", python_callable=_extraer)
     silver_y_cuarentena = PythonOperator(task_id="silver_y_cuarentena", python_callable=_silver_y_cuarentena)
     gold = PythonOperator(task_id="gold", python_callable=_gold)
+    # Piloto de Parquet versionado (nivel_estrategico.md §5, ver CLAUDE.md
+    # nota Airflow) -- corre después de `gold` (necesita las 3 etapas ya
+    # resueltas) y antes de `metricas`, para que un fallo de escritura a
+    # disco quede reflejado en el estado de la corrida igual que cualquier
+    # otra tarea, no como un efecto secundario silencioso post-cierre.
+    exportar_parquet = PythonOperator(task_id="exportar_parquet", python_callable=_exportar_parquet)
     metricas = PythonOperator(task_id="metricas", python_callable=_metricas)
     # CU-O16 P1: dispara dag_publicar_indicadores como corrida propia (ver
     # comentario extenso en dag_finanzas_gold.py -- mismo mecanismo).
@@ -230,4 +281,4 @@ with DAG(
         wait_for_completion=False,
     )
 
-    extraer >> silver_y_cuarentena >> gold >> metricas >> disparar_publicacion
+    extraer >> silver_y_cuarentena >> gold >> exportar_parquet >> metricas >> disparar_publicacion

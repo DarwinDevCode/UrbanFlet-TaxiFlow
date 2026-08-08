@@ -32,6 +32,10 @@ data/nyc_taxi/
 # Airflow
 analytics/logs/
 analytics/plugins/__pycache__/
+# Parquet versionado por corrida (nivel_estrategico.md §5, piloto en
+# dag_mantenimiento_gold, ver CLAUDE.md) -- salida generada por cada
+# corrida, no un artefacto versionable como el código.
+analytics/exports/
 
 # Editors / OS
 .DS_Store
