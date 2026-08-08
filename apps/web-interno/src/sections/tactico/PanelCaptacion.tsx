@@ -11,8 +11,18 @@ import {
   Select,
   TextField,
   TrendLineChart,
+  useSwr,
 } from "@urbanflet/shared-ui";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+
+const RECURSO_PANEL_CAPTACION = "/captacion/panel-tactico";
+
+// Ver PanelMantenimiento.tsx: referencia estable para el fallback de
+// `data?.campo ?? []`, evita invalidar los `useMemo` que dependen de esto.
+const SIN_PENDIENTES: Solicitud[] = [];
+const SIN_REFERIDOS: ReferidoPendiente[] = [];
+const SIN_CONVERSION: ConversionCaptacion[] = [];
+const SIN_ALTAS_RETENCION: AltasRetencionCanal[] = [];
 
 interface Solicitud {
   id: string;
@@ -63,36 +73,36 @@ function semaforo(dias: number): { texto: string; tono: "exito" | "advertencia" 
 }
 
 // spec: specs/nivel-tactico/tactico_captacion.md — Panel de Captación y Onboarding (CU-T01/T02). Patrón Z.
+interface DatosPanelCaptacion {
+  pendientes: Solicitud[];
+  referidos: ReferidoPendiente[];
+  conversion: ConversionCaptacion[];
+  altasRetencion: AltasRetencionCanal[];
+}
+
 export function PanelCaptacion() {
-  const [pendientes, setPendientes] = useState<Solicitud[]>([]);
-  const [referidos, setReferidos] = useState<ReferidoPendiente[]>([]);
-  const [conversion, setConversion] = useState<ConversionCaptacion[]>([]);
-  const [altasRetencion, setAltasRetencion] = useState<AltasRetencionCanal[]>([]);
-  const [error, setError] = useState<string | null>(null);
   const [filtroCanal, setFiltroCanal] = useState("");
   const [filtroDesde, setFiltroDesde] = useState("");
   const [filtroHasta, setFiltroHasta] = useState("");
 
-  const cargar = async () => {
-    try {
-      const [solicitudes, refs, conv, altas] = await Promise.all([
-        apiFetch<SolicitudListOut>("/captacion/solicitudes?estado=ENVIADA&limit=100"),
-        apiFetch<ReferidoPendiente[]>("/captacion/panel-tactico/referidos-pendientes"),
-        apiFetch<ConversionCaptacion[]>("/captacion/panel-tactico/conversion"),
-        apiFetch<AltasRetencionCanal[]>("/captacion/panel-tactico/altas-retencion"),
-      ]);
-      setPendientes(solicitudes.items);
-      setReferidos(refs);
-      setConversion(conv);
-      setAltasRetencion(altas);
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "No se pudo cargar el panel de captación");
-    }
-  };
-
-  useEffect(() => {
-    cargar();
-  }, []);
+  const { data, error: errorCarga } = useSwr<DatosPanelCaptacion>(RECURSO_PANEL_CAPTACION, async () => {
+    const [solicitudes, refs, conv, altas] = await Promise.all([
+      apiFetch<SolicitudListOut>("/captacion/solicitudes?estado=ENVIADA&limit=100"),
+      apiFetch<ReferidoPendiente[]>("/captacion/panel-tactico/referidos-pendientes"),
+      apiFetch<ConversionCaptacion[]>("/captacion/panel-tactico/conversion"),
+      apiFetch<AltasRetencionCanal[]>("/captacion/panel-tactico/altas-retencion"),
+    ]);
+    return { pendientes: solicitudes.items, referidos: refs, conversion: conv, altasRetencion: altas };
+  });
+  const pendientes = data?.pendientes ?? SIN_PENDIENTES;
+  const referidos = data?.referidos ?? SIN_REFERIDOS;
+  const conversion = data?.conversion ?? SIN_CONVERSION;
+  const altasRetencion = data?.altasRetencion ?? SIN_ALTAS_RETENCION;
+  const error = errorCarga
+    ? errorCarga instanceof ApiError
+      ? errorCarga.message
+      : "No se pudo cargar el panel de captación"
+    : null;
 
   const fueraDePlazo = useMemo(
     () => pendientes.filter((s) => s.fecha_envio && diasDesde(s.fecha_envio) > 5).length,

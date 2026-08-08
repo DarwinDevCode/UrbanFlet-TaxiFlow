@@ -12,8 +12,19 @@ import {
   Select,
   TextField,
   TrendLineChart,
+  useSwr,
 } from "@urbanflet/shared-ui";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+
+const RECURSO_PANEL_MANTENIMIENTO = "/mantenimiento/panel-tactico";
+
+// Referencias estables para el fallback de `data?.campo ?? []` -- un array
+// literal `[]` inline crea una referencia nueva en cada render, lo que
+// invalidaba la memoización de los `useMemo` que dependen de estos campos.
+const SIN_ORDENES: Orden[] = [];
+const SIN_RETIRADOS: VehiculoRetirado[] = [];
+const SIN_PREVENTIVO: CumplimientoPreventivo[] = [];
+const SIN_COSTO_TOP: CostoVehiculo[] = [];
 
 interface Orden {
   id: string;
@@ -52,39 +63,44 @@ interface CostoVehiculo {
   total_ordenes: number;
 }
 
+interface DatosPanelMantenimiento {
+  ordenesAbiertas: Orden[];
+  retirados: VehiculoRetirado[];
+  preventivo: CumplimientoPreventivo[];
+  costoTop: CostoVehiculo[];
+}
+
 // spec: specs/nivel-tactico/tactico_mantenimiento.md — Panel de Mantenimiento y Costos (CU-T04/T11). Patrón Z.
 export function PanelMantenimiento() {
-  const [ordenesAbiertas, setOrdenesAbiertas] = useState<Orden[]>([]);
-  const [retirados, setRetirados] = useState<VehiculoRetirado[]>([]);
-  const [preventivo, setPreventivo] = useState<CumplimientoPreventivo[]>([]);
-  const [costoTop, setCostoTop] = useState<CostoVehiculo[]>([]);
-  const [error, setError] = useState<string | null>(null);
   const [filtroTipo, setFiltroTipo] = useState("");
   const [filtroVehiculo, setFiltroVehiculo] = useState("");
   const [filtroDesde, setFiltroDesde] = useState("");
   const [filtroHasta, setFiltroHasta] = useState("");
 
-  const cargar = async () => {
-    try {
-      const [abiertas, enTaller, vehiculosRetirados, cumplimiento, costos] = await Promise.all([
-        apiFetch<OrdenListOut>("/mantenimiento/ordenes?estado=ABIERTA&limit=100"),
-        apiFetch<OrdenListOut>("/mantenimiento/ordenes?estado=EN_TALLER&limit=100"),
-        apiFetch<VehiculoRetirado[]>("/mantenimiento/panel-tactico/vehiculos-retirados"),
-        apiFetch<CumplimientoPreventivo[]>("/mantenimiento/panel-tactico/cumplimiento-preventivo"),
-        apiFetch<CostoVehiculo[]>("/mantenimiento/panel-tactico/costo-top-vehiculos"),
-      ]);
-      setOrdenesAbiertas([...abiertas.items, ...enTaller.items]);
-      setRetirados(vehiculosRetirados);
-      setPreventivo(cumplimiento);
-      setCostoTop(costos);
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "No se pudo cargar el panel de mantenimiento");
-    }
-  };
-
-  useEffect(() => {
-    cargar();
-  }, []);
+  const { data, error: errorCarga } = useSwr<DatosPanelMantenimiento>(RECURSO_PANEL_MANTENIMIENTO, async () => {
+    const [abiertas, enTaller, vehiculosRetirados, cumplimiento, costos] = await Promise.all([
+      apiFetch<OrdenListOut>("/mantenimiento/ordenes?estado=ABIERTA&limit=100"),
+      apiFetch<OrdenListOut>("/mantenimiento/ordenes?estado=EN_TALLER&limit=100"),
+      apiFetch<VehiculoRetirado[]>("/mantenimiento/panel-tactico/vehiculos-retirados"),
+      apiFetch<CumplimientoPreventivo[]>("/mantenimiento/panel-tactico/cumplimiento-preventivo"),
+      apiFetch<CostoVehiculo[]>("/mantenimiento/panel-tactico/costo-top-vehiculos"),
+    ]);
+    return {
+      ordenesAbiertas: [...abiertas.items, ...enTaller.items],
+      retirados: vehiculosRetirados,
+      preventivo: cumplimiento,
+      costoTop: costos,
+    };
+  });
+  const ordenesAbiertas = data?.ordenesAbiertas ?? SIN_ORDENES;
+  const retirados = data?.retirados ?? SIN_RETIRADOS;
+  const preventivo = data?.preventivo ?? SIN_PREVENTIVO;
+  const costoTop = data?.costoTop ?? SIN_COSTO_TOP;
+  const error = errorCarga
+    ? errorCarga instanceof ApiError
+      ? errorCarga.message
+      : "No se pudo cargar el panel de mantenimiento"
+    : null;
 
   const ordenesFiltradas = useMemo(() => {
     return ordenesAbiertas.filter((o) => {

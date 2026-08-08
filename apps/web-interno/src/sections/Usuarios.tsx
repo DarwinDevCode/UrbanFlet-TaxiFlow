@@ -8,13 +8,17 @@ import {
   DataTable,
   DetailField,
   DetailPanel,
+  invalidateSwrPrefix,
   Pagination,
   Select,
   TextArea,
   TextField,
+  useSwr,
   type ModoPanel,
 } from "@urbanflet/shared-ui";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+
+const RECURSO_USUARIOS = "/usuarios";
 
 // Mismo catálogo que `usuarios/service.py::ROLES_STAFF` (backend) --
 // pasajero/conductor se autorregistran, este módulo no los puede crear.
@@ -96,8 +100,6 @@ function RolesCheckboxes({ seleccionados, onChange }: { seleccionados: string[];
 }
 
 export function SeccionUsuarios() {
-  const [usuarios, setUsuarios] = useState<Usuario[]>([]);
-  const [total, setTotal] = useState(0);
   const [filtroRol, setFiltroRol] = useState("");
   const [filtroEstado, setFiltroEstado] = useState("");
   const [textoInput, setTextoInput] = useState("");
@@ -107,7 +109,7 @@ export function SeccionUsuarios() {
 
   const [seleccionado, setSeleccionado] = useState<Usuario | null>(null);
   const [modo, setModo] = useState<ModoPanel>("consulta");
-  const [error, setError] = useState<string | null>(null);
+  const [errorAccion, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
 
   // Formulario de creación / edición.
@@ -124,22 +126,23 @@ export function SeccionUsuarios() {
   const [accesos, setAccesos] = useState<Acceso[]>([]);
   const [sesiones, setSesiones] = useState<Sesion[]>([]);
 
-  const cargar = async () => {
+  const claveConsulta = (() => {
     const params = new URLSearchParams();
     if (filtroRol) params.set("rol", filtroRol);
     if (filtroEstado) params.set("estado", filtroEstado);
     if (filtroTexto) params.set("texto", filtroTexto);
     params.set("limit", String(pageSize));
     params.set("offset", String(page * pageSize));
-    const datos = await apiFetch<UsuarioListOut>(`/usuarios?${params.toString()}`);
-    setUsuarios(datos.items);
-    setTotal(datos.total);
-  };
-
-  useEffect(() => {
-    cargar().catch((e) => setError(e instanceof ApiError ? e.message : "No se pudieron cargar los usuarios"));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtroRol, filtroEstado, filtroTexto, page, pageSize]);
+    return `${RECURSO_USUARIOS}?${params.toString()}`;
+  })();
+  const { data, error: errorCarga, refetch } = useSwr<UsuarioListOut>(claveConsulta, () =>
+    apiFetch<UsuarioListOut>(claveConsulta),
+  );
+  const usuarios = data?.items ?? [];
+  const total = data?.total ?? 0;
+  const error =
+    errorAccion ??
+    (errorCarga ? (errorCarga instanceof ApiError ? errorCarga.message : "No se pudieron cargar los usuarios") : null);
 
   const buscar = () => {
     setFiltroTexto(textoInput.trim());
@@ -208,7 +211,8 @@ export function SeccionUsuarios() {
       setEmail("");
       setPassword("");
       setRolesForm([]);
-      await cargar();
+      invalidateSwrPrefix(RECURSO_USUARIOS);
+      await refetch();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo crear la cuenta");
     } finally {
@@ -226,7 +230,8 @@ export function SeccionUsuarios() {
         body: { roles: rolesForm },
       });
       setSeleccionado(actualizado);
-      await cargar();
+      invalidateSwrPrefix(RECURSO_USUARIOS);
+      await refetch();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudieron actualizar los roles");
     } finally {
@@ -246,7 +251,8 @@ export function SeccionUsuarios() {
       setSeleccionado(actualizado);
       setAccionMotivo(null);
       setMotivo("");
-      await cargar();
+      invalidateSwrPrefix(RECURSO_USUARIOS);
+      await refetch();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo completar la acción");
     } finally {
@@ -261,7 +267,8 @@ export function SeccionUsuarios() {
     try {
       const actualizado = await apiFetch<Usuario>(`/usuarios/${seleccionado.id}/reactivar`, { method: "POST" });
       setSeleccionado(actualizado);
-      await cargar();
+      invalidateSwrPrefix(RECURSO_USUARIOS);
+      await refetch();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo reactivar la cuenta");
     } finally {
@@ -333,7 +340,7 @@ export function SeccionUsuarios() {
 
       <ActionBar
         nuevo={{ onClick: abrirNuevo }}
-        actualizar={{ onClick: () => cargar() }}
+        actualizar={{ onClick: () => refetch() }}
         eliminar={{
           onClick: () => {},
           disabled: true,

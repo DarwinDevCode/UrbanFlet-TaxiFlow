@@ -11,8 +11,17 @@ import {
   Select,
   TextField,
   TrendLineChart,
+  useSwr,
 } from "@urbanflet/shared-ui";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+
+const RECURSO_PANEL_CONCILIACION = "/pagos/panel-tactico";
+
+// Ver PanelMantenimiento.tsx: referencia estable para el fallback de
+// `data?.campo ?? []`/objeto, evita invalidar los `useMemo` que dependen
+// de esto.
+const SIN_BANDEJA: BandejaDiscrepancias = { discrepancias: [], viajes_sin_pago: [] };
+const SIN_TASAS: TasaDiscrepancias[] = [];
 
 interface Pago {
   id: string;
@@ -46,30 +55,30 @@ interface TasaDiscrepancias {
 }
 
 // spec: specs/nivel-tactico/tactico_finanzas.md — Panel de Conciliación de Pagos (CU-T09/OT5.1). Patrón Z.
+interface DatosPanelConciliacion {
+  bandeja: BandejaDiscrepancias;
+  tasas: TasaDiscrepancias[];
+}
+
 export function PanelConciliacion() {
-  const [bandeja, setBandeja] = useState<BandejaDiscrepancias>({ discrepancias: [], viajes_sin_pago: [] });
-  const [tasas, setTasas] = useState<TasaDiscrepancias[]>([]);
-  const [error, setError] = useState<string | null>(null);
   const [filtroMetodo, setFiltroMetodo] = useState("");
   const [filtroDesde, setFiltroDesde] = useState("");
   const [filtroHasta, setFiltroHasta] = useState("");
 
-  const cargar = async () => {
-    try {
-      const [b, t] = await Promise.all([
-        apiFetch<BandejaDiscrepancias>("/pagos/discrepancias"),
-        apiFetch<TasaDiscrepancias[]>("/pagos/panel-tactico/tasa-discrepancias"),
-      ]);
-      setBandeja(b);
-      setTasas(t);
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "No se pudo cargar el panel de conciliación");
-    }
-  };
-
-  useEffect(() => {
-    cargar();
-  }, []);
+  const { data, error: errorCarga } = useSwr<DatosPanelConciliacion>(RECURSO_PANEL_CONCILIACION, async () => {
+    const [b, t] = await Promise.all([
+      apiFetch<BandejaDiscrepancias>("/pagos/discrepancias"),
+      apiFetch<TasaDiscrepancias[]>("/pagos/panel-tactico/tasa-discrepancias"),
+    ]);
+    return { bandeja: b, tasas: t };
+  });
+  const bandeja = data?.bandeja ?? SIN_BANDEJA;
+  const tasas = data?.tasas ?? SIN_TASAS;
+  const error = errorCarga
+    ? errorCarga instanceof ApiError
+      ? errorCarga.message
+      : "No se pudo cargar el panel de conciliación"
+    : null;
 
   const montoEnDisputa = useMemo(
     () => bandeja.discrepancias.reduce((acc, p) => acc + Math.abs(p.diferencia ?? 0), 0),

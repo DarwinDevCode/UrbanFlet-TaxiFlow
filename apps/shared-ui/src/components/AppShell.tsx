@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { useAuth } from "../auth/AuthProvider";
+import logoIcon from "../assets/logo-urbanflet-icon.png";
 import "./AppShell.css";
 
 // Estructura extraída de la referencia visual del dueño de producto (panel
@@ -66,12 +67,17 @@ export function AppShell({ navItems, activeId, onNavigate, title, headerActions,
 
       <aside className={`shell-sidebar${sidebarAbierto ? " shell-sidebar-open" : ""}`}>
         <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", padding: "var(--space-2) 0" }}>
-          <div
+          <img
+            src={logoIcon}
+            alt="UrbanFleet"
+            width={32}
+            height={32}
             style={{
               width: 32,
               height: 32,
               borderRadius: "var(--radius-sm)",
-              background: "var(--color-accent)",
+              background: "#fff",
+              objectFit: "contain",
               flexShrink: 0,
             }}
           />

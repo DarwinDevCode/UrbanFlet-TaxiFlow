@@ -1141,8 +1141,8 @@ describe("web-interno — Historial de viajes (Sección 3.3 de ux_complementaria
       vehiculo_placa: "ABC-1234",
       pasajero_nombre: "María",
       pasajero_calificacion: 4.6,
-      calificacion_pasajero_a_conductor: 5,
-      calificacion_conductor_a_pasajero: 5,
+      calificacion_pasajero_a_conductor: { puntaje: 5, comentario: null, ts: "2026-08-01T10:21:00Z" },
+      calificacion_conductor_a_pasajero: { puntaje: 5, comentario: null, ts: "2026-08-01T10:21:00Z" },
       ...overrides,
     };
   }
@@ -1189,5 +1189,6 @@ describe("web-interno — Historial de viajes (Sección 3.3 de ux_complementaria
     await user.click(botonesVer[0]);
     expect(await screen.findByText("Viaje — hg-3")).toBeInTheDocument();
     expect(screen.getAllByText("Ana").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("5★").length).toBe(2);
   });
 });

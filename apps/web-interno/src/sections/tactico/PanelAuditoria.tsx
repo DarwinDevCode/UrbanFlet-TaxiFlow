@@ -11,8 +11,16 @@ import {
   KpiRow,
   Select,
   TextField,
+  useSwr,
 } from "@urbanflet/shared-ui";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+
+const RECURSO_PANEL_AUDITORIA = "/auditoria/panel-tactico";
+
+// Ver PanelMantenimiento.tsx: referencia estable para el fallback de
+// `data?.campo ?? []`, evita invalidar el `useMemo` que depende de esto.
+const SIN_EVENTOS: EventoAuditoria[] = [];
+const SIN_INTEGRACIONES: UsoIntegracion[] = [];
 
 interface EventoAuditoria {
   evento_id: number;
@@ -40,12 +48,13 @@ interface UsoIntegracion {
 // tabla de eventos es el elemento dominante en ancho y altura; el gráfico
 // secundario queda más angosto que la lista (no a la mitad como en Z), y
 // los KPIs son una franja delgada de contexto arriba.
-export function PanelAuditoria() {
-  const [eventos, setEventos] = useState<EventoAuditoria[]>([]);
-  const [totalEventosHoy, setTotalEventosHoy] = useState(0);
-  const [integraciones, setIntegraciones] = useState<UsoIntegracion[]>([]);
-  const [error, setError] = useState<string | null>(null);
+interface DatosPanelAuditoria {
+  eventos: EventoAuditoria[];
+  totalEventosHoy: number;
+  integraciones: UsoIntegracion[];
+}
 
+export function PanelAuditoria() {
   const [actorInput, setActorInput] = useState("");
   const [filtroActor, setFiltroActor] = useState("");
   const [filtroResultado, setFiltroResultado] = useState("DENEGADO");
@@ -53,37 +62,45 @@ export function PanelAuditoria() {
   const [filtroDesde, setFiltroDesde] = useState("");
   const [filtroHasta, setFiltroHasta] = useState("");
 
-  const cargar = async () => {
-    try {
-      const params = new URLSearchParams();
-      if (filtroActor) params.set("actor_id", filtroActor);
-      if (filtroResultado) params.set("resultado", filtroResultado);
-      if (filtroAccion) params.set("accion", filtroAccion);
-      if (filtroDesde) params.set("desde", new Date(filtroDesde).toISOString());
-      if (filtroHasta) params.set("hasta", new Date(filtroHasta + "T23:59:59").toISOString());
-      params.set("tamanio_pagina", "100");
+  const claveConsulta = (() => {
+    const params = new URLSearchParams();
+    if (filtroActor) params.set("actor_id", filtroActor);
+    if (filtroResultado) params.set("resultado", filtroResultado);
+    if (filtroAccion) params.set("accion", filtroAccion);
+    if (filtroDesde) params.set("desde", filtroDesde);
+    if (filtroHasta) params.set("hasta", filtroHasta);
+    return `${RECURSO_PANEL_AUDITORIA}?${params.toString()}`;
+  })();
+  const { data, error: errorCarga } = useSwr<DatosPanelAuditoria>(claveConsulta, async () => {
+    const params = new URLSearchParams();
+    if (filtroActor) params.set("actor_id", filtroActor);
+    if (filtroResultado) params.set("resultado", filtroResultado);
+    if (filtroAccion) params.set("accion", filtroAccion);
+    if (filtroDesde) params.set("desde", new Date(filtroDesde).toISOString());
+    if (filtroHasta) params.set("hasta", new Date(filtroHasta + "T23:59:59").toISOString());
+    params.set("tamanio_pagina", "100");
 
-      const hoyInicio = new Date();
-      hoyInicio.setHours(0, 0, 0, 0);
-      const paramsHoy = new URLSearchParams({ desde: hoyInicio.toISOString(), tamanio_pagina: "1" });
+    // Redondeado a medianoche local de hoy -- estable durante todo el día
+    // (no usa `Date.now()` crudo), así que no cambia en cada render.
+    const hoyInicio = new Date();
+    hoyInicio.setHours(0, 0, 0, 0);
+    const paramsHoy = new URLSearchParams({ desde: hoyInicio.toISOString(), tamanio_pagina: "1" });
 
-      const [pagina, hoy, uso] = await Promise.all([
-        apiFetch<EventosPage>(`/auditoria/eventos?${params.toString()}`),
-        apiFetch<EventosPage>(`/auditoria/eventos?${paramsHoy.toString()}`),
-        apiFetch<UsoIntegracion[]>("/auditoria/panel-tactico/uso-integraciones"),
-      ]);
-      setEventos(pagina.items);
-      setTotalEventosHoy(hoy.total);
-      setIntegraciones(uso);
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "No se pudo cargar el panel de auditoría");
-    }
-  };
-
-  useEffect(() => {
-    cargar();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtroActor, filtroResultado, filtroAccion, filtroDesde, filtroHasta]);
+    const [pagina, hoy, uso] = await Promise.all([
+      apiFetch<EventosPage>(`/auditoria/eventos?${params.toString()}`),
+      apiFetch<EventosPage>(`/auditoria/eventos?${paramsHoy.toString()}`),
+      apiFetch<UsoIntegracion[]>("/auditoria/panel-tactico/uso-integraciones"),
+    ]);
+    return { eventos: pagina.items, totalEventosHoy: hoy.total, integraciones: uso };
+  });
+  const eventos = data?.eventos ?? SIN_EVENTOS;
+  const totalEventosHoy = data?.totalEventosHoy ?? 0;
+  const integraciones = data?.integraciones ?? SIN_INTEGRACIONES;
+  const error = errorCarga
+    ? errorCarga instanceof ApiError
+      ? errorCarga.message
+      : "No se pudo cargar el panel de auditoría"
+    : null;
 
   const accesosDenegados = useMemo(() => eventos.filter((e) => e.resultado === "DENEGADO").length, [eventos]);
   const endpointsActivos = new Set(integraciones.map((i) => i.endpoint)).size;

@@ -161,6 +161,12 @@ export interface RideMapProps {
   // sin sesión, sin clics de "elegir destino", sin botón de "mi ubicación"
   // (no tiene sentido pedirle geolocalización a un contacto que solo mira).
   soloLectura?: boolean;
+  // Cuando es true, el mapa llena el 100% de la altura de su contenedor en
+  // vez de la altura fija ALTO_MAPA -- usado en la vista de viaje activo
+  // (VistaViaje), que ahora ocupa todo el alto disponible de la pantalla en
+  // vez de un recuadro fijo. El resto de usos (historial, vista pública
+  // compartida) siguen con altura fija.
+  llenarAltura?: boolean;
 }
 
 export const ALTO_MAPA = 480;
@@ -176,9 +182,10 @@ export function RideMap({
   onUbicacionError,
   clicksHabilitados = true,
   soloLectura = false,
+  llenarAltura = false,
 }: RideMapProps) {
   return (
-    <div style={{ height: ALTO_MAPA, borderRadius: "var(--radius-md)", overflow: "hidden" }}>
+    <div style={{ height: llenarAltura ? "100%" : ALTO_MAPA, borderRadius: "var(--radius-md)", overflow: "hidden" }}>
       <MapContainer center={[origen.lat, origen.lon]} zoom={15} style={{ height: "100%", width: "100%" }}>
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'

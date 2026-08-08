@@ -11,9 +11,12 @@ import {
   Pagination,
   Select,
   TextField,
+  useSwr,
   type ModoPanel,
 } from "@urbanflet/shared-ui";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+
+const RECURSO_HISTORIAL_GLOBAL = "/viajes/historial-global";
 
 interface Viaje {
   id: string;
@@ -34,8 +37,8 @@ interface Viaje {
   vehiculo_placa: string | null;
   pasajero_nombre: string | null;
   pasajero_calificacion: number | null;
-  calificacion_pasajero_a_conductor: number | null;
-  calificacion_conductor_a_pasajero: number | null;
+  calificacion_pasajero_a_conductor: { puntaje: number; comentario: string | null; ts: string } | null;
+  calificacion_conductor_a_pasajero: { puntaje: number; comentario: string | null; ts: string } | null;
 }
 
 interface HistorialOut {
@@ -57,8 +60,6 @@ const tonoPorEstado: Record<string, "neutral" | "exito" | "advertencia" | "pelig
  * zona -- gap ya conocido, `viajes.zona_origen_id`/`zona_destino_id`
  * nunca se resuelven (mismo límite documentado en el Panel de Flota). */
 export function SeccionHistorialGlobal() {
-  const [viajes, setViajes] = useState<Viaje[]>([]);
-  const [total, setTotal] = useState(0);
   const [filtroEstado, setFiltroEstado] = useState("");
   const [filtroTexto, setFiltroTexto] = useState("");
   const [textoInput, setTextoInput] = useState("");
@@ -69,9 +70,13 @@ export function SeccionHistorialGlobal() {
 
   const [seleccionado, setSeleccionado] = useState<Viaje | null>(null);
   const [modo, setModo] = useState<ModoPanel>("consulta");
-  const [error, setError] = useState<unknown>(null);
 
-  const cargar = async () => {
+  // Caché stale-while-revalidate (ver `swrCache.ts`): con un dataset de
+  // ~1.3M viajes históricos (ver CLAUDE.md §7), volver a una combinación de
+  // filtros/página ya visitada muestra la lista de inmediato desde caché en
+  // vez de repetir la consulta completa contra Mongo, mientras se revalida
+  // en segundo plano.
+  const claveConsulta = (() => {
     const params = new URLSearchParams();
     if (filtroEstado) params.set("estado", filtroEstado);
     if (filtroTexto) params.set("texto", filtroTexto);
@@ -79,15 +84,11 @@ export function SeccionHistorialGlobal() {
     if (hasta) params.set("hasta", new Date(hasta).toISOString());
     params.set("limite", String(pageSize));
     params.set("pagina", String(page + 1));
-    const datos = await apiFetch<HistorialOut>(`/viajes/historial-global?${params.toString()}`);
-    setViajes(datos.viajes);
-    setTotal(datos.total);
-  };
-
-  useEffect(() => {
-    cargar().catch(setError);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtroEstado, filtroTexto, desde, hasta, page, pageSize]);
+    return `${RECURSO_HISTORIAL_GLOBAL}?${params.toString()}`;
+  })();
+  const { data, error, refetch } = useSwr<HistorialOut>(claveConsulta, () => apiFetch<HistorialOut>(claveConsulta));
+  const viajes = data?.viajes ?? [];
+  const total = data?.total ?? 0;
 
   const buscar = () => {
     setFiltroTexto(textoInput.trim());
@@ -107,7 +108,6 @@ export function SeccionHistorialGlobal() {
   const abrirDetalle = (v: Viaje) => {
     setSeleccionado(v);
     setModo("consulta");
-    setError(null);
   };
 
   const mensajeGeneral =
@@ -175,7 +175,7 @@ export function SeccionHistorialGlobal() {
 
       <ActionBar
         nuevo={{ onClick: () => {}, disabled: true, title: "No aplica: los viajes los crean los pasajeros, no el personal interno." }}
-        actualizar={{ onClick: () => cargar() }}
+        actualizar={{ onClick: () => refetch() }}
         eliminar={{ onClick: () => {}, disabled: true, title: "No aplica: un viaje histórico no se elimina." }}
         buscar={{ onClick: buscar }}
         salir={{ onClick: limpiarBusqueda }}
@@ -231,8 +231,22 @@ export function SeccionHistorialGlobal() {
             <DetailField label="Km recorridos" value={seleccionado.km_recorridos ?? "—"} />
             <DetailField label="Tarifa final" value={seleccionado.tarifa_final !== null ? `$${seleccionado.tarifa_final.toFixed(2)}` : "—"} />
             <DetailField label="Motivo de cancelación" value={seleccionado.motivo_cancelacion ?? "—"} />
-            <DetailField label="Calificación pasajero → conductor" value={seleccionado.calificacion_pasajero_a_conductor ?? "—"} />
-            <DetailField label="Calificación conductor → pasajero" value={seleccionado.calificacion_conductor_a_pasajero ?? "—"} />
+            <DetailField
+              label="Calificación pasajero → conductor"
+              value={
+                seleccionado.calificacion_pasajero_a_conductor
+                  ? `${seleccionado.calificacion_pasajero_a_conductor.puntaje}★`
+                  : "—"
+              }
+            />
+            <DetailField
+              label="Calificación conductor → pasajero"
+              value={
+                seleccionado.calificacion_conductor_a_pasajero
+                  ? `${seleccionado.calificacion_conductor_a_pasajero.puntaje}★`
+                  : "—"
+              }
+            />
           </div>
         </DetailPanel>
       )}

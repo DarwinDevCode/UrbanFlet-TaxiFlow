@@ -11,8 +11,16 @@ import {
   KpiRow,
   Select,
   TextField,
+  useSwr,
 } from "@urbanflet/shared-ui";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+
+const RECURSO_PANEL_PLATAFORMA = "/plataforma/panel-tactico";
+
+// Ver PanelMantenimiento.tsx: referencia estable para el fallback de
+// `data?.campo ?? []`, evita invalidar los `useMemo` que dependen de esto.
+const SIN_CORRIDAS: Corrida[] = [];
+const SIN_CUARENTENA: CuarentenaDominio[] = [];
 
 interface Corrida {
   dag_id: string;
@@ -36,33 +44,33 @@ interface CuarentenaDominio {
 // Pipeline y Capacitación (CU-T14/T15). Patrón Z. "Avance de capacitación
 // por área" es backlog consciente — no existe dominio de capacitación en el
 // sistema.
+interface DatosPanelPlataforma {
+  corridas: Corrida[];
+  cuarentena: CuarentenaDominio[];
+}
+
 export function PanelPlataforma() {
-  const [corridas, setCorridas] = useState<Corrida[]>([]);
-  const [cuarentena, setCuarentena] = useState<CuarentenaDominio[]>([]);
-  const [error, setError] = useState<string | null>(null);
   const [filtroDominio, setFiltroDominio] = useState("");
   const [filtroFechaLogica, setFiltroFechaLogica] = useState("");
 
-  const cargar = async () => {
-    try {
-      const params = new URLSearchParams();
-      if (filtroDominio) params.set("dominio", filtroDominio);
-      if (filtroFechaLogica) params.set("fecha_logica", filtroFechaLogica);
-      const [c, cd] = await Promise.all([
-        apiFetch<Corrida[]>(`/plataforma/panel-tactico/corridas?${params.toString()}`),
-        apiFetch<CuarentenaDominio[]>("/plataforma/panel-tactico/cuarentena-dominio"),
-      ]);
-      setCorridas(c);
-      setCuarentena(cd);
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "No se pudo cargar el panel de plataforma");
-    }
-  };
-
-  useEffect(() => {
-    cargar();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtroDominio, filtroFechaLogica]);
+  const claveConsulta = `${RECURSO_PANEL_PLATAFORMA}?dominio=${filtroDominio}&fecha_logica=${filtroFechaLogica}`;
+  const { data, error: errorCarga } = useSwr<DatosPanelPlataforma>(claveConsulta, async () => {
+    const params = new URLSearchParams();
+    if (filtroDominio) params.set("dominio", filtroDominio);
+    if (filtroFechaLogica) params.set("fecha_logica", filtroFechaLogica);
+    const [c, cd] = await Promise.all([
+      apiFetch<Corrida[]>(`/plataforma/panel-tactico/corridas?${params.toString()}`),
+      apiFetch<CuarentenaDominio[]>("/plataforma/panel-tactico/cuarentena-dominio"),
+    ]);
+    return { corridas: c, cuarentena: cd };
+  });
+  const corridas = data?.corridas ?? SIN_CORRIDAS;
+  const cuarentena = data?.cuarentena ?? SIN_CUARENTENA;
+  const error = errorCarga
+    ? errorCarga instanceof ApiError
+      ? errorCarga.message
+      : "No se pudo cargar el panel de plataforma"
+    : null;
 
   const hoy = new Date().toISOString().slice(0, 10);
   const corridasHoyOk = useMemo(

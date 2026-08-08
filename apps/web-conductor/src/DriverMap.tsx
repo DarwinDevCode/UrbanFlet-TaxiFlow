@@ -141,6 +141,9 @@ export interface DriverMapProps {
   ruta: [number, number][] | null;
   onUbicacionEncontrada: (lat: number, lon: number) => void;
   onUbicacionError: (mensaje: string) => void;
+  // Cuando es true, el mapa llena el 100% de la altura de su contenedor en
+  // vez de la altura fija ALTO_MAPA -- ver RideMap.tsx (mismo patrón).
+  llenarAltura?: boolean;
 }
 
 // Mismo valor que RideMap.tsx (ALTO_MAPA) para consistencia visual entre las
@@ -153,9 +156,17 @@ export const ALTO_MAPA = 480;
 // FUERA_DE_LINEA, independientemente de si hay oferta o viaje asignado) —
 // nunca se debe recrear el <MapContainer> al llegar/aceptar/finalizar una
 // oferta, solo cambian los overlays que se dibujan encima.
-export function DriverMap({ propia, recogida, destino, ruta, onUbicacionEncontrada, onUbicacionError }: DriverMapProps) {
+export function DriverMap({
+  propia,
+  recogida,
+  destino,
+  ruta,
+  onUbicacionEncontrada,
+  onUbicacionError,
+  llenarAltura = false,
+}: DriverMapProps) {
   return (
-    <div style={{ height: ALTO_MAPA, borderRadius: "var(--radius-md)", overflow: "hidden" }}>
+    <div style={{ height: llenarAltura ? "100%" : ALTO_MAPA, borderRadius: "var(--radius-md)", overflow: "hidden" }}>
       <MapContainer center={[propia.lat, propia.lon]} zoom={15} style={{ height: "100%", width: "100%" }}>
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'

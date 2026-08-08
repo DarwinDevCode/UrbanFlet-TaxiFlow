@@ -8,12 +8,16 @@ import {
   DataTable,
   DetailField,
   DetailPanel,
+  invalidateSwrPrefix,
   Pagination,
   Select,
   TextField,
+  useSwr,
   type ModoPanel,
 } from "@urbanflet/shared-ui";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+
+const RECURSO_ORDENES = "/mantenimiento/ordenes";
 
 interface Repuesto {
   descripcion: string;
@@ -121,14 +125,12 @@ function RepuestosEditor({
 // de acciones limpia los criterios de búsqueda y vuelve a la lista por
 // defecto; dentro del panel de detalle cierra sin aplicar cambios.
 export function SeccionMantenimiento() {
-  const [ordenes, setOrdenes] = useState<Orden[]>([]);
-  const [total, setTotal] = useState(0);
   const [filtroPlaca, setFiltroPlaca] = useState("");
   const [placaInput, setPlacaInput] = useState("");
   const [filtroEstado, setFiltroEstado] = useState("");
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(20);
-  const [error, setError] = useState<string | null>(null);
+  const [errorAccion, setError] = useState<string | null>(null);
 
   const [seleccionada, setSeleccionada] = useState<Orden | null>(null);
   const [modo, setModo] = useState<ModoPanel>("consulta");
@@ -160,21 +162,22 @@ export function SeccionMantenimiento() {
 
   const [cargando, setCargando] = useState(false);
 
-  const cargar = async () => {
+  const claveConsulta = (() => {
     const params = new URLSearchParams();
     if (filtroPlaca) params.set("placa", filtroPlaca);
     if (filtroEstado) params.set("estado", filtroEstado);
     params.set("limit", String(pageSize));
     params.set("offset", String(page * pageSize));
-    const datos = await apiFetch<OrdenListOut>(`/mantenimiento/ordenes?${params.toString()}`);
-    setOrdenes(datos.items);
-    setTotal(datos.total);
-  };
-
-  useEffect(() => {
-    cargar().catch((e) => setError(e instanceof ApiError ? e.message : "No se pudieron cargar las órdenes"));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtroPlaca, filtroEstado, page, pageSize]);
+    return `${RECURSO_ORDENES}?${params.toString()}`;
+  })();
+  const { data, error: errorCarga, refetch } = useSwr<OrdenListOut>(claveConsulta, () =>
+    apiFetch<OrdenListOut>(claveConsulta),
+  );
+  const ordenes = data?.items ?? [];
+  const total = data?.total ?? 0;
+  const error =
+    errorAccion ??
+    (errorCarga ? (errorCarga instanceof ApiError ? errorCarga.message : "No se pudieron cargar las órdenes") : null);
 
   const buscar = () => {
     setFiltroPlaca(placaInput.trim());
@@ -256,7 +259,8 @@ export function SeccionMantenimiento() {
       });
       setModo("consulta");
       resetFormularioNuevo();
-      await cargar();
+      invalidateSwrPrefix(RECURSO_ORDENES);
+      await refetch();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo crear la orden");
     } finally {
@@ -270,7 +274,8 @@ export function SeccionMantenimiento() {
     try {
       await apiFetch(`/mantenimiento/ordenes/${id}/taller`, { method: "POST" });
       setSeleccionada(null);
-      await cargar();
+      invalidateSwrPrefix(RECURSO_ORDENES);
+      await refetch();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo marcar en taller");
     } finally {
@@ -298,7 +303,8 @@ export function SeccionMantenimiento() {
       });
       setSeleccionada(null);
       setAccion("ninguna");
-      await cargar();
+      invalidateSwrPrefix(RECURSO_ORDENES);
+      await refetch();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo cerrar la orden");
     } finally {
@@ -317,7 +323,8 @@ export function SeccionMantenimiento() {
       });
       setSeleccionada(null);
       setAccion("ninguna");
-      await cargar();
+      invalidateSwrPrefix(RECURSO_ORDENES);
+      await refetch();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo anular la orden");
     } finally {
@@ -381,7 +388,7 @@ export function SeccionMantenimiento() {
 
       <ActionBar
         nuevo={{ onClick: abrirNuevo }}
-        actualizar={{ onClick: () => cargar() }}
+        actualizar={{ onClick: () => refetch() }}
         eliminar={{
           onClick: () => {},
           disabled: true,

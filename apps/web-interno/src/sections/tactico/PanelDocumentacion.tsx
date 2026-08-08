@@ -12,8 +12,17 @@ import {
   Select,
   TextField,
   TrendLineChart,
+  useSwr,
 } from "@urbanflet/shared-ui";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+
+const RECURSO_PANEL_DOCUMENTACION = "/cumplimiento/panel-tactico";
+
+// Ver PanelMantenimiento.tsx: referencia estable para el fallback de
+// `data?.campo ?? []`, evita invalidar los `useMemo` que dependen de esto.
+const SIN_POR_VENCER: DocumentoVencimiento[] = [];
+const SIN_VIGENTE_POR_TIPO: DocumentacionVigente[] = [];
+const SIN_TENDENCIA: DocumentacionVigente[] = [];
 
 interface DocumentoVencimiento {
   documento_id: string;
@@ -34,33 +43,33 @@ interface DocumentacionVigente {
 }
 
 // spec: specs/nivel-tactico/tactico_cumplimiento.md — Panel de Vigencia Documental (CU-T10/OT6.1). Patrón Z.
+interface DatosPanelDocumentacion {
+  porVencer: DocumentoVencimiento[];
+  vigentePorTipo: DocumentacionVigente[];
+  tendencia: DocumentacionVigente[];
+}
+
 export function PanelDocumentacion() {
-  const [porVencer, setPorVencer] = useState<DocumentoVencimiento[]>([]);
-  const [vigentePorTipo, setVigentePorTipo] = useState<DocumentacionVigente[]>([]);
-  const [tendencia, setTendencia] = useState<DocumentacionVigente[]>([]);
-  const [error, setError] = useState<string | null>(null);
   const [filtroTipo, setFiltroTipo] = useState("");
   const [filtroDesde, setFiltroDesde] = useState("");
   const [filtroHasta, setFiltroHasta] = useState("");
 
-  const cargar = async () => {
-    try {
-      const [documentos, vigente, historial] = await Promise.all([
-        apiFetch<DocumentoVencimiento[]>("/cumplimiento/panel-tactico/documentos-por-vencer"),
-        apiFetch<DocumentacionVigente[]>("/cumplimiento/panel-tactico/documentacion-vigente"),
-        apiFetch<DocumentacionVigente[]>("/cumplimiento/panel-tactico/documentacion-tendencia"),
-      ]);
-      setPorVencer(documentos);
-      setVigentePorTipo(vigente);
-      setTendencia(historial);
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "No se pudo cargar el panel de documentación");
-    }
-  };
-
-  useEffect(() => {
-    cargar();
-  }, []);
+  const { data, error: errorCarga } = useSwr<DatosPanelDocumentacion>(RECURSO_PANEL_DOCUMENTACION, async () => {
+    const [documentos, vigente, historial] = await Promise.all([
+      apiFetch<DocumentoVencimiento[]>("/cumplimiento/panel-tactico/documentos-por-vencer"),
+      apiFetch<DocumentacionVigente[]>("/cumplimiento/panel-tactico/documentacion-vigente"),
+      apiFetch<DocumentacionVigente[]>("/cumplimiento/panel-tactico/documentacion-tendencia"),
+    ]);
+    return { porVencer: documentos, vigentePorTipo: vigente, tendencia: historial };
+  });
+  const porVencer = data?.porVencer ?? SIN_POR_VENCER;
+  const vigentePorTipo = data?.vigentePorTipo ?? SIN_VIGENTE_POR_TIPO;
+  const tendencia = data?.tendencia ?? SIN_TENDENCIA;
+  const error = errorCarga
+    ? errorCarga instanceof ApiError
+      ? errorCarga.message
+      : "No se pudo cargar el panel de documentación"
+    : null;
 
   const vencidos = useMemo(() => porVencer.filter((d) => (d.dias_restantes ?? 0) < 0), [porVencer]);
   const porVencer30d = useMemo(() => porVencer.filter((d) => (d.dias_restantes ?? 0) >= 0), [porVencer]);

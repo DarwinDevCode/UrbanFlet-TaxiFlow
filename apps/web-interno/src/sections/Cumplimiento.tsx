@@ -8,12 +8,17 @@ import {
   DataTable,
   DetailField,
   DetailPanel,
+  invalidateSwrPrefix,
   Pagination,
   Select,
   TextArea,
   TextField,
+  useSwr,
 } from "@urbanflet/shared-ui";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+
+const RECURSO_EVENTOS_AUDITORIA = "/auditoria/eventos";
+const RECURSO_RENOVACIONES = "/cumplimiento/documentos/renovaciones-pendientes";
 
 interface ResultadoControl {
   revisados: number;
@@ -57,44 +62,39 @@ interface EventosPage {
 // que cuenta esos eventos en las últimas 24h, sin inventar infraestructura
 // de notificaciones en vivo nueva para esto.
 function SeccionBitacoraAuditoria() {
-  const [eventos, setEventos] = useState<EventoAuditoria[]>([]);
-  const [total, setTotal] = useState(0);
-  const [alertas24h, setAlertas24h] = useState(0);
   const [actorId, setActorId] = useState("");
   const [entidad, setEntidad] = useState("");
   const [accion, setAccion] = useState("");
   const [resultadoFiltro, setResultadoFiltro] = useState("");
   const [pagina, setPagina] = useState(0);
-  const [error, setError] = useState<string | null>(null);
   const tamanioPagina = 20;
 
-  const cargar = async () => {
+  const claveConsulta = (() => {
     const params = new URLSearchParams({ pagina: String(pagina + 1), tamanio_pagina: String(tamanioPagina) });
     if (actorId) params.set("actor_id", actorId);
     if (entidad) params.set("entidad", entidad);
     if (accion) params.set("accion", accion);
     if (resultadoFiltro) params.set("resultado", resultadoFiltro);
-    const datos = await apiFetch<EventosPage>(`/auditoria/eventos?${params.toString()}`);
-    setEventos(datos.items);
-    setTotal(datos.total);
-  };
+    return `${RECURSO_EVENTOS_AUDITORIA}?${params.toString()}`;
+  })();
+  const { data, error: errorCarga } = useSwr<EventosPage>(claveConsulta, () => apiFetch<EventosPage>(claveConsulta));
+  const eventos = data?.items ?? [];
+  const total = data?.total ?? 0;
+  const error = errorCarga ? (errorCarga instanceof ApiError ? errorCarga.message : "No se pudo cargar la bitácora") : null;
 
-  const cargarAlertas = async () => {
-    const desde = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const datos = await apiFetch<EventosPage>(
-      `/auditoria/eventos?accion=ACCESO_DENEGADO&desde=${encodeURIComponent(desde)}&tamanio_pagina=1`,
-    );
-    setAlertas24h(datos.total);
-  };
-
-  useEffect(() => {
-    cargar().catch((e) => setError(e instanceof ApiError ? e.message : "No se pudo cargar la bitácora"));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [actorId, entidad, accion, resultadoFiltro, pagina]);
-
-  useEffect(() => {
-    cargarAlertas().catch(() => {});
-  }, []);
+  // "desde" se redondea a baldes de 5 minutos -- si se recalculara con
+  // `Date.now()` en cada render, la key cambiaría en cada render (distinto
+  // "ahora - 24h" hasta el milisegundo) y el hook nunca podría servir desde
+  // caché ni evitar un fetch nuevo en cada repintado. El balde de 5 minutos
+  // conserva el propósito (ventana de "últimas 24h", sin precisión real de
+  // milisegundo) mientras mantiene la key estable entre renders.
+  const baldeMs = 5 * 60 * 1000;
+  const desdeBalde = Math.floor((Date.now() - 24 * 60 * 60 * 1000) / baldeMs) * baldeMs;
+  const claveAlertas = `${RECURSO_EVENTOS_AUDITORIA}?accion=ACCESO_DENEGADO&desde=${encodeURIComponent(
+    new Date(desdeBalde).toISOString(),
+  )}&tamanio_pagina=1`;
+  const { data: datosAlertas } = useSwr<EventosPage>(claveAlertas, () => apiFetch<EventosPage>(claveAlertas));
+  const alertas24h = datosAlertas?.total ?? 0;
 
   return (
     <Card>
@@ -186,8 +186,7 @@ function SeccionBitacoraAuditoria() {
 // un motivo hardcodeado ("Documento observado desde el panel interno") —
 // el supervisor lo escribe, igual que en Solicitudes.
 function SeccionRenovaciones({ refreshSignal }: { refreshSignal: number }) {
-  const [pendientes, setPendientes] = useState<RenovacionPendiente[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [errorAccion, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
 
   const [textoInput, setTextoInput] = useState("");
@@ -200,14 +199,20 @@ function SeccionRenovaciones({ refreshSignal }: { refreshSignal: number }) {
   const [decision, setDecision] = useState<"APROBAR" | "OBSERVAR">("APROBAR");
   const [motivo, setMotivo] = useState("");
 
-  const cargarPendientes = async () => {
-    const datos = await apiFetch<RenovacionPendiente[]>("/cumplimiento/documentos/renovaciones-pendientes");
-    setPendientes(datos);
-  };
-
-  useEffect(() => {
-    cargarPendientes().catch((e) => setError(e instanceof ApiError ? e.message : "No se pudieron cargar las renovaciones"));
-  }, [refreshSignal]);
+  // `refreshSignal` (incrementado por el padre tras "Ejecutar control de
+  // vigencia") se incluye en la key a propósito: fuerza una key nueva (sin
+  // caché todavía) que dispara un fetch fresco, mismo efecto que el
+  // `useEffect([refreshSignal])` de antes, pero conservando el caché
+  // stale-while-revalidate para una visita normal de la sección (donde
+  // `refreshSignal` vuelve a su valor inicial en cada montaje).
+  const claveConsulta = `${RECURSO_RENOVACIONES}?refresh=${refreshSignal}`;
+  const { data: pendientes = [], error: errorCarga, refetch: refetchPendientes } = useSwr<RenovacionPendiente[]>(
+    claveConsulta,
+    () => apiFetch<RenovacionPendiente[]>(RECURSO_RENOVACIONES),
+  );
+  const error =
+    errorAccion ??
+    (errorCarga ? (errorCarga instanceof ApiError ? errorCarga.message : "No se pudieron cargar las renovaciones") : null);
 
   const tiposDisponibles = useMemo(() => Array.from(new Set(pendientes.map((p) => p.tipo))).sort(), [pendientes]);
 
@@ -253,7 +258,8 @@ function SeccionRenovaciones({ refreshSignal }: { refreshSignal: number }) {
       });
       setSeleccionada(null);
       setMotivo("");
-      await cargarPendientes();
+      invalidateSwrPrefix(RECURSO_RENOVACIONES);
+      await refetchPendientes();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo verificar la renovación");
     } finally {
@@ -294,7 +300,7 @@ function SeccionRenovaciones({ refreshSignal }: { refreshSignal: number }) {
           disabled: true,
           title: "No aplica: las renovaciones las suben los propios conductores/propietarios, no el personal interno.",
         }}
-        actualizar={{ onClick: () => cargarPendientes() }}
+        actualizar={{ onClick: () => refetchPendientes() }}
         eliminar={{
           onClick: () => {},
           disabled: true,

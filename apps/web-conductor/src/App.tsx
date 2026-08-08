@@ -10,6 +10,7 @@ import {
   DataTable,
   DetailField,
   DetailPanel,
+  logoUrbanFleetFull,
   NotificacionesBell,
   PerfilPropio,
   Select,
@@ -1114,13 +1115,20 @@ function PantallaTurno() {
     }
 
     contenido = (
-      <div style={{ position: "relative" }}>
+      // Rediseño (ronda de correcciones tras UX complementaria): el mapa
+      // llena todo el alto disponible de la pantalla (ver `llenarAltura` en
+      // DriverMap) en vez de un recuadro fijo de 480px, y el panel ya no
+      // tiene un tope duro de 260px que forzaba scroll interno — el tope
+      // ahora es relativo al alto real del mapa. Mismo patrón que RideMap
+      // en web-pasajero.
+      <div style={{ position: "relative", flex: 1, minHeight: "320px" }}>
         {posicionPropia ? (
           <DriverMap
             propia={posicionPropia}
             recogida={recogida}
             destino={destino}
             ruta={ruta}
+            llenarAltura
             onUbicacionEncontrada={(lat, lon) => {
               setPosicionPropia({ lat, lon });
               setError(null);
@@ -1130,7 +1138,7 @@ function PantallaTurno() {
         ) : (
           <div
             style={{
-              height: 480,
+              height: "100%",
               borderRadius: "var(--radius-md)",
               background: "var(--color-surface)",
               border: "1px solid var(--color-border)",
@@ -1157,7 +1165,7 @@ function PantallaTurno() {
             left: "var(--space-3)",
             bottom: "var(--space-3)",
             width: "min(340px, calc(100% - 2 * var(--space-3)))",
-            maxHeight: "min(45%, 260px)",
+            maxHeight: "calc(100% - 2 * var(--space-3))",
             overflowY: "auto",
             zIndex: 1001,
           }}
@@ -1175,7 +1183,18 @@ function PantallaTurno() {
       onNavigate={(id) => setVista(id as "turno" | "historial" | "liquidaciones" | "perfil" | "ajustes" | "ayuda")}
       headerActions={<NotificacionesBell />}
     >
-      <div style={{ width: "100%" }}>{contenido}</div>
+      <div
+        style={
+          // Mapa del turno activo: llena todo el alto disponible (ver
+          // `contenido` arriba). El resto de secciones siguen con su alto
+          // natural de contenido.
+          vista === "turno" && estado !== "FUERA_DE_LINEA"
+            ? { width: "100%", display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }
+            : { width: "100%" }
+        }
+      >
+        {contenido}
+      </div>
     </AppShell>
   );
 }
@@ -1199,6 +1218,9 @@ export default function App() {
       }}
     >
       <div style={{ width: "min(440px, 100%)" }}>
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: "var(--space-4)" }}>
+          <img src={logoUrbanFleetFull} alt="UrbanFleet" style={{ width: 160, maxWidth: "100%", height: "auto" }} />
+        </div>
         {vista === "login" && <LoginCard onPostular={() => setVista("postulacion")} />}
         {vista === "postulacion" && <PostulacionForm onEnviada={() => setVista("postulacion-enviada")} />}
         {vista === "postulacion-enviada" && (

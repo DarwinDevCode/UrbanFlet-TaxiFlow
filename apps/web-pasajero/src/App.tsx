@@ -9,6 +9,7 @@ import {
   DataTable,
   DetailField,
   DetailPanel,
+  logoUrbanFleetFull,
   NotificacionesBell,
   PerfilPropio,
   Select,
@@ -21,7 +22,7 @@ import {
   type PreguntaFrecuente,
 } from "@urbanflet/shared-ui";
 import { useEffect, useState, type CSSProperties } from "react";
-import { ALTO_MAPA, RideMap } from "./RideMap";
+import { RideMap } from "./RideMap";
 import { estimarRuta, geocodificarInverso } from "./rutas";
 
 const VERSION_CONSENTIMIENTO = "v1-2026-07";
@@ -319,15 +320,20 @@ interface TarifaVigente {
 // arriba-izquierda, "ir a mi ubicación" arriba-derecha).
 // Compacto a propósito: el mapa es el elemento principal de la pantalla, el
 // panel es un overlay que se le agrega encima, no una segunda pantalla que
-// lo tapa. Ancho acotado (no left+right = todo el ancho) y alto reducido —
-// corregido tras hallazgo en pruebas reales: la versión anterior llegaba a
-// cubrir ~87% del alto del mapa (420px de 480px totales).
+// lo tapa. Ancho acotado (no left+right = todo el ancho).
+// Rediseño (ronda de correcciones tras UX complementaria): el mapa ahora
+// llena todo el alto disponible de la pantalla (ver `llenarAltura` en
+// RideMap) en vez de un recuadro fijo de 480px, así que el panel ya no
+// necesita el tope duro de 260px que antes forzaba scroll interno con
+// contenido normal (detalle del conductor, compartir, cancelar) — el tope
+// ahora es relativo al alto real del mapa, con margen arriba/abajo para no
+// tapar los controles de Leaflet.
 const overlayPanelStyle: CSSProperties = {
   position: "absolute",
   left: "var(--space-3)",
   bottom: "var(--space-3)",
   width: "min(340px, calc(100% - 2 * var(--space-3)))",
-  maxHeight: "min(45%, 260px)",
+  maxHeight: "calc(100% - 2 * var(--space-3))",
   overflowY: "auto",
   zIndex: 500,
   background: "var(--color-surface)",
@@ -1141,12 +1147,17 @@ function VistaViaje({ viaje, setViaje }: { viaje: Viaje | null; setViaje: (v: Vi
       : null;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)", flex: 1, minHeight: 0 }}>
       {/* CU-O04 paso 1: el mapa está siempre presente en esta pantalla —
           mientras se resuelve el permiso/la posición se muestra un estado de
           carga en el mismo lugar. Una vez que hay un viaje, sigue siendo el
-          mismo elemento montado: solo cambian los marcadores/overlay. */}
-      <div style={{ position: "relative" }}>
+          mismo elemento montado: solo cambian los marcadores/overlay.
+          `flex:1` + `minHeight` propio (no 0: un contenedor "relative" con
+          minHeight:0 puede colapsar a 0px real en algunos navegadores
+          cuando su único contenido es absolutamente posicionado) para que
+          el mapa llene el espacio vertical disponible en vez de un
+          recuadro fijo. */}
+      <div style={{ position: "relative", flex: 1, minHeight: "320px" }}>
         {mapaOrigen ? (
           <RideMap
             origen={mapaOrigen}
@@ -1155,6 +1166,7 @@ function VistaViaje({ viaje, setViaje }: { viaje: Viaje | null; setViaje: (v: Vi
             cercanos={cercanos}
             conductor={conductorPos}
             clicksHabilitados={!viaje}
+            llenarAltura
             onMapaClick={manejarClickMapa}
             onUbicacionEncontrada={(lat, lon) => {
               if (viaje) return;
@@ -1171,7 +1183,7 @@ function VistaViaje({ viaje, setViaje }: { viaje: Viaje | null; setViaje: (v: Vi
         ) : (
           <div
             style={{
-              height: ALTO_MAPA,
+              height: "100%",
               borderRadius: "var(--radius-md)",
               background: "var(--color-surface)",
               border: "1px solid var(--color-border)",
@@ -1696,7 +1708,18 @@ function InicioAutenticado() {
       onNavigate={(id) => setVista(id as "viaje" | "historial" | "perfil" | "ajustes" | "ayuda")}
       headerActions={<NotificacionesBell />}
     >
-      <div style={{ width: "100%" }}>
+      <div
+        style={
+          // Sección "Viaje" (mapa + overlay): llena todo el alto disponible
+          // de la pantalla en vez de una altura de contenido normal, para
+          // que el mapa aproveche el espacio real del viewport (ver
+          // VistaViaje/RideMap `llenarAltura`). El resto de secciones
+          // siguen con su alto natural de contenido.
+          vista === "viaje" && viaje !== undefined
+            ? { width: "100%", display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }
+            : { width: "100%" }
+        }
+      >
         {vista === "perfil" ? (
           <PerfilPropio extra={<GestionDireccionesFavoritas />} />
         ) : vista === "ajustes" ? (
@@ -1847,6 +1870,9 @@ export default function App() {
       }}
     >
       <div style={{ width: "min(400px, 100%)" }}>
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: "var(--space-4)" }}>
+          <img src={logoUrbanFleetFull} alt="UrbanFleet" style={{ width: 160, maxWidth: "100%", height: "auto" }} />
+        </div>
         <LoginCard />
       </div>
     </div>

@@ -5,6 +5,7 @@ import {
   Button,
   Card,
   CentroAyuda,
+  logoUrbanFleetFull,
   NotificacionesBell,
   PerfilPropio,
   TextField,
@@ -64,6 +65,9 @@ function LoginCard() {
   return (
     <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: "var(--space-4)" }}>
       <div style={{ width: "min(420px, 100%)" }}>
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: "var(--space-4)" }}>
+          <img src={logoUrbanFleetFull} alt="UrbanFleet" style={{ width: 160, maxWidth: "100%", height: "auto" }} />
+        </div>
         <Card>
           <h1 style={{ fontSize: "var(--font-size-lg)", margin: 0, marginBottom: "var(--space-2)" }}>
             Portal interno

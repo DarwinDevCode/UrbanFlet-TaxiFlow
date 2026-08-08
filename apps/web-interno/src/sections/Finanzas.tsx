@@ -8,13 +8,19 @@ import {
   DataTable,
   DetailField,
   DetailPanel,
+  invalidateSwrPrefix,
   Pagination,
   Select,
   TextArea,
   TextField,
+  useSwr,
   type ModoPanel,
 } from "@urbanflet/shared-ui";
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+
+const RECURSO_DISCREPANCIAS = "/pagos/discrepancias";
+const RECURSO_LIQUIDACIONES = "/liquidaciones";
+const RECURSO_ALERTAS_SALDO = "/liquidaciones/alertas-saldo-negativo";
 
 interface Pago {
   id: string;
@@ -96,17 +102,13 @@ function nombreConductor(id: string, nombre: string | null): ReactNode {
 }
 
 export function SeccionFinanzas() {
-  const [bandeja, setBandeja] = useState<Bandeja>({ discrepancias: [], viajes_sin_pago: [] });
-  const [liquidaciones, setLiquidaciones] = useState<Liquidacion[]>([]);
-  const [totalLiquidaciones, setTotalLiquidaciones] = useState(0);
   const [filtroEstadoLiq, setFiltroEstadoLiq] = useState("");
   const [pageLiq, setPageLiq] = useState(0);
   const [pageSizeLiq, setPageSizeLiq] = useState(20);
-  const [alertas, setAlertas] = useState<AlertaSaldoNegativo[]>([]);
   const [ultimoResultado, setUltimoResultado] = useState<GenerarLiquidacionesResponse | null>(null);
   const [generando, setGenerando] = useState(false);
   const [accionando, setAccionando] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [errorAccion, setError] = useState<string | null>(null);
   const [pagoEnResolucion, setPagoEnResolucion] = useState<string | null>(null);
   const [motivo, setMotivo] = useState("");
   const [observacionEnRespuesta, setObservacionEnRespuesta] = useState<string | null>(null);
@@ -115,39 +117,41 @@ export function SeccionFinanzas() {
   const [liquidacionSeleccionada, setLiquidacionSeleccionada] = useState<Liquidacion | null>(null);
   const [modoLiq, setModoLiq] = useState<ModoPanel>("consulta");
 
-  const cargar = async () => {
-    const datos = await apiFetch<Bandeja>("/pagos/discrepancias");
-    setBandeja(datos);
-  };
+  const {
+    data: bandeja = { discrepancias: [], viajes_sin_pago: [] },
+    error: errorBandeja,
+    refetch: refetchBandeja,
+  } = useSwr<Bandeja>(RECURSO_DISCREPANCIAS, () => apiFetch<Bandeja>(RECURSO_DISCREPANCIAS));
 
-  const cargarLiquidaciones = async () => {
+  const {
+    data: alertas = [],
+    error: errorAlertas,
+    refetch: refetchAlertas,
+  } = useSwr<AlertaSaldoNegativo[]>(RECURSO_ALERTAS_SALDO, () => apiFetch<AlertaSaldoNegativo[]>(RECURSO_ALERTAS_SALDO));
+
+  const claveLiquidaciones = (() => {
     const params = new URLSearchParams();
     if (filtroEstadoLiq) params.set("estado", filtroEstadoLiq);
     params.set("limit", String(pageSizeLiq));
     params.set("offset", String(pageLiq * pageSizeLiq));
-    const datos = await apiFetch<LiquidacionListOut>(`/liquidaciones?${params.toString()}`);
-    setLiquidaciones(datos.items);
-    setTotalLiquidaciones(datos.total);
-  };
+    return `${RECURSO_LIQUIDACIONES}?${params.toString()}`;
+  })();
+  const {
+    data: datosLiquidaciones,
+    error: errorLiquidaciones,
+    refetch: refetchLiquidaciones,
+  } = useSwr<LiquidacionListOut>(claveLiquidaciones, () => apiFetch<LiquidacionListOut>(claveLiquidaciones));
+  const liquidaciones = datosLiquidaciones?.items ?? [];
+  const totalLiquidaciones = datosLiquidaciones?.total ?? 0;
 
-  const cargarAlertas = async () => {
-    const datos = await apiFetch<AlertaSaldoNegativo[]>("/liquidaciones/alertas-saldo-negativo");
-    setAlertas(datos);
-  };
-
-  useEffect(() => {
-    cargar().catch((e) => setError(e instanceof ApiError ? e.message : "No se pudo cargar la bandeja de discrepancias"));
-    cargarAlertas().catch((e) =>
-      setError(e instanceof ApiError ? e.message : "No se pudieron cargar las alertas de saldo negativo"),
-    );
-  }, []);
-
-  useEffect(() => {
-    cargarLiquidaciones().catch((e) =>
-      setError(e instanceof ApiError ? e.message : "No se pudieron cargar las liquidaciones"),
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtroEstadoLiq, pageLiq, pageSizeLiq]);
+  const primerErrorCarga = errorBandeja ?? errorAlertas ?? errorLiquidaciones;
+  const error =
+    errorAccion ??
+    (primerErrorCarga
+      ? primerErrorCarga instanceof ApiError
+        ? primerErrorCarga.message
+        : "No se pudieron cargar los datos de finanzas"
+      : null);
 
   const generarLiquidaciones = async () => {
     setError(null);
@@ -155,8 +159,9 @@ export function SeccionFinanzas() {
     try {
       const resultado = await apiFetch<GenerarLiquidacionesResponse>("/liquidaciones/generar", { method: "POST" });
       setUltimoResultado(resultado);
-      await cargarLiquidaciones();
-      await cargarAlertas();
+      invalidateSwrPrefix(RECURSO_LIQUIDACIONES);
+      await refetchLiquidaciones();
+      await refetchAlertas();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo generar la liquidación del periodo");
     } finally {
@@ -170,7 +175,8 @@ export function SeccionFinanzas() {
     try {
       await apiFetch(`/liquidaciones/${liquidacionId}/aprobar`, { method: "POST" });
       setLiquidacionSeleccionada(null);
-      await cargarLiquidaciones();
+      invalidateSwrPrefix(RECURSO_LIQUIDACIONES);
+      await refetchLiquidaciones();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo aprobar la liquidación");
     } finally {
@@ -184,8 +190,9 @@ export function SeccionFinanzas() {
     try {
       await apiFetch(`/liquidaciones/${liquidacionId}/pagar`, { method: "POST" });
       setLiquidacionSeleccionada(null);
-      await cargarLiquidaciones();
-      await cargarAlertas();
+      invalidateSwrPrefix(RECURSO_LIQUIDACIONES);
+      await refetchLiquidaciones();
+      await refetchAlertas();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo confirmar el pago de la liquidación");
     } finally {
@@ -206,8 +213,9 @@ export function SeccionFinanzas() {
       setRespuestaMotivo("");
       setAjusteMonto("");
       setLiquidacionSeleccionada(null);
-      await cargarLiquidaciones();
-      await cargarAlertas();
+      invalidateSwrPrefix(RECURSO_LIQUIDACIONES);
+      await refetchLiquidaciones();
+      await refetchAlertas();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo responder a la observación");
     } finally {
@@ -236,7 +244,7 @@ export function SeccionFinanzas() {
       await apiFetch(`/pagos/${pagoId}/resolver`, { method: "POST", body: { aceptar, motivo } });
       setPagoEnResolucion(null);
       setMotivo("");
-      await cargar();
+      await refetchBandeja();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo resolver la discrepancia");
     }
@@ -395,9 +403,9 @@ export function SeccionFinanzas() {
 
       <ActionBar
         nuevo={{ onClick: () => {}, disabled: true, title: "No aplica: las liquidaciones se generan por lote, no una a una." }}
-        actualizar={{ onClick: () => cargarLiquidaciones() }}
+        actualizar={{ onClick: () => refetchLiquidaciones() }}
         eliminar={{ onClick: () => {}, disabled: true, title: "No aplica: las liquidaciones no se eliminan." }}
-        buscar={{ onClick: () => cargarLiquidaciones() }}
+        buscar={{ onClick: () => refetchLiquidaciones() }}
         salir={{ onClick: limpiarBusquedaLiquidaciones }}
       />
 

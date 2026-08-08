@@ -9,9 +9,15 @@ import {
   DetailPanel,
   Select,
   TextField,
+  useSwr,
   type ModoPanel,
 } from "@urbanflet/shared-ui";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+
+const RECURSO_ZONAS = "/parametros/zonas";
+const RECURSO_TIPOS_DOCUMENTO = "/catalogos/tipos-documento";
+const RECURSO_MOTIVOS = "/catalogos/motivos";
+const RECURSO_TALLERES = "/catalogos/talleres";
 
 interface Zona {
   id: string;
@@ -66,18 +72,17 @@ function TabButton({ activa, onClick, children }: { activa: boolean; onClick: ()
 }
 
 function SeccionZonas() {
-  const [zonas, setZonas] = useState<Zona[]>([]);
   const [seleccionada, setSeleccionada] = useState<Zona | null>(null);
   const [modo, setModo] = useState<ModoPanel>("consulta");
   const [nombre, setNombre] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [errorAccion, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
 
-  const cargar = async () => setZonas(await apiFetch<Zona[]>("/parametros/zonas", { auth: false }));
-
-  useEffect(() => {
-    cargar().catch((e) => setError(e instanceof ApiError ? e.message : "No se pudieron cargar las zonas"));
-  }, []);
+  const { data: zonas = [], error: errorCarga, refetch } = useSwr<Zona[]>(RECURSO_ZONAS, () =>
+    apiFetch<Zona[]>(RECURSO_ZONAS, { auth: false }),
+  );
+  const error =
+    errorAccion ?? (errorCarga ? (errorCarga instanceof ApiError ? errorCarga.message : "No se pudieron cargar las zonas") : null);
 
   const abrirNuevo = () => {
     setSeleccionada(null);
@@ -104,7 +109,7 @@ function SeccionZonas() {
       }
       setSeleccionada(null);
       setModo("consulta");
-      await cargar();
+      await refetch();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo guardar la zona");
     } finally {
@@ -119,7 +124,7 @@ function SeccionZonas() {
     try {
       await apiFetch(`/parametros/zonas/${seleccionada.id}`, { method: "DELETE" });
       setSeleccionada(null);
-      await cargar();
+      await refetch();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo eliminar la zona");
     } finally {
@@ -131,7 +136,7 @@ function SeccionZonas() {
     <Card>
       <ActionBar
         nuevo={{ onClick: abrirNuevo }}
-        actualizar={{ onClick: () => cargar() }}
+        actualizar={{ onClick: () => refetch() }}
         eliminar={{ onClick: () => {}, disabled: true, title: "Elige una zona en la tabla y usa 'Eliminar' dentro de su detalle." }}
         buscar={{ onClick: () => {}, disabled: true, title: "No aplica: la lista de zonas no pagina." }}
         salir={{ onClick: () => setSeleccionada(null) }}
@@ -177,21 +182,21 @@ function SeccionZonas() {
 }
 
 function SeccionTiposDocumento() {
-  const [tipos, setTipos] = useState<TipoDocumento[]>([]);
   const [seleccionado, setSeleccionado] = useState<TipoDocumento | null>(null);
   const [modo, setModo] = useState<ModoPanel>("consulta");
   const [nombre, setNombre] = useState("");
   const [descripcion, setDescripcion] = useState("");
   const [aplicaA, setAplicaA] = useState<"conductor" | "vehiculo" | "ambos">("ambos");
   const [activo, setActivo] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [errorAccion, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
 
-  const cargar = async () => setTipos(await apiFetch<TipoDocumento[]>("/catalogos/tipos-documento"));
-
-  useEffect(() => {
-    cargar().catch((e) => setError(e instanceof ApiError ? e.message : "No se pudieron cargar los tipos de documento"));
-  }, []);
+  const { data: tipos = [], error: errorCarga, refetch } = useSwr<TipoDocumento[]>(RECURSO_TIPOS_DOCUMENTO, () =>
+    apiFetch<TipoDocumento[]>(RECURSO_TIPOS_DOCUMENTO),
+  );
+  const error =
+    errorAccion ??
+    (errorCarga ? (errorCarga instanceof ApiError ? errorCarga.message : "No se pudieron cargar los tipos de documento") : null);
 
   const abrirNuevo = () => {
     setSeleccionado(null);
@@ -224,7 +229,7 @@ function SeccionTiposDocumento() {
       }
       setSeleccionado(null);
       setModo("consulta");
-      await cargar();
+      await refetch();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo guardar el tipo de documento");
     } finally {
@@ -236,7 +241,7 @@ function SeccionTiposDocumento() {
     <Card>
       <ActionBar
         nuevo={{ onClick: abrirNuevo }}
-        actualizar={{ onClick: () => cargar() }}
+        actualizar={{ onClick: () => refetch() }}
         eliminar={{ onClick: () => {}, disabled: true, title: "No aplica: un tipo de documento se desactiva, no se elimina." }}
         buscar={{ onClick: () => {}, disabled: true, title: "No aplica: la lista no pagina." }}
         salir={{ onClick: () => setSeleccionado(null) }}
@@ -292,21 +297,20 @@ function SeccionTiposDocumento() {
 }
 
 function SeccionMotivos() {
-  const [motivos, setMotivos] = useState<Motivo[]>([]);
   const [seleccionado, setSeleccionado] = useState<Motivo | null>(null);
   const [modo, setModo] = useState<ModoPanel>("consulta");
   const [nombre, setNombre] = useState("");
   const [descripcion, setDescripcion] = useState("");
   const [categoria, setCategoria] = useState<"cancelacion" | "incidencia">("cancelacion");
   const [activo, setActivo] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [errorAccion, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
 
-  const cargar = async () => setMotivos(await apiFetch<Motivo[]>("/catalogos/motivos"));
-
-  useEffect(() => {
-    cargar().catch((e) => setError(e instanceof ApiError ? e.message : "No se pudieron cargar los motivos"));
-  }, []);
+  const { data: motivos = [], error: errorCarga, refetch } = useSwr<Motivo[]>(RECURSO_MOTIVOS, () =>
+    apiFetch<Motivo[]>(RECURSO_MOTIVOS),
+  );
+  const error =
+    errorAccion ?? (errorCarga ? (errorCarga instanceof ApiError ? errorCarga.message : "No se pudieron cargar los motivos") : null);
 
   const abrirNuevo = () => {
     setSeleccionado(null);
@@ -339,7 +343,7 @@ function SeccionMotivos() {
       }
       setSeleccionado(null);
       setModo("consulta");
-      await cargar();
+      await refetch();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo guardar el motivo");
     } finally {
@@ -351,7 +355,7 @@ function SeccionMotivos() {
     <Card>
       <ActionBar
         nuevo={{ onClick: abrirNuevo }}
-        actualizar={{ onClick: () => cargar() }}
+        actualizar={{ onClick: () => refetch() }}
         eliminar={{ onClick: () => {}, disabled: true, title: "No aplica: un motivo se desactiva, no se elimina." }}
         buscar={{ onClick: () => {}, disabled: true, title: "No aplica: la lista no pagina." }}
         salir={{ onClick: () => setSeleccionado(null) }}
@@ -406,21 +410,20 @@ function SeccionMotivos() {
 }
 
 function SeccionTalleres() {
-  const [talleres, setTalleres] = useState<Taller[]>([]);
   const [seleccionado, setSeleccionado] = useState<Taller | null>(null);
   const [modo, setModo] = useState<ModoPanel>("consulta");
   const [nombre, setNombre] = useState("");
   const [direccion, setDireccion] = useState("");
   const [telefono, setTelefono] = useState("");
   const [activo, setActivo] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [errorAccion, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
 
-  const cargar = async () => setTalleres(await apiFetch<Taller[]>("/catalogos/talleres"));
-
-  useEffect(() => {
-    cargar().catch((e) => setError(e instanceof ApiError ? e.message : "No se pudieron cargar los talleres"));
-  }, []);
+  const { data: talleres = [], error: errorCarga, refetch } = useSwr<Taller[]>(RECURSO_TALLERES, () =>
+    apiFetch<Taller[]>(RECURSO_TALLERES),
+  );
+  const error =
+    errorAccion ?? (errorCarga ? (errorCarga instanceof ApiError ? errorCarga.message : "No se pudieron cargar los talleres") : null);
 
   const abrirNuevo = () => {
     setSeleccionado(null);
@@ -453,7 +456,7 @@ function SeccionTalleres() {
       }
       setSeleccionado(null);
       setModo("consulta");
-      await cargar();
+      await refetch();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo guardar el taller");
     } finally {
@@ -465,7 +468,7 @@ function SeccionTalleres() {
     <Card>
       <ActionBar
         nuevo={{ onClick: abrirNuevo }}
-        actualizar={{ onClick: () => cargar() }}
+        actualizar={{ onClick: () => refetch() }}
         eliminar={{ onClick: () => {}, disabled: true, title: "No aplica: un taller se desactiva, no se elimina." }}
         buscar={{ onClick: () => {}, disabled: true, title: "No aplica: la lista no pagina." }}
         salir={{ onClick: () => setSeleccionado(null) }}

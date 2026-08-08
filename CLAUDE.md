@@ -1666,3 +1666,251 @@ forma permanente — UrbanFleet es un proyecto académico, no una cooperativa
 real en operación, así que no existe ningún dato de contacto real que
 reemplazar. No es un TODO pendiente; no reabrir este punto salvo pedido
 explícito de un dato de contacto real.
+
+## 11. Ronda de correcciones y mejoras (2026-08-07, post-UX complementaria)
+
+Detectadas en pruebas manuales reales tras el cierre del bloque de UX
+complementaria (§10). 4 de 5 puntos cerrados y verificados en navegador; el
+5to (arquitectura de caché) quedó en propuesta, pendiente de aprobación
+explícita del usuario antes de construirse — **no implementar sin esa
+aprobación**.
+
+- ✅ **Bug real — crash en "Historial de viajes" (web-interno)**: cerrado.
+  `HistorialGlobal.tsx` tipaba `calificacion_pasajero_a_conductor`/
+  `calificacion_conductor_a_pasajero` como `number | null`, pero
+  `ViajeOut` (`backend/src/viajes/schemas.py:72-73`) los devuelve como
+  `CalificacionOut | null` (`{puntaje, comentario, ts}`) — el objeto
+  completo se pasaba a `DetailField`, reventando con "Objects are not
+  valid as a React child". Corregido el tipo y el render (`{puntaje}★`,
+  mismo patrón ya usado en `web-pasajero`/`web-conductor`, que nunca
+  tuvieron este bug). Causa de que el test existente no lo detectara: el
+  mock de `App.test.tsx` (`crearViajeHistorial`) usaba números planos en
+  vez del shape real del backend — corregido también, más una aserción
+  nueva (`"5★"` ×2) que ahora sí ejercita el render real. Revisado el
+  resto de usos de `DetailField` en `web-interno` (grep de
+  `DetailField label=.*value=`) — ningún otro caso pasa un objeto crudo.
+- ✅ **Rediseño — overlay del mapa (web-pasajero/web-conductor)**: cerrado.
+  El mapa (`RideMap`/`DriverMap`) tenía altura fija de 480px
+  (`ALTO_MAPA`) sin importar el viewport, y el panel flotante encima
+  tenía un tope duro de `min(45%, 260px)` con `overflowY: auto` que
+  forzaba scroll interno. Ambos problemas venían de la misma causa: el
+  mapa nunca llenaba el espacio real disponible de la pantalla. Fix:
+  nuevo prop `llenarAltura` en `RideMap`/`DriverMap` (usa `height:"100%"`
+  del contenedor en vez de `ALTO_MAPA` fijo — los usos de historial/vista
+  pública compartida siguen con altura fija, sin cambios) + cadena de
+  `flex:1`/`minHeight:0` desde `AppShell.css` (`.shell-content` pasó a
+  `display:flex; flex-direction:column`) hasta el contenedor del mapa en
+  cada app, condicionada solo a la vista de mapa activo (no afecta el
+  resto de pantallas de `web-pasajero`/`web-conductor`, que siguen con
+  alto de contenido normal). El panel flotante pasó su `maxHeight` de
+  `min(45%, 260px)` a `calc(100% - 2 * var(--space-3))` — ya no necesita
+  el tope duro porque el mapa (su contenedor) ahora es mucho más alto.
+  Verificado en navegador real (cuentas demo pasajero/conductor): mapa
+  llena 608px de un viewport de 720px de alto (antes serían 480px fijos,
+  ~130px de espacio sobrante); overlay sin scroll en ningún estado
+  probado (`scrollHeight === clientHeight` medido con `getComputedStyle`/
+  DOM real, tanto en "¿A dónde vamos?" sin origen como en "Mi turno"
+  DISPONIBLE). `npm run build/lint/test` limpios en las 3 apps +
+  `shared-ui` lint.
+- ✅ **Verificación — Densidad de tablas (Ajustes, web-interno)**: no era
+  un bug, confirmado exhaustivamente. `aplicarDensidadInicial()` se llama
+  en `main.tsx` antes del primer render (mismo patrón que `theme.ts`), la
+  preferencia es una variable CSS global en `<html>`
+  (`--table-cell-padding-y/x`), así que persiste en navegación entre
+  secciones y en recarga completa de página — confirmado con
+  `getComputedStyle` real tras un `navigate` de página completa, no solo
+  cambio de estado en memoria. Confirmado en 3 tablas distintas
+  (Solicitudes, Mantenimiento, Flota): alto de fila real 61px→51px
+  (~16%) al pasar de "Cómoda" (no seteada = usa el mismo fallback de
+  8px/12px, por diseño — por eso elegir "Cómoda" explícitamente no se ve
+  distinto de no tocar el ajuste) a "Compacta" (3px/8px). Pasos de
+  reproducción para confirmarlo a simple vista: **Ajustes → Densidad de
+  tablas → Compacta**, comparar cualquier tabla del sistema — el cambio
+  es inmediato, sin recargar.
+- ✅ **Logo oficial**: cerrado. `logo_urbanflet.png` (1408×768, sin
+  transparencia real pese a ser RGBA) ya estaba en la raíz del repo, sin
+  que el usuario tuviera que agregarlo. Recortado en 2 variantes vía PIL
+  (bbox por distancia de color contra blanco, ver histórico de comandos
+  de esta sesión si hace falta reproducir el recorte) a
+  `apps/shared-ui/src/assets/`: `logo-urbanflet-icon.png` (485×485,
+  cuadrado, solo el emblema circular, con relleno blanco simétrico para
+  no cortar contenido) para sidebar/header, y `logo-urbanflet-full.png`
+  (607×567, emblema + wordmark "URBANFLEET / COOPERATIVA DE TRANSPORTE")
+  para las 3 pantallas de login. Nuevo módulo `shared-ui/src/logo.ts`
+  (reexportado desde `index.ts`) para que las 3 apps importen
+  `logoUrbanFleetIcon`/`logoUrbanFleetFull` desde `@urbanflet/shared-ui`
+  en vez de rutas relativas cruzadas entre paquetes. Reemplazó el
+  cuadrado de color placeholder en `AppShell.tsx` (sidebar, 32×32, las 3
+  apps) y se agregó sobre el título de cada `LoginCard`
+  (`web-pasajero`/`web-conductor`/`web-interno`, 160px de ancho,
+  `height:auto` para no distorsionar). Verificado en navegador real en
+  las 3 apps: `naturalWidth`/`naturalHeight` correctos, aspect ratio
+  preservado (`160×149.45` = mismo ratio que `607×567`), sin distorsión.
+  Los PNG no se optimizaron a fondo (267KB + 374KB, un intento de
+  cuantización con Pillow falló por modo RGBA y no valía la pena
+  reintentar para este alcance) — aceptable para un asset cacheado que se
+  carga una vez, no bloqueante.
+- 🔶 **Estrategia de carga de datos entre secciones — enfoque aprobado,
+  piloto construido y verificado, rollout al resto pendiente.** Investigado
+  con evidencia real antes de proponer nada (no asumido): las 19 secciones
+  de `sections/*.tsx` + los 9 `Panel*.tsx` de `sections/tactico/` en
+  `web-interno` seguían el patrón `cargar()` + `useEffect` sin ningún
+  caché compartido — el estado vivía con `useState` dentro de cada
+  componente de sección, y `Panel()` en `App.tsx` desmonta/monta la
+  sección activa (no hay `display:none`), así que volver a una sección ya
+  visitada siempre repetía el fetch completo. No hay ninguna librería de
+  fetching/caché instalada (ni react-query, ni SWR). El usuario aprobó el
+  enfoque propuesto (caché casera, sin librería nueva) con la condición de
+  migrar primero 2-3 secciones representativas y verificar en navegador
+  antes de aplicarlo al resto.
+
+  **Construido**: `apps/shared-ui/src/api/swrCache.ts` — hook
+  `useSwr<T>(key, fetcher)` (stale-while-revalidate real: si `key` ya está
+  en el `Map` en memoria del módulo, la muestra de inmediato en el primer
+  render Y dispara igual un fetch en segundo plano que actualiza la vista
+  si el servidor devolvió algo distinto; dedupe de requests en vuelo vía
+  un segundo `Map` de promesas) + `invalidateSwr(key)`/
+  `invalidateSwrPrefix(prefix)` para limpiar caché tras una mutación (por
+  prefijo, no por key exacta — una mutación en una fila puede volver
+  obsoleta CUALQUIER combinación de filtros cacheada de ese recurso, no
+  solo la que estaba visible). Vive en memoria del tab (no
+  `localStorage`): se pierde al recargar la página a propósito, no es
+  persistencia de datos de negocio, solo evitar refetch entre
+  navegaciones dentro de la misma sesión.
+
+  **Piloto migrado** (2 secciones, un caso simple y uno complejo con
+  filtros, como pidió el usuario): `Solicitudes.tsx` (`RECURSO_SOLICITUDES`)
+  y `HistorialGlobal.tsx` (`RECURSO_HISTORIAL_GLOBAL`, el candidato más
+  exigente por el volumen de 1.3M viajes NYC sembrados, ver §7). En ambos:
+  la key de caché es la URL completa con querystring (así que cada
+  combinación de filtros/página cachea por separado, no se mezclan);
+  `ActionBar.actualizar` pasó de llamar `cargar()` a `refetch()`; en
+  Solicitudes, `tomar()`/`decidir()` (las 2 mutaciones) ahora llaman
+  `invalidateSwrPrefix(RECURSO_SOLICITUDES)` antes de `refetch()`.
+  HistorialGlobal es de solo lectura (sin mutaciones, ver su propio
+  docstring), así que no necesitó ese paso.
+
+  **Verificado en navegador real** (cuenta `staff-verificacion`): (1)
+  revisitar Solicitudes tras navegar a Mantenimiento y volver disparó una
+  nueva request de red de fondo (revalidación) confirmada en
+  `read_network_requests`, sin mostrar una pantalla en blanco ni de carga
+  — el patrón SWR real, no solo teórico; (2) filtrar Solicitudes por
+  "En verificación" (20 filas), aprobar una desde su panel de detalle, y
+  confirmar que desapareció de esa lista filtrada de inmediato (19 filas)
+  Y que al cambiar el filtro a "Todas" (una key de caché *distinta*, que
+  ya tenía un valor viejo cacheado de antes de la mutación) mostraba el
+  estado `APROBADA` correcto, no el `EN_VERIFICACION` obsoleto — prueba
+  directa de que `invalidateSwrPrefix` limpia todas las combinaciones de
+  filtro cacheadas, no solo la visible; (3) Historial de viajes cargó
+  1,334,887 resultados reales con paginación, y el detalle de un viaje
+  `PAGADO` mostró `Calificación pasajero → conductor: 5★` /
+  `conductor → pasajero: 5★` sin errores de consola — confirma de paso,
+  con datos reales de producción, el fix del punto 1 de esta misma
+  ronda. Sin errores nuevos en consola (los 401 que aparecen son el
+  ciclo normal de refresh de token, ya documentado en §4).
+  `npm run build/lint/test` limpios en `web-interno` (23/23) + `shared-ui`
+  lint.
+
+  **Rollout aprobado por el usuario tras el piloto** — en curso, por
+  lotes. Lote 1 cerrado: **Mantenimiento.tsx, Cumplimiento.tsx (2
+  sub-secciones: bitácora + renovaciones), Finanzas.tsx (3 recursos:
+  discrepancias, alertas de saldo negativo, liquidaciones)**. Notas de
+  diseño nuevas encontradas en este lote (no estaban en el piloto):
+  - **Bug real evitado en Cumplimiento** (detectado antes de llegar a
+    producción, no en el piloto): el badge de "alertas de seguridad
+    (24h)" calculaba `desde = Date.now() - 24h` directo como parte de la
+    key de caché — recalculado en cada render, la key habría cambiado en
+    cada repintado y el hook nunca habría podido servir desde caché (peor
+    aún, cada render dispara un fetch nuevo). Corregido redondeando
+    `desde` a baldes de 5 minutos antes de construir la key — mismo
+    propósito (ventana de "últimas 24h") sin precisión de milisegundo,
+    key estable entre renders. **Cualquier key de `useSwr` construida con
+    `Date.now()`/`new Date()` sin redondear es sospechosa** — revisar en
+    el resto del rollout.
+  - **Patrón para fetches disparados por señal del padre** (`SeccionRenovaciones`,
+    antes `useEffect([refreshSignal])`): la key ahora incluye
+    `?refresh=${refreshSignal}` — cuando el padre incrementa la señal
+    (tras "Ejecutar control de vigencia"), la key cambia a una nunca
+    cacheada y fuerza un fetch fresco, con el mismo efecto que el
+    `useEffect` viejo pero conservando el caché normal para una visita
+    sin la señal disparada.
+  - Verificado en navegador real con **mutaciones reales, una por
+    pantalla** (no solo carga): Mantenimiento (orden `DEM-0146`
+    ABIERTA→EN_TALLER, lista actualizada sin recargar), Cumplimiento
+    ("Ejecutar control de vigencia" disparó un refetch real de
+    renovaciones-pendientes, resultado "142 revisados" mostrado), Finanzas
+    (liquidación de "Postulante Demo 090" EMITIDA→APROBADA, lista
+    actualizada). Sin errores de consola nuevos (solo los 401 del ciclo de
+    refresh de token, ya documentado). `npm run build/lint/test` limpios
+    en `web-interno` (23/23).
+
+  Lote 2 cerrado: **Catalogos.tsx (4 sub-secciones: zonas, tipos de
+  documento, motivos, talleres — las 4 son listas fijas sin filtro/
+  paginación), Usuarios.tsx (lista principal paginada/filtrada; el
+  fetch on-demand de accesos/sesiones al abrir un detalle se dejó como
+  estaba, no es un "revisitar sección" sino un "abrir un registro
+  puntual"), Integraciones.tsx (2 sub-secciones: credenciales, servicios
+  externos), GobernanzaDatos.tsx (solo la política de retención — la
+  sub-sección de anonimización es búsqueda bajo demanda, no fetch al
+  montar, así que no aplica el patrón).** Verificado en navegador real
+  (cuenta `admin_sistema`) con mutaciones reales por pantalla: Catálogos
+  (taller nuevo "Taller QA Caché" creado y visible sin recargar), Usuarios
+  (cuenta "QA Nueva Cuenta" ACTIVO→SUSPENDIDO→ACTIVO otra vez, motivo
+  reflejado), Integraciones (credencial "Credencial QA Caché" creada y
+  visible), GobernanzaDatos (política de retención carga 5 filas reales
+  sin errores). `npm run build/lint/test` limpios en `web-interno`
+  (23/23) — varios tests preexistentes (Catálogos, Integraciones,
+  Usuarios) ya ejercitaban estas mismas mutaciones contra el mock y
+  siguieron pasando sin cambios, buena señal adicional de que la
+  migración no alteró el contrato observable de cada pantalla.
+
+  Lote 3 cerrado (último lote — **rollout completo**):
+  **PanelMantenimiento, PanelDocumentacion, PanelCaptacion,
+  PanelConciliacion, PanelLiquidacion, PanelAuditoria, PanelPlataforma**
+  (los 7 paneles tácticos restantes — inicialmente se pensó dejar fuera
+  `PanelPlataforma` asumiendo que tenía polling propio como Flota/
+  Despacho/Monitoreo, pero se verificó el código antes de excluirlo sin
+  más: no tiene ningún `setInterval`, es el mismo patrón fetch-on-mount
+  con filtros que el resto, así que se migró también). Los 7 son
+  dashboards de solo lectura (sin mutaciones): cada uno combina 2-5
+  endpoints en un solo `Promise.all` cacheado bajo una única key
+  sintética por panel (ej. `/mantenimiento/panel-tactico`, no
+  corresponde a un endpoint real, es solo el nombre de la entrada de
+  caché). `PanelAuditoria` y `PanelPlataforma` son los únicos con
+  filtros que cambian la key (actor/resultado/acción/fechas en el
+  primero, dominio/fecha_logica en el segundo) — mismo patrón que
+  `Solicitudes`/`HistorialGlobal`.
+
+  **Bug de lint real encontrado y corregido en los 6 archivos** (no
+  afecta corrección funcional, sí performance/limpieza): el patrón
+  `data?.campo ?? []` usa un array literal `[]` que crea una referencia
+  nueva en cada render — como estos paneles alimentan varios `useMemo`
+  con esos campos como dependencia, cada uno se recalculaba en *todos*
+  los renders, no solo cuando los datos cambiaban de verdad (30 warnings
+  nuevos de `react-hooks/exhaustive-deps` al buildear). Corregido
+  definiendo constantes `SIN_<CAMPO>` a nivel de módulo en cada archivo
+  (`const SIN_ORDENES: Orden[] = []`, etc.) y usándolas como fallback en
+  vez del literal inline — misma referencia estable entre renders,
+  `useMemo` vuelve a memoizar de verdad. Vale la pena revisar este mismo
+  patrón si se sigue extendiendo el hook a pantallas nuevas con
+  `useMemo` derivados de datos de `useSwr`.
+  Verificado en navegador real (cuenta `staff-verificacion`): los 6
+  paneles cargan con datos reales sin errores de consola nuevos
+  (`DEM-0146` en PanelMantenimiento mostrando `EN_TALLER`, coherente con
+  la mutación real del lote 1); cambiar el filtro "Resultado" de
+  PanelAuditoria a "OK" disparó una request nueva
+  (`GET /auditoria/eventos?resultado=OK&tamanio_pagina=100`) confirmada
+  en el log de red. `npm run build/lint/test` limpios en `web-interno`
+  (23/23, 0 warnings nuevos tras el fix de las constantes estables).
+
+  **Con esto, el rollout de caché SWR queda completo**: 2 secciones del
+  piloto + 3 del lote 1 + 4 del lote 2 + 7 del lote 3 = 16 pantallas
+  migradas. Quedan fuera, por diseño: Flota, PanelFlota, PanelDespacho,
+  Monitoreo (polling propio real, confirmado con `setInterval` en cada
+  uno), la sub-sección de anonimización de GobernanzaDatos (búsqueda
+  bajo demanda, no fetch-on-mount), el fetch de accesos/sesiones al
+  abrir un detalle de Usuario (acción puntual, no "revisitar la
+  sección"), y las pantallas de acción pura sin listado (VersionSistema,
+  Respaldos, ConfiguracionAlertas, etc. — no se auditaron una por una
+  porque no encajan en el patrón "lista que se revisita", no porque se
+  hayan pasado por alto).

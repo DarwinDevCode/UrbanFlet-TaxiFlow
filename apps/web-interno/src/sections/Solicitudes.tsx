@@ -8,13 +8,17 @@ import {
   DataTable,
   DetailField,
   DetailPanel,
+  invalidateSwrPrefix,
   Pagination,
   Select,
   TextArea,
   TextField,
+  useSwr,
   type ModoPanel,
 } from "@urbanflet/shared-ui";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+
+const RECURSO_SOLICITUDES = "/captacion/solicitudes";
 
 interface Solicitud {
   id: string;
@@ -46,8 +50,6 @@ const tonoPorEstado: Record<string, "neutral" | "exito" | "advertencia" | "pelig
 // búsqueda y vuelve a la lista por defecto (sin selección). Dentro del
 // panel de detalle, "Salir" cierra el panel sin aplicar cambios.
 export function SeccionSolicitudes() {
-  const [solicitudes, setSolicitudes] = useState<Solicitud[]>([]);
-  const [total, setTotal] = useState(0);
   const [filtroEstado, setFiltroEstado] = useState("");
   const [filtroCedula, setFiltroCedula] = useState("");
   const [cedulaInput, setCedulaInput] = useState("");
@@ -58,25 +60,30 @@ export function SeccionSolicitudes() {
   const [modo, setModo] = useState<ModoPanel>("consulta");
   const [decision, setDecision] = useState<"APROBADA" | "RECHAZADA" | "OBSERVADA">("APROBADA");
   const [motivo, setMotivo] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [errorAccion, setErrorAccion] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
   const [tomando, setTomando] = useState(false);
 
-  const cargar = async () => {
+  // Caché stale-while-revalidate (ver `swrCache.ts`): al volver a esta
+  // sección con la misma combinación de filtros/página ya visitada en la
+  // sesión, la lista se muestra de inmediato desde caché mientras se
+  // revalida en segundo plano contra el backend.
+  const claveConsulta = (() => {
     const params = new URLSearchParams();
     if (filtroEstado) params.set("estado", filtroEstado);
     if (filtroCedula) params.set("cedula", filtroCedula);
     params.set("limit", String(pageSize));
     params.set("offset", String(page * pageSize));
-    const datos = await apiFetch<SolicitudListOut>(`/captacion/solicitudes?${params.toString()}`);
-    setSolicitudes(datos.items);
-    setTotal(datos.total);
-  };
-
-  useEffect(() => {
-    cargar().catch((e) => setError(e instanceof ApiError ? e.message : "No se pudieron cargar las solicitudes"));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtroEstado, filtroCedula, page, pageSize]);
+    return `${RECURSO_SOLICITUDES}?${params.toString()}`;
+  })();
+  const { data, error: errorCarga, refetch } = useSwr<SolicitudListOut>(claveConsulta, () =>
+    apiFetch<SolicitudListOut>(claveConsulta),
+  );
+  const solicitudes = data?.items ?? [];
+  const total = data?.total ?? 0;
+  const error =
+    errorAccion ??
+    (errorCarga ? (errorCarga instanceof ApiError ? errorCarga.message : "No se pudieron cargar las solicitudes") : null);
 
   const buscar = () => {
     setFiltroCedula(cedulaInput.trim());
@@ -96,12 +103,12 @@ export function SeccionSolicitudes() {
     setModo(s.estado === "EN_VERIFICACION" || s.estado === "OBSERVADA" ? "edicion" : "consulta");
     setDecision("APROBADA");
     setMotivo("");
-    setError(null);
+    setErrorAccion(null);
   };
 
   const tomar = async () => {
     if (!seleccionada) return;
-    setError(null);
+    setErrorAccion(null);
     setTomando(true);
     try {
       const actualizada = await apiFetch<Solicitud>(`/captacion/solicitudes/${seleccionada.id}/tomar`, {
@@ -109,9 +116,10 @@ export function SeccionSolicitudes() {
       });
       setSeleccionada(actualizada);
       setModo("edicion");
-      await cargar();
+      invalidateSwrPrefix(RECURSO_SOLICITUDES);
+      await refetch();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "No se pudo tomar la solicitud");
+      setErrorAccion(e instanceof ApiError ? e.message : "No se pudo tomar la solicitud");
     } finally {
       setTomando(false);
     }
@@ -119,7 +127,7 @@ export function SeccionSolicitudes() {
 
   const decidir = async () => {
     if (!seleccionada) return;
-    setError(null);
+    setErrorAccion(null);
     setCargando(true);
     try {
       await apiFetch(`/captacion/solicitudes/${seleccionada.id}/decision`, {
@@ -128,9 +136,10 @@ export function SeccionSolicitudes() {
       });
       setSeleccionada(null);
       setMotivo("");
-      await cargar();
+      invalidateSwrPrefix(RECURSO_SOLICITUDES);
+      await refetch();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "No se pudo registrar la decisión");
+      setErrorAccion(e instanceof ApiError ? e.message : "No se pudo registrar la decisión");
     } finally {
       setCargando(false);
     }
@@ -179,7 +188,7 @@ export function SeccionSolicitudes() {
           disabled: true,
           title: "No aplica: las solicitudes las crean los propios postulantes, no el personal interno.",
         }}
-        actualizar={{ onClick: () => cargar() }}
+        actualizar={{ onClick: () => refetch() }}
         eliminar={{
           onClick: () => {},
           disabled: true,

@@ -11,8 +11,16 @@ import {
   Select,
   TextField,
   TrendLineChart,
+  useSwr,
 } from "@urbanflet/shared-ui";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+
+const RECURSO_PANEL_LIQUIDACION = "/liquidaciones/panel-tactico";
+
+// Ver PanelMantenimiento.tsx: referencia estable para el fallback de
+// `data?.campo ?? []`, evita invalidar los `useMemo` que dependen de esto.
+const SIN_LIQUIDACIONES: Liquidacion[] = [];
+const SIN_MARGEN: MargenComision[] = [];
 
 interface Liquidacion {
   id: string;
@@ -39,30 +47,30 @@ interface MargenComision {
 }
 
 // spec: specs/nivel-tactico/tactico_finanzas.md — Panel de Liquidación de Comisiones (CU-T12/OT5.2). Patrón Z.
+interface DatosPanelLiquidacion {
+  liquidaciones: Liquidacion[];
+  margen: MargenComision[];
+}
+
 export function PanelLiquidacion() {
-  const [liquidaciones, setLiquidaciones] = useState<Liquidacion[]>([]);
-  const [margen, setMargen] = useState<MargenComision[]>([]);
-  const [error, setError] = useState<string | null>(null);
   const [filtroEstado, setFiltroEstado] = useState("");
   const [filtroPeriodo, setFiltroPeriodo] = useState("");
   const [filtroSocio, setFiltroSocio] = useState("");
 
-  const cargar = async () => {
-    try {
-      const [liq, m] = await Promise.all([
-        apiFetch<LiquidacionListOut>("/liquidaciones?limit=100"),
-        apiFetch<MargenComision[]>("/liquidaciones/panel-tactico/margen-comision"),
-      ]);
-      setLiquidaciones(liq.items);
-      setMargen(m);
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "No se pudo cargar el panel de liquidación");
-    }
-  };
-
-  useEffect(() => {
-    cargar();
-  }, []);
+  const { data, error: errorCarga } = useSwr<DatosPanelLiquidacion>(RECURSO_PANEL_LIQUIDACION, async () => {
+    const [liq, m] = await Promise.all([
+      apiFetch<LiquidacionListOut>("/liquidaciones?limit=100"),
+      apiFetch<MargenComision[]>("/liquidaciones/panel-tactico/margen-comision"),
+    ]);
+    return { liquidaciones: liq.items, margen: m };
+  });
+  const liquidaciones = data?.liquidaciones ?? SIN_LIQUIDACIONES;
+  const margen = data?.margen ?? SIN_MARGEN;
+  const error = errorCarga
+    ? errorCarga instanceof ApiError
+      ? errorCarga.message
+      : "No se pudo cargar el panel de liquidación"
+    : null;
 
   const emitidas = useMemo(() => liquidaciones.filter((l) => l.estado === "EMITIDA"), [liquidaciones]);
   const porAprobar = useMemo(() => liquidaciones.filter((l) => l.estado === "OBSERVADA"), [liquidaciones]);

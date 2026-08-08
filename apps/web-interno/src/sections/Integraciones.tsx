@@ -9,9 +9,13 @@ import {
   DetailField,
   DetailPanel,
   TextField,
+  useSwr,
   type ModoPanel,
 } from "@urbanflet/shared-ui";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+
+const RECURSO_CREDENCIALES = "/integraciones/credenciales";
+const RECURSO_SERVICIOS_EXTERNOS = "/integraciones/servicios-externos";
 
 interface Credencial {
   id: string;
@@ -58,20 +62,20 @@ function TabButton({ activa, onClick, children }: { activa: boolean; onClick: ()
 }
 
 function SeccionCredenciales() {
-  const [credenciales, setCredenciales] = useState<Credencial[]>([]);
   const [seleccionada, setSeleccionada] = useState<Credencial | null>(null);
   const [modo, setModo] = useState<ModoPanel>("consulta");
   const [nombre, setNombre] = useState("");
   const [alcance, setAlcance] = useState("");
   const [secretoNuevo, setSecretoNuevo] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [errorAccion, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
 
-  const cargar = async () => setCredenciales(await apiFetch<Credencial[]>("/integraciones/credenciales"));
-
-  useEffect(() => {
-    cargar().catch((e) => setError(e instanceof ApiError ? e.message : "No se pudieron cargar las credenciales"));
-  }, []);
+  const { data: credenciales = [], error: errorCarga, refetch } = useSwr<Credencial[]>(RECURSO_CREDENCIALES, () =>
+    apiFetch<Credencial[]>(RECURSO_CREDENCIALES),
+  );
+  const error =
+    errorAccion ??
+    (errorCarga ? (errorCarga instanceof ApiError ? errorCarga.message : "No se pudieron cargar las credenciales") : null);
 
   const abrirNuevo = () => {
     setSeleccionada(null);
@@ -98,7 +102,7 @@ function SeccionCredenciales() {
         body: { nombre, alcance },
       });
       setSecretoNuevo(creada.secreto);
-      await cargar();
+      await refetch();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo crear la credencial");
     } finally {
@@ -114,7 +118,7 @@ function SeccionCredenciales() {
       await apiFetch(`/integraciones/credenciales/${seleccionada.id}/revocar`, { method: "POST" });
       setSeleccionada(null);
       setModo("consulta");
-      await cargar();
+      await refetch();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo revocar la credencial");
     } finally {
@@ -126,7 +130,7 @@ function SeccionCredenciales() {
     <Card>
       <ActionBar
         nuevo={{ onClick: abrirNuevo }}
-        actualizar={{ onClick: () => cargar() }}
+        actualizar={{ onClick: () => refetch() }}
         eliminar={{ onClick: () => {}, disabled: true, title: "No aplica: una credencial se revoca, no se elimina." }}
         buscar={{ onClick: () => {}, disabled: true, title: "No aplica: la lista no pagina." }}
         salir={{ onClick: () => setSeleccionada(null) }}
@@ -222,17 +226,22 @@ function SeccionCredenciales() {
 }
 
 function SeccionServiciosExternos() {
-  const [servicios, setServicios] = useState<ServicioExterno[]>([]);
   const [rotando, setRotando] = useState(false);
   const [apiKey, setApiKey] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [errorAccion, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
 
-  const cargar = async () => setServicios(await apiFetch<ServicioExterno[]>("/integraciones/servicios-externos"));
-
-  useEffect(() => {
-    cargar().catch((e) => setError(e instanceof ApiError ? e.message : "No se pudieron cargar los servicios externos"));
-  }, []);
+  const { data: servicios = [], error: errorCarga, refetch } = useSwr<ServicioExterno[]>(
+    RECURSO_SERVICIOS_EXTERNOS,
+    () => apiFetch<ServicioExterno[]>(RECURSO_SERVICIOS_EXTERNOS),
+  );
+  const error =
+    errorAccion ??
+    (errorCarga
+      ? errorCarga instanceof ApiError
+        ? errorCarga.message
+        : "No se pudieron cargar los servicios externos"
+      : null);
 
   const abrirRotar = () => {
     setApiKey("");
@@ -246,7 +255,7 @@ function SeccionServiciosExternos() {
     try {
       await apiFetch("/integraciones/servicios-externos/google_maps/rotar", { method: "POST", body: { api_key: apiKey } });
       setRotando(false);
-      await cargar();
+      await refetch();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "No se pudo rotar la key");
     } finally {
@@ -258,7 +267,7 @@ function SeccionServiciosExternos() {
     <Card>
       <ActionBar
         nuevo={{ onClick: () => {}, disabled: true, title: "No aplica: los servicios externos son fijos, no se crean." }}
-        actualizar={{ onClick: () => cargar() }}
+        actualizar={{ onClick: () => refetch() }}
         eliminar={{ onClick: () => {}, disabled: true, title: "No aplica." }}
         buscar={{ onClick: () => {}, disabled: true, title: "No aplica: la lista no pagina." }}
         salir={{ onClick: () => setRotando(false) }}

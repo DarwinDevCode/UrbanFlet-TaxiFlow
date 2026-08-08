@@ -9,8 +9,11 @@ import {
   DetailField,
   DetailPanel,
   TextField,
+  useSwr,
 } from "@urbanflet/shared-ui";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+
+const RECURSO_POLITICA_RETENCION = "/sistema/politica-retencion";
 
 interface Usuario {
   id: string;
@@ -164,14 +167,14 @@ function SeccionAnonimizacion() {
 }
 
 function SeccionPoliticaRetencion() {
-  const [items, setItems] = useState<PoliticaRetencionItem[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    apiFetch<PoliticaRetencionItem[]>("/sistema/politica-retencion")
-      .then(setItems)
-      .catch((e) => setError(e instanceof ApiError ? e.message : "No se pudo cargar la política de retención"));
-  }, []);
+  const { data: items = [], error: errorCarga } = useSwr<PoliticaRetencionItem[]>(RECURSO_POLITICA_RETENCION, () =>
+    apiFetch<PoliticaRetencionItem[]>(RECURSO_POLITICA_RETENCION),
+  );
+  const error = errorCarga
+    ? errorCarga instanceof ApiError
+      ? errorCarga.message
+      : "No se pudo cargar la política de retención"
+    : null;
 
   return (
     <Card>
