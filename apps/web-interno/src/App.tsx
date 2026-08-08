@@ -12,7 +12,7 @@ import {
   useAuth,
   type PreguntaFrecuente,
 } from "@urbanflet/shared-ui";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { SeccionAuditoriaAdmin } from "./sections/AuditoriaAdmin";
 import { SeccionCatalogos } from "./sections/Catalogos";
 import { SeccionConfiguracionAlertas } from "./sections/ConfiguracionAlertas";
@@ -42,6 +42,16 @@ import { PanelLiquidacion } from "./sections/tactico/PanelLiquidacion";
 import { PanelPlataforma } from "./sections/tactico/PanelPlataforma";
 import { PanelFlota } from "./sections/tactico/PanelFlota";
 import { PanelMantenimiento } from "./sections/tactico/PanelMantenimiento";
+import { PanelCapacidades } from "./sections/estrategico/PanelCapacidades";
+import { PanelConfiabilidad } from "./sections/estrategico/PanelConfiabilidad";
+import { PanelCrecimiento } from "./sections/estrategico/PanelCrecimiento";
+import { PanelCumplimientoNormativo } from "./sections/estrategico/PanelCumplimientoNormativo";
+import { PanelEstadoCostoFlota } from "./sections/estrategico/PanelEstadoCostoFlota";
+import { PanelGobernanza } from "./sections/estrategico/PanelGobernanza";
+import { PanelIntegridadFinanciera } from "./sections/estrategico/PanelIntegridadFinanciera";
+import { PanelRentabilidad } from "./sections/estrategico/PanelRentabilidad";
+import { TableroEjecutivo } from "./sections/estrategico/TableroEjecutivo";
+import { NavegacionSeccionProvider } from "./navegacion";
 
 function LoginCard() {
   const { login } = useAuth();
@@ -202,6 +212,84 @@ const SECCIONES: Seccion[] = [
     grupo: "Panel Táctico",
     render: () => <PanelPlataforma />,
   },
+  // ── Panel Estratégico (specs/nivel-estrategico/nivel_estrategico.md) ──
+  //
+  // Ubicado DESPUÉS de "Panel Táctico" y ANTES de "Administración": respeta
+  // la jerarquía operativo → táctico → estratégico del sidebar y, sobre todo,
+  // no cambia la sección por defecto (`seccionesVisibles[0]`) de ningún rol —
+  // los 7 roles con acceso a algún panel estratégico (`gerencia`,
+  // `admin_captacion`, `coordinador_operaciones`, `jefe_mantenimiento`,
+  // `responsable_plataforma`, `admin_financiero`, `supervisor_cumplimiento`)
+  // ya tienen al menos una sección más arriba en la lista. Mismo cuidado que
+  // documentan "Mi cuenta" e "Historial de viajes" más abajo, verificado
+  // sección por sección al agregar este grupo.
+  //
+  // Los `roles` de cada entrada replican EXACTAMENTE el gate del endpoint que
+  // consume (Fase 3, commit c0a123d) — en particular Gobernanza es exclusivo
+  // de `gerencia`, sin OR-gate con `admin_sistema`, como exige la spec §3.6.b.
+  {
+    id: "estrategico-tablero",
+    etiqueta: "Tablero Ejecutivo",
+    roles: ["gerencia"],
+    grupo: "Panel Estratégico",
+    render: () => <TableroEjecutivo />,
+  },
+  {
+    id: "estrategico-crecimiento",
+    etiqueta: "Crecimiento",
+    roles: ["gerencia", "admin_captacion"],
+    grupo: "Panel Estratégico",
+    render: () => <PanelCrecimiento />,
+  },
+  {
+    id: "estrategico-confiabilidad",
+    etiqueta: "Confiabilidad del servicio",
+    roles: ["gerencia", "coordinador_operaciones"],
+    grupo: "Panel Estratégico",
+    render: () => <PanelConfiabilidad />,
+  },
+  {
+    id: "estrategico-estado-costo-flota",
+    etiqueta: "Estado y costo de flota",
+    roles: ["gerencia", "jefe_mantenimiento"],
+    grupo: "Panel Estratégico",
+    render: () => <PanelEstadoCostoFlota />,
+  },
+  {
+    id: "estrategico-capacidades",
+    etiqueta: "Capacidades y plataforma",
+    roles: ["gerencia", "responsable_plataforma"],
+    grupo: "Panel Estratégico",
+    render: () => <PanelCapacidades />,
+  },
+  {
+    id: "estrategico-rentabilidad",
+    etiqueta: "Rentabilidad y demanda",
+    roles: ["gerencia"],
+    grupo: "Panel Estratégico",
+    render: () => <PanelRentabilidad />,
+  },
+  {
+    id: "estrategico-integridad-financiera",
+    etiqueta: "Integridad financiera",
+    roles: ["gerencia", "admin_financiero"],
+    grupo: "Panel Estratégico",
+    render: () => <PanelIntegridadFinanciera />,
+  },
+  {
+    id: "estrategico-cumplimiento-normativo",
+    etiqueta: "Cumplimiento normativo",
+    roles: ["gerencia", "supervisor_cumplimiento"],
+    grupo: "Panel Estratégico",
+    render: () => <PanelCumplimientoNormativo />,
+  },
+  {
+    id: "estrategico-gobernanza",
+    etiqueta: "Gobernanza de datos",
+    roles: ["gerencia"],
+    grupo: "Panel Estratégico",
+    render: () => <PanelGobernanza />,
+  },
   {
     id: "admin-usuarios",
     etiqueta: "Usuarios",
@@ -347,32 +435,49 @@ function Panel() {
   // Misma lógica de filtrado por rol que antes tenía la nav horizontal — solo
   // cambia dónde se renderiza (sidebar del AppShell en vez de una fila de
   // botones bajo un header ad-hoc).
-  const seccionesVisibles = SECCIONES.filter(
-    (s) => s.roles.includes(ROL_CUALQUIERA) || s.roles.some((r) => rolesActor.includes(r)),
+  const seccionesVisibles = useMemo(
+    () =>
+      SECCIONES.filter((s) => s.roles.includes(ROL_CUALQUIERA) || s.roles.some((r) => rolesActor.includes(r))),
+    // `rolesActor` sale de `actor?.roles ?? []` -- el `??` crea un array nuevo
+    // en cada render cuando no hay actor, así que se depende de su contenido
+    // serializado y no de la referencia.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rolesActor.join(",")],
   );
   const [seccionActiva, setSeccionActiva] = useState(seccionesVisibles[0]?.id);
 
   const seccion = seccionesVisibles.find((s) => s.id === seccionActiva);
   const navItems = seccionesVisibles.map((s) => ({ id: s.id, label: s.etiqueta, group: s.grupo }));
 
+  // Hallazgo H4 de AUDITORIA_NIVEL_ESTRATEGICO.md: hasta ahora `setSeccionActiva`
+  // solo llegaba al sidebar. El contexto publica la MISMA función (más los ids
+  // visibles) para que un panel pueda ofrecer "Ver detalle" sin que ninguna de
+  // las secciones existentes cambie de firma — ver `navegacion.ts`.
+  const navegacion = useMemo(
+    () => ({ ir: setSeccionActiva, disponibles: seccionesVisibles.map((s) => s.id) }),
+    [seccionesVisibles],
+  );
+
   return (
-    <AppShell
-      navItems={navItems}
-      activeId={seccionActiva}
-      onNavigate={setSeccionActiva}
-      title={seccion?.etiqueta ?? "Portal interno"}
-      headerActions={<NotificacionesBell />}
-    >
-      {seccionesVisibles.length === 0 ? (
-        <Card>
-          <p style={{ color: "var(--color-text-muted)" }}>
-            Tu rol no tiene ninguna sección asignada en este panel todavía.
-          </p>
-        </Card>
-      ) : (
-        seccion?.render()
-      )}
-    </AppShell>
+    <NavegacionSeccionProvider value={navegacion}>
+      <AppShell
+        navItems={navItems}
+        activeId={seccionActiva}
+        onNavigate={setSeccionActiva}
+        title={seccion?.etiqueta ?? "Portal interno"}
+        headerActions={<NotificacionesBell />}
+      >
+        {seccionesVisibles.length === 0 ? (
+          <Card>
+            <p style={{ color: "var(--color-text-muted)" }}>
+              Tu rol no tiene ninguna sección asignada en este panel todavía.
+            </p>
+          </Card>
+        ) : (
+          seccion?.render()
+        )}
+      </AppShell>
+    </NavegacionSeccionProvider>
   );
 }
 

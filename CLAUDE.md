@@ -2194,3 +2194,174 @@ de Despacho) como listas separadas. Un join por franja daría 100% de nulos.
   OE4 y OE6b (los 2 que la spec marca como patrón F).
 - Consumir las banderas de `metadata` de §12.3 para mostrar las advertencias,
   en vez de dibujar filtros/columnas que no tendrían dato detrás.
+
+## 13. Nivel estratégico — frontend de los 9 dashboards (Fase 4, cerrada)
+
+Cierra el nivel estratégico: los 8 paneles de detalle + el Tablero Ejecutivo
+Consolidado (CU-E01) sobre los 9 endpoints que dejó la Fase 3 (§12). **Solo
+frontend** — ningún archivo de `backend/src/**` tocado: la forma de las 9
+respuestas se leyó del código real (`git show c0a123d`) y se confirmó
+llamando los 9 endpoints con un token real de `gerencia` antes de escribir
+una sola línea de TSX, no se asumió.
+
+### 13.1 H4 resuelto — navegación cruzada entre secciones
+
+`apps/web-interno/src/navegacion.ts` (nuevo): un React Context que publica la
+**misma** `setSeccionActiva` que ya usaba el sidebar vía
+`AppShell.onNavigate`, más la lista de ids visibles para el actor. Dos hooks:
+`useIrASeccion()` → `(id: string) => void`, y `useSeccionesDisponibles()` →
+`string[]`.
+
+- **Ninguna de las ~32 secciones existentes cambió de firma.** `Seccion.render`
+  sigue siendo `() => JSX.Element`; solo quien necesita navegar consume el
+  hook. El único cambio en `App.tsx` es envolver el `AppShell` en
+  `<NavegacionSeccionProvider>`.
+- La lista de disponibles **no es decorativa**: `Panel()` resuelve la sección
+  activa dentro de `seccionesVisibles`, así que navegar a un id que el rol no
+  ve dejaría el área de contenido en blanco. Por eso el enlace secundario
+  "Ver táctico" del tablero se **oculta** si el rol no ve ese panel táctico —
+  verificado en vivo: con la cuenta `gerencia`, de las 8 tarjetas solo
+  Capacidades y Gobernanza muestran "Ver táctico" (los únicos 2 paneles
+  tácticos que ese rol ve), las otras 6 no lo pintan.
+- Fuera del proveedor los hooks devuelven un no-op / lista vacía en vez de
+  lanzar, para poder renderizar un panel aislado en un test.
+- Vive en `web-interno` y no en `shared-ui` a propósito: el modelo de
+  "secciones con id" es exclusivo de esta app.
+- `seccionesVisibles` pasó a `useMemo` (dependía de un `filter` que creaba
+  array nuevo en cada render) para que el `value` del contexto sea estable.
+
+### 13.2 Grupo "Panel Estratégico" en el sidebar
+
+9 entradas nuevas en `SECCIONES` con `grupo: "Panel Estratégico"`, ids
+`estrategico-tablero` + `estrategico-<seccion>` donde `<seccion>` es
+**exactamente** el identificador que el backend ya publica en
+`TarjetaEjecutivaOut.seccion` (`_HEADLINES` en `estrategico/service.py`) —
+así el mapeo tarjeta→destino no es un mirror manual en TSX, sale del dato.
+
+**Posición: después de "Panel Táctico", antes de "Administración"** — no al
+final. El criterio real documentado en §10 no es "al final por costumbre",
+es *"no convertirse en la sección por defecto (`seccionesVisibles[0]`) de
+ningún rol"*. Se verificó rol por rol: los 7 con acceso a algún panel
+estratégico (`gerencia`, `admin_captacion`, `coordinador_operaciones`,
+`jefe_mantenimiento`, `responsable_plataforma`, `admin_financiero`,
+`supervisor_cumplimiento`) ya tienen al menos una sección más arriba, así
+que insertar acá no mueve ningún índice 0. Confirmado en navegador: con
+`gerencia` la sección por defecto sigue siendo "Indicadores", con
+`staff-verificacion` sigue siendo "Solicitudes", y los 23 tests siguen
+pasando. Ubicarlo ahí respeta la jerarquía operativo → táctico →
+estratégico del sidebar.
+
+Los `roles` de cada entrada replican **exactamente** el gate del endpoint que
+consume — en particular Gobernanza (OE6b) es exclusivo de `gerencia`, sin
+OR-gate con `admin_sistema`. Verificado en navegador con `staff-verificacion`
+(7 roles tácticos, sin `gerencia`): ve 6 de los 9 y **no** ve Tablero
+Ejecutivo, Rentabilidad ni Gobernanza.
+
+### 13.3 Los 9 componentes
+
+En `apps/web-interno/src/sections/estrategico/`: `PanelCrecimiento`,
+`PanelConfiabilidad`, `PanelEstadoCostoFlota`, `PanelCapacidades`,
+`PanelRentabilidad`, `PanelIntegridadFinanciera`,
+`PanelCumplimientoNormativo`, `PanelGobernanza`, `TableroEjecutivo`, más 2
+archivos compartidos (`formato.ts`, `comunes.tsx`).
+
+- **Sin componentes de gráfico nuevos** salvo uno justificado (ver 13.4):
+  `KpiCard`/`KpiRow`, `CategoryBarChart`/`TrendLineChart`, `DashboardZ`/
+  `DashboardF`, `FuenteBadge`, `DataTable` de `shared-ui`, tal cual.
+- **Nacen usando el caché SWR** (`useSwr`), no como deuda técnica día uno —
+  mismo criterio del rollout completo del lote 3 (§11). Los 9 son de solo
+  lectura, así que ninguno necesita `invalidateSwrPrefix`.
+- **Constantes `SIN_<CAMPO>` a nivel de módulo** en los 8 paneles con
+  `useMemo` derivados, por el problema de referencia inestable de
+  `data?.campo ?? []` ya documentado en §11. `npm run lint` quedó en 0
+  warnings nuevos.
+- **Convención de unidades — el error fácil de este nivel, aislado en
+  `formato.ts`**: todo campo `pct_*`/`margen_pct`/`share_*` viaja como
+  **fracción 0-1**, mientras que todo `variacion_*_pct` viaja ya en **puntos
+  porcentuales**. De ahí dos helpers distintos (`pct()` vs. `variacion()`) en
+  vez de uno solo; mezclarlos daría un 9842% donde va 98,4%.
+- **Filtros**: cada panel tiene el filtro de ventana temporal
+  (`meses`/`cortes`) que va a la **key de caché y al servidor** (dispara
+  request nueva real), más filtros client-side del spec por dashboard: canal
+  (Crecimiento), franja + zona deshabilitada (Confiabilidad, Rentabilidad),
+  vehículo (Costo de Flota), dominio (Capacidades), año (Integridad
+  Financiera), tipo de documento (Cumplimiento Normativo), acción + resultado
+  (Gobernanza).
+
+### 13.4 Decisiones de diseño no triviales
+
+- **`MiniTendencia` (sparkline SVG inline en `TableroEjecutivo.tsx`) — la
+  única visualización nueva de la fase.** La spec §4 pide "KPI +
+  mini-tendencia + enlace" dentro de una tarjeta de índice; `TrendLineChart`
+  trae ejes con ticks, grilla, tooltip y leyenda, que en 40-90 px de alto
+  compiten con el número que la tarjeta existe para mostrar. El SVG usa
+  `seriesColor(0)` de la paleta ya validada, así que **no introduce ningún
+  color fuera del sistema**; se degrada a un hueco vacío con menos de 2
+  puntos, sin dibujar una línea falsa.
+- **Enlace secundario "Ver táctico"** (spec §2, "bajar al detalle
+  departamental"): el primario "Ver detalle" va al panel **estratégico**,
+  como pide CU-E01; el táctico es adicional y condicional al rol.
+  `rentabilidad` es la única tarjeta sin equivalente táctico — el margen por
+  franja es un cálculo nuevo de este nivel, no la consolidación de un panel
+  táctico existente, así que ahí no se inventa un destino.
+- **Limitaciones de `metadata` mostradas, nunca fabricadas** — las banderas
+  de §12.3 se leen y se pintan como nota explícita junto al KPI/columna
+  afectada, con el valor en "—": demanda por mes (Crecimiento), tasa de
+  cancelación + zona (Confiabilidad), km de vehículo (Costo de Flota),
+  capacitación (Capacidades), zona + demanda de viajes (Rentabilidad),
+  dataset mixto 2021/2026 (Integridad Financiera), cobertura parcial de canal
+  (Crecimiento). Los filtros de **zona** de Confiabilidad y Rentabilidad se
+  renderizan `disabled` con la leyenda "No disponible" en vez de omitirse:
+  deja visible que la spec los pide y por qué no están.
+- **Dos taxonomías de "franja" conviven a propósito** en Confiabilidad (los
+  buckets de 6 h del ping GPS y DIURNA/NOCTURNA de la franja tarifaria) — van
+  en tablas separadas, con nota, en vez de cruzarse en una sola.
+
+### 13.5 Verificación real en navegador (cuenta `gerencia`, 1440x900)
+
+Los 9 dashboards + el tablero abiertos uno por uno contra el stack real
+(`docker compose ps` con los 8 servicios arriba), **sin un solo error de
+consola** en toda la sesión:
+
+- **Los 9 endpoints devolvieron 200 con datos reales**, confirmado en el log
+  de red — incluidos los 9 pares OPTIONS/GET.
+- **Patrón Z vs. F medido con `getComputedStyle`, no a ojo**: los 7 paneles Z
+  miden `544.5px 544.5px` (`.dashboard-z-row`); Rentabilidad y Gobernanza
+  miden `320px 769px` (`.dashboard-f-row`) — dos layouts genuinamente
+  distintos, no el mismo grid reusado.
+- **Un filtro interactivo probado por dashboard**, con efecto real
+  verificado: el de ventana disparó una request nueva en los 8 paneles
+  (`?meses=12` → `?meses=3`, `?cortes=12` → `?cortes=3`, etc., todos los GET
+  visibles en el log); los client-side se midieron sobre el DOM (Confiabilidad
+  franja `12-18`: 4 filas → 1; Costo de Flota búsqueda "DEM": 5 → 3;
+  Capacidades dominio `dag_flota_gold`: 7 → 1; Rentabilidad franja DIURNA:
+  2 → 1; Cumplimiento tipo `MATRICULA_VEHICULAR`: 2 → 1; Integridad
+  Financiera año `2026`: el eje X del gráfico pasó de
+  `2021-01/2021-02/2026-07/2026-08` a `2026-07/2026-08`).
+- **Navegación cruzada real, sin recargar la página** (`location.href` intacto
+  en `http://localhost:5175/`): desde el Tablero, "Ver detalle" de Crecimiento
+  → "Panel de Crecimiento Estratégico"; "Ver detalle" de Gobernanza → "Panel
+  de Gobernanza de Datos y Seguridad"; "Ver táctico" de Capacidades → "Panel
+  de Salud del Pipeline y Capacitación" (el táctico de Plataforma).
+- **Tablero ejecutivo**: 8 tarjetas, "8 de 8 indicadores con dato publicado",
+  valores coincidiendo con el panel de detalle de cada uno (98.4% conversión,
+  91.5% flota activa, 60.0% preventivo, 1.9% cuarentena, 80.0% margen, 100.0%
+  conciliación, 63.4% documentación, 79 eventos administrativos).
+- **RBAC confirmado con una segunda cuenta** (`staff-verificacion`,
+  `+593900000001`): ve exactamente los 6 paneles estratégicos que sus roles
+  habilitan y **no** ve Tablero Ejecutivo, Rentabilidad ni Gobernanza; su
+  sección por defecto sigue siendo Solicitudes.
+
+**Regresión**: `npm run build`, `npm run lint` (0 errores; los 3 warnings de
+`useEffect` en `ParametrosGlobales`/`PoliticasAuth`/`PoliticasSeguridad` son
+preexistentes, no de esta fase) y `npm run test` (23/23) limpios en
+`web-interno`, más `npm run lint` limpio en `shared-ui`. Backend sin tocar,
+así que no se re-corrió `pytest` (la última corrida registrada es la de la
+Fase 3: 346 passed + 8 skipped).
+
+**Con esto, el nivel estratégico queda completo de extremo a extremo** —
+Fase 3 (backend, §12) + Fase 4 (frontend, §13). Los ítems que siguen
+abiertos son los que la propia auditoría clasificó como fuera de este
+alcance: resolución real del gap de zona (toca código operativo), Parquet
+versionado más allá del piloto de `dag_mantenimiento_gold` (Fase 2), y los 2
+gaps operativos heredados (`movimientos.tipo="AJUSTE"`, cobertura de `canal`).
