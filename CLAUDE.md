@@ -2365,3 +2365,40 @@ abiertos son los que la propia auditoría clasificó como fuera de este
 alcance: resolución real del gap de zona (toca código operativo), Parquet
 versionado más allá del piloto de `dag_mantenimiento_gold` (Fase 2), y los 2
 gaps operativos heredados (`movimientos.tipo="AJUSTE"`, cobertura de `canal`).
+
+## 14. Fase 5 — regresión final consolidada (cierre del bloque de nivel estratégico)
+
+Corrida después de que las Fases 0-4 (`AUDITORIA_NIVEL_ESTRATEGICO.md` §10)
+quedaran cada una cerrada por separado, para confirmar que el conjunto
+completo convive sin romperse — no solo cada fase aislada. Resultado real:
+
+- Backend: `pytest` **346 passed, 8 skipped** (mismo número que al cierre de
+  la Fase 3 — el trabajo de Fase 4 no tocó backend, confirmado corriendo la
+  suite de nuevo de todas formas en vez de asumirlo).
+- Frontend `web-interno`: `npm run build` ✅, `npm run lint` 0 errores (los
+  mismos 3 warnings preexistentes de `useEffect` en
+  `ParametrosGlobales`/`PoliticasAuth`/`PoliticasSeguridad`, no de este
+  bloque), `npm run test` **23/23**.
+- Verificación adicional en navegador real (cuenta `gerencia`,
+  `+593900000010`), con foco específico en los 2 dashboards que la regla de
+  cierre del proyecto (§6) exige verificar con más rigor por tocar cálculo
+  financiero/dato sensible:
+  - **Rentabilidad y Demanda (OE4)**: fórmula real confirmada en pantalla
+    (margen 80% idéntico en ambas franjas porque, con costo de mantenimiento
+    en $0 para el periodo real disponible, `margen% = 1 − comisión%` da 80%
+    en cualquier franja — consistente con la comisión fija del 20% del
+    proyecto, no un bug ni un dato fabricado). Nota de zona no disponible
+    visible tal como se diseñó.
+  - **Gobernanza de Datos y Seguridad (OE6b)**: bitácora real con 79+ eventos
+    administrativos reales (`admin_sistema`, `pasajero`, `jefe_mantenimiento`
+    con acciones reales trazables — `CATALOGO_EDICION`, `RESPALDO_DISPARO`,
+    `USUARIO_ANONIMIZACION`, etc.), no datos de ejemplo.
+  - **Tablero Ejecutivo**: 8/8 headlines con el mismo valor que su panel de
+    detalle correspondiente (98.4%, 91.5%, 60.0%, 1.9%, 80.0%, 100.0%, 63.4%,
+    79), navegación cruzada probada de nuevo de forma independiente (clic en
+    "Ver detalle" de Rentabilidad desde el tablero cambió la sección activa
+    sin recargar la página).
+
+**El bloque completo del nivel estratégico (Fases 0-5) queda cerrado.** Ver
+`AUDITORIA_NIVEL_ESTRATEGICO.md` para el informe de auditoría original y el
+detalle de las decisiones aprobadas por el usuario antes de construir.
