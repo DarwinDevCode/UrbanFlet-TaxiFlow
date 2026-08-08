@@ -103,7 +103,7 @@ de navegador real, no solo que el código compila.
 | Dominio | CU cubiertos | Notas |
 |---|---|---|
 | Captación (`operativo_captacion.md`) | CU-O01 (postulación conductor, aprobar/rechazar), CU-O02 (registro pasajero/login) | Falta a propósito: carga de documentos de postulación (backlog, ver §3.1) |
-| Operaciones/Despacho (`operativo_operaciones_despacho.md`) | CU-O04 (solicitar viaje, A1-A4), CU-O05 (auto-despacho, incl. A1/A2) | Todo el ciclo de vida del viaje es un overlay sobre el mapa persistente — ver §4. **CU-O05 A3 "Reintentar búsqueda" tras SIN_CONDUCTOR NO está construido** (ver §7 punto 6 — auditoría #2 lo encontró faltante, no confundir con una entrada previa de este archivo que lo daba por hecho) |
+| Operaciones/Despacho (`operativo_operaciones_despacho.md`) | CU-O04 (solicitar viaje, A1-A4), CU-O05 (auto-despacho, incl. A1/A2/A3) | Todo el ciclo de vida del viaje es un overlay sobre el mapa persistente — ver §4. **CU-O05 A3 "Reintentar búsqueda" tras SIN_CONDUCTOR SÍ está construido** — `reintentarBusqueda()` en `apps/web-pasajero/src/App.tsx` (reusa origen/destino del viaje agotado, maneja `TRIP_ALREADY_ACTIVE`), confirmado con lectura de código real en la auditoría de nivel estratégico (2026-08-08, `AUDITORIA_NIVEL_ESTRATEGICO.md`, hallazgo H1). Las 2 entradas previas de este archivo (§6 y la nota de auditoría #2 que citaban) estaban desactualizadas — no reabrir este punto sin evidencia nueva |
 | Finalización/Pago (dentro de despacho) | CU-O08 (calificación mutua, con comentario opcional), CU-O09 (registro de pago en efectivo, discrepancias) | Pago electrónico/pasarela es backlog consciente (ver §3.1) |
 | Finanzas (`operativo_finanzas.md`) | CU-O10 (comisión), CU-O11 (liquidaciones semanales, observación, viajes en revisión) | Corrección post-PAGADA vía nota de ajuste es backlog consciente. **CU-O10 A2 (movimiento `AJUSTE` individual vinculado al viaje) NO tiene datos reales todavía** — `generar_liquidaciones` sigue con `ajustes=0.0` hardcodeado; hay tests (`backend/tests/recaudacion/test_ajuste_movimiento.py`) pero 0 documentos `movimientos.tipo="AJUSTE"` reales en Mongo (ver §7 punto 6) |
 | Mantenimiento (`operativo_mantenimiento.md`) | CU-O12 (crear orden, con repuestos estimados), CU-O13 (cerrar orden: repuestos consumidos, horas taller, ajuste de km justificado) | |
@@ -145,6 +145,28 @@ pagos/viajes de `dag_viajes_core`) + la columna Bronze relajada a
 `Nullable(String)` como respaldo defensivo para conductores sin
 `usuarios.conductor` resuelto. Confirmado con corrida real: 557/558
 registros válidos, `rpt_flota_activa_franja` con datos reales.
+
+**Bug corregido en `dag_cumplimiento_gold` (2026-08-08, hallazgo H2 de la
+auditoría de nivel estratégico)**: `rpt_documentacion_vigente` llevaba **0
+filas desde siempre**, pese a que `documentos` ya tenía 142 registros reales
+(§8.8) — no por falta de corridas recientes, sino por 3 bugs encadenados
+descubiertos al re-disparar el DAG: (1) `_extraer` filtraba
+`documentos.fecha_emision` (guardado como string ISO, no BSON Date, mismo
+patrón ya conocido de `fecha_vencimiento`) contra un `datetime` de Python —
+Mongo nunca hace match entre tipos BSON distintos, el filtro devolvía 0 filas
+en toda corrida histórica; (2) aunque el tipo se arreglara, `documentos` es
+un registro de estado (vigencia), no un evento con timestamp de creación —
+filtrar por "emitido en las últimas 24h" nunca habría reflejado el universo
+completo, corregido extrayendo el snapshot completo en cada corrida (igual
+que el tablero de Flota); (3) al llegar por fin datos reales a `_gold`, la
+inserción a `fact_cumplimiento_documental` fallaba porque `filas_doc`
+incluía la clave `fecha_emision`, columna que esa tabla Gold nunca tuvo
+(`fecha_vencimiento` sí) — nunca se había detectado porque `doc_validos`
+siempre llegaba vacío por el bug (1). Corregidos los 3 en
+`analytics/dags/dag_cumplimiento_gold.py`. Confirmado con corrida real:
+`fact_cumplimiento_documental` con 142 filas, `rpt_documentacion_vigente`
+con 2 tipos (`LICENCIA_CONDUCIR` 71 registros/57.7% vigente,
+`MATRICULA_VEHICULAR` 71 registros/69.0% vigente), `actualizado_en` fresco.
 
 **Nota de infraestructura para la próxima sesión que toque `analytics/`**:
 Airflow con `LocalExecutor` en este stack usa `fork()` para ejecutar tareas
@@ -360,7 +382,8 @@ reporte de cierre en vez de simular una verificación que no ocurrió.
      muestra correctamente el estado vacío (verificado además insertando un
      documento de prueba temporal en Mongo, confirmando que el query sí
      filtra bien, y borrándolo después).
-   - ~~4. Captación~~ — **cerrado.** Requirió cerrar primero el gap de
+   - ~~4. Captación~~ — **cerrado originalmente, con regresión posterior —
+     ver nota 2026-08-08 abajo.** Requirió cerrar primero el gap de
      `canal`: campo nuevo (`Literal["app","web","referido","campana"]`,
      default `"web"`) en `SolicitudCrearRequest`/`PasajeroRegistroRequest`,
      propagado a `solicitudes` y a `usuarios` (tanto en el registro directo
@@ -395,6 +418,21 @@ reporte de cierre en vez de simular una verificación que no ocurrió.
      agosto 2026) y `rpt_altas_retencion_canal` (6 altas, 0% retención — 
      correcto, nadie tiene 90+ días en este dataset de desarrollo) con datos
      reales. Confirmado también en navegador real (login `admin_captacion`).
+   - ⚠️ **Regresión detectada 2026-08-08 (hallazgo H3, auditoría de nivel
+     estratégico)**: el backfill de arriba dejó `solicitudes` en 0/169 sin
+     `canal` (sigue así, verificado). Pero `usuarios` — que tenía 0/23 sin
+     `canal` al cerrar este punto — hoy tiene **96/194 (49%) sin `canal`**.
+     Causa más probable: las rondas posteriores de siembra de datos ricos
+     (§8.8, `seed_solicitudes_demo.py` con 70 conductores/vehículos nuevos,
+     `seed_liquidaciones_demo.py`, cuentas de demo de roles nuevos) crearon
+     usuarios sin pasar por el flujo que setea `canal`. **Decisión tomada
+     (2026-08-08): no reintentar el backfill ahora** — degrada la
+     fiabilidad de `rpt_altas_retencion_canal` para casi la mitad de los
+     usuarios reales, pero no bloquea nada; se documenta como limitación
+     conocida en el futuro Panel de Crecimiento Estratégico (OE1, nivel
+     estratégico) en vez de bloquear ese trabajo por esto — mismo criterio
+     ya usado con el gap de zona en `viajes`. Ver
+     `AUDITORIA_NIVEL_ESTRATEGICO.md` para el detalle completo.
    - ~~5. Operaciones y Despacho~~ — **cerrado (era el mayor gap del
      proyecto).** `dag_viajes_core` se amplió con una **segunda fuente**
      independiente en la misma corrida: `fact_viaje` (existente, solo
@@ -619,12 +657,16 @@ reporte de cierre en vez de simular una verificación que no ocurrió.
    - ✅ **Cerrado**: siembra de datos falsos en `referidos` (5-10
      documentos coherentes insertados directo en Mongo) — se abandonó la
      idea de un módulo de Referidos propio, no hay spec que lo respalde.
-   - ❌ **NO cerrado, pese a que una versión previa de este archivo lo daba
-     por hecho** (corregido en la tabla de §3): **CU-O05 A3 "Reintentar
-     búsqueda"** tras `SIN_CONDUCTOR` — el estado `SIN_CONDUCTOR` sigue sin
-     un botón de reintento en `apps/web-pasajero/src/App.tsx`
-     (`ESTADOS_CANCELABLES_PASAJERO` no lo incluye). **CU-O10 A2
-     (movimiento `AJUSTE`)** — existen tests
+   - ✅ **Corrección de documentación (2026-08-08)**: la entrada anterior de
+     este punto afirmaba que **CU-O05 A3 "Reintentar búsqueda"** tras
+     `SIN_CONDUCTOR` NO estaba construido. Es falso — la auditoría de nivel
+     estratégico (`AUDITORIA_NIVEL_ESTRATEGICO.md`, hallazgo H1) confirmó con
+     lectura de código real que `reintentarBusqueda()` en
+     `apps/web-pasajero/src/App.tsx` sí lo implementa completo (reusa
+     origen/destino del viaje agotado, maneja `TRIP_ALREADY_ACTIVE`). Esta
+     afirmación llevaba al menos 2 sesiones repitiéndose sin re-verificar
+     contra el código — corregido también en la tabla de §3. **CU-O10 A2
+     (movimiento `AJUSTE`)** — sigue sin resolver, existen tests
      (`backend/tests/recaudacion/test_ajuste_movimiento.py`, 5 casos, pasan)
      pero **0 documentos reales `movimientos.tipo="AJUSTE"` en Mongo** —
      confirmado por query directa. No se sabe con certeza si el agente
