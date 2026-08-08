@@ -73,11 +73,21 @@ async function refreshTokens(): Promise<boolean> {
   const refreshToken = tokenStorage.getRefresh();
   if (!refreshToken) return false;
 
-  const response = await fetch(`${baseUrl}/auth/refresh`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refresh_token: refreshToken }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+  } catch {
+    // Fallo de red (backend caído, wifi cortado): NO se borran los tokens.
+    // El refresh token puede seguir siendo perfectamente válido; cerrarle la
+    // sesión al usuario por un corte transitorio sería peor que dejar que la
+    // petición falle y se reintente después.
+    return false;
+  }
+
   if (!response.ok) {
     tokenStorage.clear();
     return false;
@@ -85,6 +95,33 @@ async function refreshTokens(): Promise<boolean> {
   const tokens: TokenPair = await response.json();
   tokenStorage.set(tokens.access_token, tokens.refresh_token);
   return true;
+}
+
+// Single-flight: una sola renovación en vuelo a la vez, compartida por todas
+// las peticiones que hayan chocado con el mismo 401.
+//
+// Sin esto, cada expiración del access token producía una estampida: TODAS
+// las peticiones en vuelo en ese instante (el polling de NotificacionesBell
+// cada 20s, la revalidación SWR de la sección abierta, etc.) recibían 401 a
+// la vez y cada una llamaba `POST /auth/refresh` por su cuenta con el MISMO
+// refresh token. El backend no invalida el refresh token al usarlo, así que
+// las N llamadas devuelven 200 — pero cada una emite un par de tokens nuevo
+// y registra una SESIÓN nueva (`core/sessions.py::registrar_sesion`), de ahí
+// las sesiones fantasma que aparecían en "Mis sesiones"/Módulo 1.4. Además,
+// las N escrituras a `tokenStorage` se pisan entre sí (access y refresh se
+// guardan en dos `setItem` separados, así que un entrelazado desafortunado
+// deja un par mezclado), y `_registrar_fallo_refresh` suspende la cuenta
+// entera a los 3 fallos de refresh — una estampida de 3 alcanza ese umbral
+// de un solo golpe en vez de a lo largo de 3 incidentes distintos.
+let renovacionEnVuelo: Promise<boolean> | null = null;
+
+function renovarUnaSolaVez(): Promise<boolean> {
+  if (!renovacionEnVuelo) {
+    renovacionEnVuelo = refreshTokens().finally(() => {
+      renovacionEnVuelo = null;
+    });
+  }
+  return renovacionEnVuelo;
 }
 
 interface RequestOptions {
@@ -112,11 +149,16 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
     });
   };
 
+  // Token con el que sale ESTA petición: si al volver con 401 resulta que ya
+  // no es el vigente, es que otra petición renovó mientras esta viajaba —
+  // basta reintentar con el nuevo, sin gastar una renovación de más.
+  const tokenEnviado = auth ? tokenStorage.getAccess() : null;
   let response = await doRequest();
 
   if (response.status === 401 && auth) {
-    const refreshed = await refreshTokens();
-    if (refreshed) {
+    const yaRenovadoPorOtra = tokenStorage.getAccess() !== tokenEnviado;
+    const renovado = yaRenovadoPorOtra || (await renovarUnaSolaVez());
+    if (renovado) {
       response = await doRequest();
     }
   }

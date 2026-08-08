@@ -2402,3 +2402,108 @@ completo convive sin romperse — no solo cada fase aislada. Resultado real:
 **El bloque completo del nivel estratégico (Fases 0-5) queda cerrado.** Ver
 `AUDITORIA_NIVEL_ESTRATEGICO.md` para el informe de auditoría original y el
 detalle de las decisiones aprobadas por el usuario antes de construir.
+
+## 15. Bug real — estampida de refresh de token (401 a mitad de sesión), cerrado
+
+Reportado por el usuario tras ver, ya logueado y en medio de uso normal (no al
+cargar la página, no al cambiar de cuenta), tres 401 seguidos:
+`GET /notificaciones/mias?limite=1` (dos veces) y
+`GET /usuarios?limit=20&offset=0`. Distinto del patrón benigno ya conocido de
+"401 → refresh → reintento" al cargar.
+
+**Lo que NO era** (descartado con evidencia antes de tocar código, no asumido):
+
+- **No era un TTL corto olvidado.** El valor de prueba de 7 minutos del Módulo
+  6.2 sí se había revertido: `db.parametros` con `tipo:"seguridad"` tiene 3
+  versiones y la vigente (`vigente_hasta:null`, desde 2026-08-07T05:06) trae
+  `access_token_minutos: 15`, el default de `DEFAULTS_SEGURIDAD`. La versión de
+  7 minutos quedó correctamente cerrada con `vigente_hasta`. No se corrigió
+  nada acá.
+- **No era un componente saltándose el cliente compartido** (sospecha inicial
+  sobre `NotificacionesBell`/`UserPicker`). Los dos usan `apiFetch`, leído
+  línea por línea. Un grep de `fetch(` en `apps/*/src` devuelve exactamente 3
+  usos de `fetch` nativo, los 3 legítimos: los 2 de `api/client.ts` (el propio
+  `apiFetch` y el POST a `/auth/refresh`, que no debe llevar interceptor) y el
+  de `web-pasajero/src/rutas.ts` (geocoding de Google, no es la API propia).
+  `/usuarios?limit=20&offset=0` sale de `Usuarios.tsx` vía `useSwr` + `apiFetch`.
+  Las 3 peticiones del incidente pasaban por el interceptor.
+
+**Causa raíz real: `apiFetch` no tenía single-flight en la renovación.** El
+interceptor de 401 llamaba `refreshTokens()` sin ninguna deduplicación, así
+que en cada expiración del access token TODAS las peticiones en vuelo en ese
+instante (el polling de 20s de `NotificacionesBell` + la revalidación SWR de
+la sección abierta) recibían 401 a la vez y cada una disparaba su propio
+`POST /auth/refresh` con el MISMO refresh token.
+
+Evidencia directa, no hipótesis:
+
+- **Reproducido con curl**: 3 `POST /auth/refresh` concurrentes con el mismo
+  refresh token devolvieron los 3 un 200 (el backend no invalida el refresh
+  token al usarlo, no hay rotación) y el set de sesiones del usuario en Redis
+  pasó de 11 a 14 — una sesión nueva por cada renovación redundante, porque
+  `_emitir_tokens` llama `core/sessions.py::registrar_sesion` siempre.
+- **Huella del incidente real del usuario en Redis**: `GET
+  /usuarios/{admin_sistema}/sesiones` mostró 3 sesiones con el MISMO user
+  agent de navegador y `ts_inicio` a 3 milisegundos una de otra
+  (`15:12:54.056`, `.058`, `.059`) — exactamente 3 renovaciones simultáneas
+  desde una sola pestaña, coincidiendo con los 3 endpoints reportados. Esas
+  son las "sesiones fantasma" que inflaban la lista de "Mis sesiones"
+  (Módulo 1.4).
+
+Además de las sesiones fantasma, la estampida traía dos riesgos reales: las N
+escrituras a `tokenStorage` se pisan entre sí (access y refresh se guardan en
+dos `setItem` separados, un entrelazado desafortunado deja un par mezclado), y
+`_registrar_fallo_refresh` suspende la cuenta ENTERA a los 3 fallos de refresh
+— una estampida de 3 alcanza ese umbral de un solo golpe en vez de a lo largo
+de 3 incidentes distintos.
+
+**Corregido en el punto central, `apps/shared-ui/src/api/client.ts`** (un solo
+archivo, hereda a las 3 apps — no se parcheó ningún componente por separado):
+
+1. **Single-flight** (`renovarUnaSolaVez()`): una única promesa de renovación
+   en vuelo, compartida por todas las peticiones que chocaron con el mismo
+   401. N peticiones → 1 `/auth/refresh` → 1 sesión nueva.
+2. **Reintento sin renovar** cuando otra petición ya renovó mientras esta
+   viajaba: `apiFetch` captura el access token con el que salió y, si al
+   volver con 401 ya no es el vigente, reintenta directo sin gastar una
+   renovación de más.
+3. **Fallo de red ya no cierra la sesión**: `refreshTokens()` solo llama
+   `tokenStorage.clear()` cuando el backend RECHAZA el refresh token
+   (`!response.ok`); si el `fetch` revienta por red (backend caído, wifi
+   cortado) devuelve `false` sin borrar nada — antes un corte transitorio en
+   una de las N renovaciones concurrentes borraba los tokens de todas las
+   demás en vuelo, que es el camino por el que un 401 podía terminar en un
+   cierre de sesión visible en vez de autocurarse.
+
+**Nota de diseño, para no reabrirlo**: un 401 en el log de red al expirar el
+token sigue siendo esperado — `apiFetch` es reactivo (pide, recibe 401,
+renueva, reintenta), no renueva de forma proactiva antes de que expire. Lo que
+se corrigió no es que aparezca UN 401, es que aparecieran N en paralelo con N
+renovaciones detrás. Cambiar a renovación proactiva (mirar el `exp` del token
+antes de cada petición) sería un rediseño aparte, no hacía falta para este bug.
+
+**Test de regresión**: `apps/web-interno/src/apiClient.test.ts` (nuevo, 4
+casos). Vive en `web-interno` y no en `shared-ui` porque `shared-ui` no tiene
+infraestructura de tests propia (solo lint, §5) y se consume como fuente TS.
+Confirmado que el test REPRODUCE el bug: revirtiendo temporalmente el fix, el
+caso de concurrencia falla con `expected 3 to be 1` — los 3 refresh de la
+estampida.
+
+**Verificación real en navegador** (`web-interno`, cuenta `admin_sistema`,
+`+593900000099`): en vez de esperar los 15 min de TTL se invalidó la firma del
+access token vigente desde la consola (mismo 401 del backend, refresh token
+intacto). Dos rondas:
+
+- Abrir el detalle de un usuario (dispara `/accesos` y `/sesiones` en
+  `Promise.all`): los 2 dieron 401 → **un solo** `POST /auth/refresh` 200 →
+  los 2 reintentos 200. El set de sesiones en Redis pasó de 9 a 10, no a 11.
+- El trío exacto del reporte: `/usuarios?limit=20&offset=0` y
+  `/notificaciones/mias` con 401 concurrentes → **un solo** `/auth/refresh`
+  200 → ambos reintentos 200. Sin banner de error ni pantalla rota.
+
+**Regresión**: `npm run build` ✅, `npm run lint` 0 errores (los mismos 3
+warnings preexistentes de `useEffect` en `ParametrosGlobales`/`PoliticasAuth`/
+`PoliticasSeguridad`), `npm run test` **27/27** en `web-interno` (subió de 23
+por los 4 casos nuevos, ningún test preexistente cambió); `npm run lint`
+limpio en `shared-ui`. **Backend sin tocar**, así que no se re-corrió `pytest`
+(última corrida registrada: 346 passed + 8 skipped, §14).
