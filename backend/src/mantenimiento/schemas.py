@@ -97,3 +97,54 @@ class CostoMantenimientoVehiculoOut(BaseModel):
     periodo: str
     costo_total: float
     total_ordenes: int
+
+
+# ---------------------------------------------------------------------------
+# Nivel estratégico — Panel de Estado y Costo de Flota (OE2b)
+# ---------------------------------------------------------------------------
+
+
+class EstadoCostoFlotaKpisOut(BaseModel):
+    pct_cumplimiento_preventivo: float | None
+    variacion_cumplimiento_pct: float | None
+    costo_mantenimiento_periodo: float | None
+    variacion_costo_pct: float | None
+    costo_acumulado: float | None
+
+
+class PuntoPreventivoOut(BaseModel):
+    periodo: str
+    pct_cumplimiento: float
+    total_ordenes: int
+
+
+class PuntoCostoFlotaOut(BaseModel):
+    periodo: str
+    costo_total: float
+    total_ordenes: int
+
+
+class CandidatoReemplazoOut(BaseModel):
+    vehiculo_id: str
+    vehiculo_placa: str | None = None
+    costo_total: float
+    costo_promedio_mes: float | None = None
+    total_ordenes: int
+    periodos: int
+    # Siempre `None`: el kilometraje no existe en ninguna vista `rpt_*` y la
+    # spec estratégica prohíbe leerlo de Mongo. Ver `metadata.km_disponible`.
+    km_recorridos: float | None = None
+
+
+class EstadoCostoFlotaMetadataOut(BaseModel):
+    meses: int
+    km_disponible: bool
+    fuentes: list[str]
+
+
+class PanelEstadoCostoFlotaOut(BaseModel):
+    kpis: EstadoCostoFlotaKpisOut
+    tendencia_preventivo: list[PuntoPreventivoOut]
+    tendencia_costo: list[PuntoCostoFlotaOut]
+    candidatos_reemplazo: list[CandidatoReemplazoOut]
+    metadata: EstadoCostoFlotaMetadataOut

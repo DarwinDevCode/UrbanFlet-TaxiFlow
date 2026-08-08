@@ -41,3 +41,38 @@ class UsoIntegracionOut(BaseModel):
     endpoint: str
     conteo: int
     total_global: int
+
+
+# --------------------------------------------------------------------------
+# Nivel estratégico — Panel de Gobernanza de Datos y Seguridad (OE6b/CU-E05)
+# --------------------------------------------------------------------------
+
+
+class GobernanzaKpisOut(BaseModel):
+    eventos_administrativos: int
+    accesos_denegados: int
+    alertas_seguridad: int
+    # Variación del conteo de accesos denegados contra la ventana previa de
+    # igual longitud. `None` cuando la ventana previa no tiene ningún evento
+    # (división por cero) -- se devuelve nulo en vez de fabricar un 0%.
+    variacion_accesos_denegados_pct: float | None = None
+
+
+class GobernanzaTendenciaOut(BaseModel):
+    periodo: str
+    eventos_administrativos: int
+    accesos_denegados: int
+    alertas_seguridad: int
+
+
+class GobernanzaMetadataOut(BaseModel):
+    meses: int
+    desde: datetime
+    fuente: str
+
+
+class PanelGobernanzaOut(BaseModel):
+    kpis: GobernanzaKpisOut
+    tendencia: list[GobernanzaTendenciaOut]
+    eventos: list[EventoAuditoriaOut]
+    metadata: GobernanzaMetadataOut

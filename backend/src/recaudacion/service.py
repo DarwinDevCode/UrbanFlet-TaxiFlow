@@ -27,6 +27,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from src.core.audit import AccionAuditoria, ResultadoAuditoria, write_audit_event
 from src.core.config import get_settings
+from src.core.agregacion_estrategica import agrupar, promedio_ponderado, ultimos_periodos, variacion_pct
 from src.core.db_clickhouse import fetch_latest_snapshot, get_clickhouse_client
 from src.core.db_mongo import get_mongo_client
 from src.core.db_transaction import with_transaction
@@ -922,3 +923,125 @@ def obtener_margen_comision() -> list[dict]:
     finally:
         client.close()
     return sorted(filas, key=lambda f: f["periodo"])
+
+
+# ---------------------------------------------------------------------------
+# Nivel estratégico — Panel de Integridad Financiera
+# (OE5 / CU-E04, nivel_estrategico.md §3.5, patrón Z)
+# ---------------------------------------------------------------------------
+
+
+def obtener_panel_integridad_financiera(*, meses: int = 12) -> dict:
+    """Segunda capa de agregación sobre `rpt_tasa_discrepancias` +
+    `rpt_margen_comision`, sin tabla nueva.
+
+    Las 2 fuentes ya traen su propia dimensión de periodo mensual dentro del
+    último snapshot (`fecha_periodo` y `periodo` respectivamente), así que la
+    tendencia extendida sale de `fetch_latest_snapshot` -- caso 1 de
+    `core/agregacion_estrategica`, sin historial de cortes.
+
+    **Comparación interanual**: se agrupa por año y solo se devuelve si hay
+    2 o más años con datos. Advertencia real que este endpoint declara en
+    metadata (`dataset_mixto`) cuando detecta más de un año: el histórico de
+    este entorno mezcla el dataset NYC de calibración (2021, sembrado) con la
+    operación de demo de la cooperativa (2026) -- son dos naturalezas de dato
+    distintas y compararlas como "interanual" induce a error si no se marca.
+    """
+    client = get_clickhouse_client()
+    try:
+        discrepancias = fetch_latest_snapshot(client, "rpt_tasa_discrepancias")
+        margen = fetch_latest_snapshot(client, "rpt_margen_comision")
+    finally:
+        client.close()
+
+    # `fecha_periodo` es un Date de ClickHouse: se normaliza a mes YYYY-MM.
+    for fila in discrepancias:
+        fila["periodo"] = str(fila["fecha_periodo"])[:7]
+
+    periodos = ultimos_periodos(
+        [f["periodo"] for f in discrepancias] + [f["periodo"] for f in margen], meses
+    )
+    periodos_set = set(periodos)
+
+    por_periodo_disc = agrupar([f for f in discrepancias if f["periodo"] in periodos_set], "periodo")
+    tendencia_conciliacion = [
+        {
+            "periodo": periodo,
+            "pct_conciliado": promedio_ponderado(por_periodo_disc[periodo], "pct_conciliado", "total_registros")
+            or 0.0,
+            "pct_discrepancia": promedio_ponderado(
+                por_periodo_disc[periodo], "pct_discrepancia", "total_registros"
+            )
+            or 0.0,
+            "total_registros": sum(f["total_registros"] for f in por_periodo_disc[periodo]),
+        }
+        for periodo in periodos
+        if periodo in por_periodo_disc
+    ]
+
+    por_periodo_margen = agrupar([f for f in margen if f["periodo"] in periodos_set], "periodo")
+    tendencia_margen = [
+        {
+            "periodo": periodo,
+            "margen": round(
+                promedio_ponderado(por_periodo_margen[periodo], "margen", "bruto_total")
+                or (sum(f["margen"] for f in por_periodo_margen[periodo]) / len(por_periodo_margen[periodo])),
+                4,
+            ),
+            "bruto_total": round(sum(f["bruto_total"] for f in por_periodo_margen[periodo]), 2),
+            "comisiones_total": round(sum(f["comisiones_total"] for f in por_periodo_margen[periodo]), 2),
+        }
+        for periodo in periodos
+        if periodo in por_periodo_margen
+    ]
+
+    conc_actual = tendencia_conciliacion[-1]["pct_conciliado"] if tendencia_conciliacion else None
+    conc_previo = tendencia_conciliacion[-2]["pct_conciliado"] if len(tendencia_conciliacion) > 1 else None
+    disc_actual = tendencia_conciliacion[-1]["pct_discrepancia"] if tendencia_conciliacion else None
+    disc_previo = tendencia_conciliacion[-2]["pct_discrepancia"] if len(tendencia_conciliacion) > 1 else None
+
+    # Tabla: periodos con discrepancia relevante (> 0), del más alto al más bajo.
+    periodos_con_discrepancia = sorted(
+        (p for p in tendencia_conciliacion if p["pct_discrepancia"] > 0),
+        key=lambda p: p["pct_discrepancia"],
+        reverse=True,
+    )
+
+    # Comparación interanual (solo si hay 2+ años reales).
+    por_anio = agrupar(
+        [f for f in discrepancias if f["periodo"] in periodos_set], lambda f: f["periodo"][:4]
+    )
+    interanual = [
+        {
+            "anio": anio,
+            "pct_conciliado": promedio_ponderado(filas, "pct_conciliado", "total_registros") or 0.0,
+            "total_registros": sum(f["total_registros"] for f in filas),
+        }
+        for anio, filas in sorted(por_anio.items())
+    ]
+    if len(interanual) < 2:
+        interanual = []
+
+    return {
+        "kpis": {
+            "pct_conciliado": conc_actual,
+            "variacion_conciliado_pct": variacion_pct(conc_actual, conc_previo),
+            "tasa_discrepancias": disc_actual,
+            "variacion_discrepancias_pct": variacion_pct(disc_actual, disc_previo),
+            "margen_comision_promedio": (
+                round(sum(p["margen"] for p in tendencia_margen) / len(tendencia_margen), 4)
+                if tendencia_margen
+                else None
+            ),
+        },
+        "tendencia_conciliacion": tendencia_conciliacion,
+        "tendencia_margen": tendencia_margen,
+        "periodos_con_discrepancia": periodos_con_discrepancia,
+        "interanual": interanual,
+        "metadata": {
+            "meses": meses,
+            "interanual_disponible": bool(interanual),
+            "dataset_mixto": len({p[:4] for p in periodos}) > 1,
+            "fuentes": ["rpt_tasa_discrepancias", "rpt_margen_comision"],
+        },
+    }

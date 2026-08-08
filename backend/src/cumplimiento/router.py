@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from src.core.db_mongo import get_database
@@ -121,3 +121,17 @@ async def obtener_documentacion_tendencia(
 ):
     filas = service.obtener_documentacion_tendencia()
     return [schemas.DocumentacionVigenteOut(**f) for f in filas]
+
+
+# Nivel estratégico — Panel de Cumplimiento Normativo (OE6a,
+# nivel_estrategico.md §3.6.a). La spec lo asigna a `gerencia` +
+# `supervisor_cumplimiento` (lectura).
+_cumplimiento_normativo_estrategico = require_roles("gerencia", "supervisor_cumplimiento")
+
+
+@router.get("/panel-estrategico/cumplimiento-normativo", response_model=schemas.PanelCumplimientoNormativoOut)
+async def obtener_panel_cumplimiento_normativo(
+    cortes: int = Query(default=12, ge=1, le=60),
+    _actor: Actor = Depends(_cumplimiento_normativo_estrategico),
+):
+    return schemas.PanelCumplimientoNormativoOut(**service.obtener_panel_cumplimiento_normativo(cortes=cortes))

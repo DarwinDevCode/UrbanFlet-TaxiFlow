@@ -50,3 +50,41 @@ class DocumentacionVigenteOut(BaseModel):
     pct_vigente: float
     total_registros: int
     fecha_datos: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Nivel estratégico — Panel de Cumplimiento Normativo (OE6a)
+# ---------------------------------------------------------------------------
+
+
+class CumplimientoNormativoKpisOut(BaseModel):
+    pct_vigente: float | None
+    variacion_vigencia_pct: float | None
+    documentos_vencidos: int
+    tipo_mas_expuesto: str | None
+
+
+class PuntoVigenciaOut(BaseModel):
+    periodo: str
+    pct_vigente: float
+    total_registros: int
+    documentos_vencidos: int
+
+
+class TipoDocumentoVigenciaOut(BaseModel):
+    tipo: str
+    pct_vigente: float
+    total_registros: int
+    documentos_vencidos: int
+
+
+class CumplimientoNormativoMetadataOut(BaseModel):
+    cortes: int
+    fuentes: list[str]
+
+
+class PanelCumplimientoNormativoOut(BaseModel):
+    kpis: CumplimientoNormativoKpisOut
+    tendencia_vigencia: list[PuntoVigenciaOut]
+    tipos: list[TipoDocumentoVigenciaOut]
+    metadata: CumplimientoNormativoMetadataOut

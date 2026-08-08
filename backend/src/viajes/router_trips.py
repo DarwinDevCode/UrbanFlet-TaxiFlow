@@ -250,3 +250,19 @@ async def listar_historial_global(
         db, texto=texto, estado=estado, desde=desde, hasta=hasta, pagina=pagina, limite=limite
     )
     return schemas.HistorialOut(viajes=[to_out(v) for v in viajes], total=total, pagina=pagina, limite=limite)
+
+
+# Nivel estratégico — Panel de Confiabilidad y Disponibilidad del Servicio
+# (OE2a, nivel_estrategico.md §3.2.a). La spec lo asigna a `gerencia`; se
+# suma `coordinador_operaciones` porque es el mismo dominio que ya opera el
+# panel táctico de Despacho y la spec no lo excluye (a diferencia de OE6b,
+# que sí declara exclusividad).
+_confiabilidad_estrategico = require_roles("gerencia", "coordinador_operaciones")
+
+
+@router.get("/panel-estrategico/confiabilidad", response_model=schemas.PanelConfiabilidadOut)
+async def obtener_panel_confiabilidad(
+    meses: int = Query(default=6, ge=1, le=36),
+    _actor: Actor = Depends(_confiabilidad_estrategico),
+):
+    return schemas.PanelConfiabilidadOut(**service.obtener_panel_confiabilidad(meses=meses))

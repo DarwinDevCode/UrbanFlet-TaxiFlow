@@ -2009,3 +2009,188 @@ aprobación**.
   Respaldos, ConfiguracionAlertas, etc. — no se auditaron una por una
   porque no encajan en el patrón "lista que se revisita", no porque se
   hayan pasado por alto).
+
+
+## 12. Nivel estratégico — backend de los 9 dashboards (Fase 3, cerrada)
+
+Spec: `specs/nivel-estrategico/nivel_estrategico.md` (6 objetivos OE1-OE6,
+5 casos de uso CU-E01..CU-E05, 8 dashboards de detalle + 1 tablero ejecutivo).
+Plan y hallazgos previos: `AUDITORIA_NIVEL_ESTRATEGICO.md` §10 (Fase 3).
+**Alcance de este bloque: SOLO backend.** Ningún archivo de `apps/*` se tocó
+— el frontend es la Fase 4, con su propio prerrequisito pendiente (H4, el
+mecanismo de navegación cruzada entre secciones de `web-interno`, que hoy
+sigue sin existir).
+
+Los 9 endpoints quedaron **construidos y verificados con llamada real**
+(login real con la cuenta `gerencia` de §8.7, 200 con datos reales, no
+mockeados). `pytest` pasó de 327 a **346 passed + 8 skipped**, sin
+regresión; `ruff check src/ tests/` limpio.
+
+### 12.1 Dónde vive cada endpoint (y por qué)
+
+Se mantiene el criterio descentralizado que el nivel táctico ya había
+decidido explícitamente (cada dominio expone lo suyo, sin módulo central):
+7 de los 9 tienen un dominio dueño claro y viven en el router de ese dominio,
+con la ruta `GET /<dominio>/panel-estrategico/...`.
+
+| # | Dashboard (spec) | Endpoint | Fuentes `rpt_*` |
+|---|---|---|---|
+| OE1 | Crecimiento Estratégico | `GET /captacion/panel-estrategico/crecimiento` | `rpt_conversion_captacion`, `rpt_altas_retencion_canal`, `rpt_conversion_onboarding` |
+| OE2a | Confiabilidad y Disponibilidad | `GET /viajes/panel-estrategico/confiabilidad` | `rpt_tiempo_asignacion`, `rpt_tasa_cancelacion`, `rpt_flota_activa_franja` |
+| OE2b | Estado y Costo de Flota | `GET /mantenimiento/panel-estrategico/estado-costo-flota` | `rpt_cumplimiento_plan_preventivo`, `rpt_costo_mantenimiento_vehiculo` |
+| OE3 | Capacidades y Plataforma | `GET /plataforma/panel-estrategico/capacidades` | `rpt_cuarentena_dominio` + tabla `corridas` |
+| OE4 | Rentabilidad y Demanda (patrón F) | `GET /estrategico/rentabilidad-demanda` | las 4: margen, costo mantenimiento, tiempo asignación, flota activa |
+| OE5 | Integridad Financiera | `GET /liquidaciones/panel-estrategico/integridad-financiera` | `rpt_tasa_discrepancias`, `rpt_margen_comision` |
+| OE6a | Cumplimiento Normativo | `GET /cumplimiento/panel-estrategico/cumplimiento-normativo` | `rpt_documentacion_vigente` |
+| OE6b | Gobernanza de Datos y Seguridad (patrón F) | `GET /auditoria/panel-estrategico/gobernanza` | ninguna — `bitacora` (Mongo) |
+| CU-E01 | Tablero Ejecutivo Consolidado | `GET /estrategico/tablero-ejecutivo` | los 8 anteriores |
+
+**Módulo nuevo `backend/src/estrategico/`** (router/service/schemas), con solo
+2 endpoints: OE4 y CU-E01. No es un módulo central "porque sí" — son
+exactamente los 2 que no tienen dominio dueño (OE4 cruza finanzas +
+mantenimiento + despacho + flota para calcular un margen que no es de ninguno;
+CU-E01 cruza los 8 por definición). Si mañana aparece un dashboard estratégico
+con dominio dueño, va en el router de su dominio, no acá. Su prefijo ya es
+`/estrategico`, por eso esas 2 rutas no repiten el segmento
+`/panel-estrategico/`.
+
+**`backend/src/core/agregacion_estrategica.py`** (nuevo): helpers de la
+segunda capa de agregación (`variacion_pct`, `promedio_ponderado`, `agrupar`,
+`ultimos_periodos`), usados por 7 de los 9. `promedio_ponderado` existe porque
+las `rpt_*` publican porcentajes ya calculados por subgrupo — promediarlos sin
+ponderar por volumen le daría el mismo peso a una franja con 3 registros que a
+una con 30,000.
+
+**Ni una tabla `rpt_estrategico_*` nueva ni un DAG nuevo**, como se pidió. La
+"tendencia extendida" sale de dos mecanismos distintos según la fuente, y la
+diferencia importa (documentada en el docstring de
+`core/agregacion_estrategica.py`):
+
+1. Tablas que YA traen periodo propio (`rpt_margen_comision`,
+   `rpt_tasa_cancelacion`, `rpt_conversion_captacion`,
+   `rpt_cumplimiento_plan_preventivo`, `rpt_costo_mantenimiento_vehiculo`,
+   `rpt_tasa_discrepancias`): el último snapshot ya contiene varios meses →
+   `fetch_latest_snapshot` + agrupado por ese periodo.
+2. Tablas que son un corte puntual (`rpt_flota_activa_franja`,
+   `rpt_documentacion_vigente`, `rpt_tiempo_asignacion`,
+   `rpt_cuarentena_dominio`, `rpt_conversion_onboarding`): la tendencia sale de
+   `fetch_snapshot_history` sobre `fecha_datos` (son MergeTree, conservan un
+   corte por corrida).
+
+### 12.2 Decisiones no triviales tomadas en esta fase
+
+- **`junta_socios` no se crea** (decisión ya aprobada antes de empezar). Los
+  dashboards que la spec le asigna (OE2b, OE4, OE5, CU-E01) quedan bajo
+  `gerencia`, el otro rol que la propia spec ya lista para los 4. Documentado
+  con un comentario junto a cada gate afectado (`mantenimiento/router.py`,
+  `recaudacion/router.py`, `estrategico/router.py`). Razón: un rol sin cuenta
+  ni pantalla propias repetiría el patrón muerto de `integracion_externa`.
+- **Roles por dashboard**: se respeta lo que la spec define, y donde la spec
+  solo dice `gerencia` se suma el rol dueño del dominio (`admin_captacion`,
+  `coordinador_operaciones`, `jefe_mantenimiento`, `admin_financiero`) —
+  **con una excepción deliberada: OE6b (Gobernanza) queda exclusivo de
+  `gerencia`**, porque la spec lo declara así explícitamente (no se comparte
+  ni con `admin_sistema`, que ya tiene su vista operativa de la misma bitácora
+  en Administración). Hay un test que lo fija (`admin_sistema` → 403).
+- **Fórmula de margen de OE4** (nadie la había definido con precisión; queda
+  documentada en el docstring de
+  `estrategico/service.py::obtener_panel_rentabilidad`). Para cada mes `m` y
+  franja `f` ∈ {DIURNA, NOCTURNA}:
+  `recaudacion = bruto_total[m] * share_demanda[f]`,
+  `comision = comisiones_total[m] * share_demanda[f]`,
+  `costo_mant = costo_mant_total[m] * share_capacidad[f]`,
+  `margen = recaudacion - comision - costo_mant`.
+  **Lo importante son las DOS bases de prorrateo distintas**: prorratear los
+  3 componentes por la misma participación daría un `margen_pct` idéntico en
+  todas las franjas — cierto pero inútil, porque el dashboard existe para
+  compararlas. La distinción tiene sustento real: recaudación y comisión
+  escalan con los viajes atendidos (`rpt_tiempo_asignacion`), el costo de
+  mantenimiento escala con la exposición del activo
+  (`rpt_flota_activa_franja` — un vehículo en servicio se desgasta esté
+  ocupado o no). Así una franja con mucha flota y poca demanda sale con menor
+  margen, que es justo la señal que CU-E02/CU-E03 necesitan. Hay un test que
+  fija este comportamiento.
+- **Puente de taxonomías de "franja"** (`FRACCION_DIURNA_POR_BUCKET` en
+  `estrategico/service.py`): `rpt_flota_activa_franja` publica buckets de 6h
+  (`00-06`/`06-12`/`12-18`/`18-24`) y `rpt_tiempo_asignacion` publica
+  `DIURNA`/`NOCTURNA`. Como la franja diurna es 05:00-22:00
+  (`core/config.py::franja_diurna_desde_hora/hasta_hora`), el reparto es
+  aritmética exacta de horas por bucket (00-06 → 1/6 diurna; 18-24 → 4/6;
+  los dos del medio, 100%), no una estimación.
+- **Tablero ejecutivo: una sola respuesta con los 8 headlines**, no 8 llamadas
+  del frontend. Razones: es un índice, se abre entero; `gerencia` es el único
+  rol que la spec lista para los 8, así que una respuesta única no filtra nada
+  que el actor no pudiera pedir por separado; y evita 8 handshakes en el
+  primer render. Cada headline llama al **mismo servicio** que sirve su
+  dashboard de detalle (nunca reimplementa el cálculo, para que los dos
+  números no puedan divergir), y cada bloque va en su propio `try`: una fuente
+  vacía o ClickHouse caído deja esa tarjeta con `disponible=false` en vez de
+  tumbar el tablero. El campo `seccion` de cada tarjeta es el identificador
+  del dashboard destino del enlace "Ver detalle" — se define en el backend a
+  propósito, para que el mapeo tarjeta→destino no sea un mirror manual en TSX
+  (mismo problema ya resuelto en Auditoría Administrativa).
+- **Excepción documentada a la regla de la Sección 2 de la spec** ("nunca
+  Mongo directo, siempre sobre `rpt_*`"): solo OE6b la usa, porque la bitácora
+  no tiene ninguna `rpt_*` detrás y la propia spec declara como fuente "los
+  eventos de auditoría administrativa ya construidos (Módulo 6.1)". Los otros
+  8 respetan la regla. El único otro toque a Mongo es resolver la **placa** de
+  un vehículo en OE2b (dato descriptivo, no una métrica — mismo patrón ya
+  aceptado en el panel táctico de Mantenimiento).
+
+### 12.3 Limitaciones que los endpoints DECLARAN en vez de disimular
+
+Todas viajan en el campo `metadata` de la respuesta, para que la Fase 4 pueda
+mostrar la advertencia en la UI (mismo criterio ya usado con el gap de zona en
+el Panel de Flota táctico). Ninguna se rellenó con un dato inventado:
+
+| Bandera | Dónde | Qué significa |
+|---|---|---|
+| `zona_disponible: false` | OE4 (fijo) y OE2a (calculado del dato real) | `viajes.zona_origen_id` sigue sin resolverse. En OE4 la matriz es mes × franja y no zona × franja, alcance recortado que la propia spec previó. En OE2a la bandera se calcula del snapshot, y hoy da `true` (las filas Gold sí traen Z-NORTE/Z-SUR). |
+| `km_disponible: false` | OE2b | La tabla de "candidatos a reemplazo (costo vs. km)" sale sin km: el kilometraje no existe en ninguna `rpt_*` y solo vive en `ordenes` (Mongo), prohibido para este nivel. `km_recorridos` va en `None`. |
+| `tasa_cancelacion_disponible: false` | OE2a | **Hallazgo real de esta fase**: `rpt_tasa_cancelacion` no es consolidable como tasa. El query que la publica agrupa por motivo/actor con `HAVING cancelados > 0`, así que en cada fila `solicitados == cancelados` y la tasa vale siempre 1.0 — los viajes NO cancelados nunca llegan a la tabla. Se sirve el **volumen** de cancelaciones por mes (real y consolidable) y su variación; la tasa va en `None`. Arreglarlo de raíz exige cambiar el DAG táctico. |
+| `demanda_disponible: false` / `demanda_viajes_disponible: false` | OE1 y OE4 | Ninguna `rpt_*` publica viajes solicitados por mes (ver el punto anterior: la única con periodo y volumen solo trae cancelados). En OE1 `crecimiento_demanda_pct` va en `None`; en OE4 la "tendencia de demanda de largo plazo" se sirve como recaudación bruta por trimestre, explícitamente etiquetada como proxy. |
+| `canal_cobertura_parcial: true` | OE1 | 96 de 194 usuarios (49%) no tienen `canal` (hallazgo H3 de la auditoría). El desglose por canal subrepresenta a esa mitad. |
+| `capacitacion_disponible: false` | OE3 | No existe dominio de capacitación en el sistema (backlog consciente ya declarado en el nivel táctico). |
+| `dataset_mixto: true` | OE5 | Se enciende cuando el rango cubre más de un año: en este entorno eso mezcla el dataset NYC de calibración (2021) con la operación de demo (2026). La comparación interanual se sirve, pero marcada — no como si fuera homogénea. |
+
+Además, **dos taxonomías de "franja" que NO se cruzan** en OE2a: se devuelven
+`franjas` (buckets de 6h, de Flota) y `franjas_asignacion` (DIURNA/NOCTURNA,
+de Despacho) como listas separadas. Un join por franja daría 100% de nulos.
+
+### 12.4 Verificación real hecha
+
+- Los 9 endpoints llamados con `curl` contra el backend corriendo en Docker
+  (hot-reload de uvicorn confirmado: `docker-compose.yml` monta
+  `./backend/src:/app/src` y el `CMD` trae `--reload`), con token real de la
+  cuenta `gerencia` (`+593900000010` / `Gerencia123!`, §8.7). Los 9 con 200 y
+  datos reales — p. ej. Capacidades con 1.93% de cuarentena global real sobre
+  1,360,494 registros extraídos y 205 corridas OK; Cumplimiento Normativo con
+  63.4% vigente sobre los 142 documentos reales; el tablero ejecutivo con las
+  8 tarjetas en `disponible=true`.
+- RBAC verificado en vivo: cuenta de conductor → **403** en
+  `/estrategico/tablero-ejecutivo`.
+- 19 tests nuevos (`backend/tests/estrategico/test_nivel_estrategico.py`):
+  403 parametrizado sobre las 9 rutas, el 403 de `admin_sistema` en OE6b, la
+  agregación real de OE6b sobre `bitacora` sembrada, los 4 helpers de
+  agregación, y la fórmula de OE4 con snapshots `rpt_*` falsos (sin ClickHouse
+  real). `pytest` total: **346 passed, 8 skipped** (base: 327 + 8).
+- **No hubo verificación en navegador** — esta fase es backend puro, no hay UI
+  que abrir todavía (regla de cierre §6: cuando no se puede verificar en
+  navegador, se dice explícitamente en vez de simularlo).
+
+### 12.5 Qué queda pendiente para la Fase 4 (frontend)
+
+- Resolver **H4** (`AUDITORIA_NIVEL_ESTRATEGICO.md` §6): `Seccion` en
+  `apps/web-interno/src/App.tsx` define `render: () => JSX.Element` sin ningún
+  prop de navegación, así que un botón "Ver detalle" dentro de un panel no
+  tiene hoy forma de invocar `setSeccionActiva`. Es transversal a los 9 y al
+  tablero ejecutivo — construirlo tarde obliga a retocar todos los paneles.
+- Grupo nuevo "Panel Estratégico" en el sidebar, mismo patrón que "Panel
+  Táctico". Recordatorio ya aprendido dos veces (ver §10, "Mi cuenta" e
+  "Historial de viajes"): **agregarlo al final del array `SECCIONES`**, o
+  desplaza la sección por defecto de algún rol y rompe tests sin relación
+  aparente.
+- Patrones de layout por dashboard: `DashboardZ` para 7, `DashboardF` para
+  OE4 y OE6b (los 2 que la spec marca como patrón F).
+- Consumir las banderas de `metadata` de §12.3 para mostrar las advertencias,
+  en vez de dibujar filtros/columnas que no tendrían dato detrás.

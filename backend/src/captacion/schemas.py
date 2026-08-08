@@ -122,3 +122,62 @@ class AltasRetencionCanalOut(BaseModel):
     canal: str
     altas: int
     pct_retencion: float
+
+
+# ---------------------------------------------------------------------------
+# Nivel estratégico — Panel de Crecimiento Estratégico (OE1)
+# ---------------------------------------------------------------------------
+
+
+class CrecimientoKpisOut(BaseModel):
+    pct_conversion_onboarding: float | None
+    pct_retencion_90d: float | None
+    altas_periodo: int | None
+    variacion_altas_pct: float | None
+    # Siempre `None`: ninguna vista `rpt_*` publica viajes solicitados por
+    # mes. Ver `metadata.demanda_disponible` y el docstring del servicio.
+    crecimiento_demanda_pct: float | None = None
+
+
+class PuntoAltasOut(BaseModel):
+    periodo: str
+    altas: int
+    pct_retencion: float
+
+
+class PuntoConversionOut(BaseModel):
+    periodo: str
+    pct_conversion: float
+    total_solicitudes: int
+
+
+class PuntoOnboardingOut(BaseModel):
+    periodo: str
+    pct_activo: float
+    total_registros: int
+
+
+class CanalCrecimientoOut(BaseModel):
+    canal: str
+    pct_conversion: float
+    total_solicitudes: int
+    dias_aprobacion_promedio: float | None = None
+    altas: int = 0
+
+
+class CrecimientoMetadataOut(BaseModel):
+    meses: int
+    # `true`: 96 de 194 usuarios (49%) no tienen `canal` -- el desglose por
+    # canal subrepresenta a esa mitad. El frontend debe advertirlo.
+    canal_cobertura_parcial: bool
+    demanda_disponible: bool
+    fuentes: list[str]
+
+
+class PanelCrecimientoOut(BaseModel):
+    kpis: CrecimientoKpisOut
+    tendencia_altas: list[PuntoAltasOut]
+    tendencia_conversion: list[PuntoConversionOut]
+    tendencia_onboarding: list[PuntoOnboardingOut]
+    canales: list[CanalCrecimientoOut]
+    metadata: CrecimientoMetadataOut

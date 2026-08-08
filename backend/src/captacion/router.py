@@ -143,3 +143,17 @@ async def obtener_altas_retencion_canal(
 ):
     filas = service.obtener_altas_retencion_canal()
     return [schemas.AltasRetencionCanalOut(**f) for f in filas]
+
+
+# Nivel estratégico — Panel de Crecimiento Estratégico (OE1,
+# nivel_estrategico.md §3.1). La spec lo asigna a `gerencia`; se suma
+# `admin_captacion` por ser el dominio dueño del dato.
+_crecimiento_estrategico = require_roles("gerencia", "admin_captacion")
+
+
+@router.get("/panel-estrategico/crecimiento", response_model=schemas.PanelCrecimientoOut)
+async def obtener_panel_crecimiento(
+    meses: int = Query(default=12, ge=1, le=60),
+    _actor: Actor = Depends(_crecimiento_estrategico),
+):
+    return schemas.PanelCrecimientoOut(**service.obtener_panel_crecimiento(meses=meses))

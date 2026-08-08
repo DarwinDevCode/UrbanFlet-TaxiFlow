@@ -158,3 +158,25 @@ async def obtener_costo_mantenimiento_top(
 ):
     filas = await service.obtener_costo_mantenimiento_top(db)
     return [schemas.CostoMantenimientoVehiculoOut(**f) for f in filas]
+
+
+# Nivel estratégico — Panel de Estado y Costo de Flota (OE2b,
+# nivel_estrategico.md §3.2.b). La spec lo asigna a `gerencia` +
+# `junta_socios`. **Decisión aprobada: el rol `junta_socios` NO se crea**
+# (no existe en `core/rbac.py::ROLES`, y crear un rol sin cuenta ni pantalla
+# propias repetiría el patrón muerto de `integracion_externa`) -- los
+# dashboards que la spec le asigna quedan bajo `gerencia`, el otro rol que la
+# propia spec ya lista para todos ellos. Se suma `jefe_mantenimiento` por ser
+# el dominio dueño del dato (mismo criterio que en OE2a con
+# `coordinador_operaciones`).
+_estado_costo_flota_estrategico = require_roles("gerencia", "jefe_mantenimiento")
+
+
+@router.get("/panel-estrategico/estado-costo-flota", response_model=schemas.PanelEstadoCostoFlotaOut)
+async def obtener_panel_estado_costo_flota(
+    meses: int = Query(default=12, ge=1, le=36),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+    _actor: Actor = Depends(_estado_costo_flota_estrategico),
+):
+    datos = await service.obtener_panel_estado_costo_flota(db, meses=meses)
+    return schemas.PanelEstadoCostoFlotaOut(**datos)

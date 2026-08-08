@@ -20,6 +20,7 @@ from datetime import date, datetime, UTC
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from src.core.audit import AccionAuditoria, ResultadoAuditoria, write_audit_event
+from src.core.agregacion_estrategica import agrupar, promedio_ponderado, ultimos_periodos, variacion_pct
 from src.core.db_clickhouse import fetch_latest_snapshot, get_clickhouse_client
 from src.core.db_mongo import get_mongo_client
 from src.core.db_transaction import with_transaction
@@ -507,3 +508,110 @@ async def obtener_costo_mantenimiento_top(db: AsyncIOMotorDatabase, *, top: int 
         fila["vehiculo_placa"] = placas.get(fila["vehiculo_id"])
         fila["periodo"] = "acumulado"
     return resultado
+
+
+# ---------------------------------------------------------------------------
+# Nivel estratégico — Panel de Estado y Costo de Flota
+# (OE2b, nivel_estrategico.md §3.2.b, patrón Z)
+# ---------------------------------------------------------------------------
+
+
+async def obtener_panel_estado_costo_flota(
+    db: AsyncIOMotorDatabase, *, meses: int = 12, top: int = 10
+) -> dict:
+    """Segunda capa de agregación sobre `rpt_cumplimiento_plan_preventivo` +
+    `rpt_costo_mantenimiento_vehiculo`, sin tabla nueva.
+
+    Las 2 fuentes ya traen `periodo` (mes) dentro del último snapshot, así
+    que la tendencia extendida sale del propio `fetch_latest_snapshot` sin
+    necesitar historial de cortes -- ver `core/agregacion_estrategica`, caso 1.
+
+    **`km_recorridos` va siempre en `None`, a propósito.** La spec pide una
+    tabla de "vehículos candidatos a reemplazo (costo vs. km recorridos)",
+    pero el kilometraje no existe en ninguna de las 2 tablas `rpt_*` ni en
+    ninguna otra vista publicada del nivel táctico. Los únicos km del sistema
+    viven en `ordenes.km_entrada`/`km_salida` (Mongo), y la Sección 2 de la
+    spec estratégica prohíbe explícitamente consultar Mongo para un informe
+    de este nivel. Se declara `km_disponible=false` en metadata en vez de
+    inventar un proxy -- mismo criterio que el gap de zona.
+
+    El único acceso a Mongo de esta función resuelve la **placa** de cada
+    vehículo del ranking (dato descriptivo, no una métrica), exactamente el
+    mismo patrón ya aceptado en `obtener_costo_mantenimiento_top` del nivel
+    táctico.
+    """
+    client = get_clickhouse_client()
+    try:
+        preventivo = fetch_latest_snapshot(client, "rpt_cumplimiento_plan_preventivo")
+        costos = fetch_latest_snapshot(client, "rpt_costo_mantenimiento_vehiculo")
+    finally:
+        client.close()
+
+    periodos = ultimos_periodos([f["periodo"] for f in preventivo] + [f["periodo"] for f in costos], meses)
+    periodos_set = set(periodos)
+
+    por_periodo_prev = agrupar([f for f in preventivo if f["periodo"] in periodos_set], "periodo")
+    tendencia_preventivo = [
+        {
+            "periodo": periodo,
+            "pct_cumplimiento": promedio_ponderado(por_periodo_prev[periodo], "pct_cumplimiento", "total_ordenes")
+            or 0.0,
+            "total_ordenes": sum(f["total_ordenes"] for f in por_periodo_prev[periodo]),
+        }
+        for periodo in periodos
+        if periodo in por_periodo_prev
+    ]
+
+    por_periodo_costo = agrupar([f for f in costos if f["periodo"] in periodos_set], "periodo")
+    tendencia_costo = [
+        {
+            "periodo": periodo,
+            "costo_total": round(sum(f["costo_total"] for f in por_periodo_costo[periodo]), 2),
+            "total_ordenes": sum(f["total_ordenes"] for f in por_periodo_costo[periodo]),
+        }
+        for periodo in periodos
+        if periodo in por_periodo_costo
+    ]
+
+    pct_actual = tendencia_preventivo[-1]["pct_cumplimiento"] if tendencia_preventivo else None
+    pct_previo = tendencia_preventivo[-2]["pct_cumplimiento"] if len(tendencia_preventivo) > 1 else None
+    costo_actual = tendencia_costo[-1]["costo_total"] if tendencia_costo else None
+    costo_previo = tendencia_costo[-2]["costo_total"] if len(tendencia_costo) > 1 else None
+
+    acumulado: dict[str, dict] = {}
+    for fila in costos:
+        if fila["periodo"] not in periodos_set:
+            continue
+        acc = acumulado.setdefault(
+            fila["vehiculo_id"],
+            {"vehiculo_id": fila["vehiculo_id"], "costo_total": 0.0, "total_ordenes": 0, "periodos": 0},
+        )
+        acc["costo_total"] += fila["costo_total"]
+        acc["total_ordenes"] += fila["total_ordenes"]
+        acc["periodos"] += 1
+
+    candidatos = sorted(acumulado.values(), key=lambda f: f["costo_total"], reverse=True)[:top]
+    placas = await obtener_placas_vehiculos(db, {f["vehiculo_id"] for f in candidatos})
+    for fila in candidatos:
+        fila["costo_total"] = round(fila["costo_total"], 2)
+        fila["vehiculo_placa"] = placas.get(fila["vehiculo_id"])
+        fila["costo_promedio_mes"] = round(fila["costo_total"] / fila["periodos"], 2) if fila["periodos"] else None
+        fila["km_recorridos"] = None  # ver docstring: no existe en ninguna rpt_*
+
+    return {
+        "kpis": {
+            "pct_cumplimiento_preventivo": pct_actual,
+            "variacion_cumplimiento_pct": variacion_pct(pct_actual, pct_previo),
+            "costo_mantenimiento_periodo": costo_actual,
+            "variacion_costo_pct": variacion_pct(costo_actual, costo_previo),
+            "costo_acumulado": round(sum(f["costo_total"] for f in acumulado.values()), 2) if acumulado else None,
+        },
+        "tendencia_preventivo": tendencia_preventivo,
+        "tendencia_costo": tendencia_costo,
+        "candidatos_reemplazo": candidatos,
+        "metadata": {
+            "meses": meses,
+            "km_disponible": False,
+            "fuentes": ["rpt_cumplimiento_plan_preventivo", "rpt_costo_mantenimiento_vehiculo"],
+        },
+    }

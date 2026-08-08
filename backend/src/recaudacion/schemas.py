@@ -148,3 +148,56 @@ class MargenComisionOut(BaseModel):
     bruto_total: float
     comisiones_total: float
     horas_hasta_pago_promedio: float | None
+
+
+# ---------------------------------------------------------------------------
+# Nivel estratégico — Panel de Integridad Financiera (OE5 / CU-E04)
+# ---------------------------------------------------------------------------
+
+
+class IntegridadFinancieraKpisOut(BaseModel):
+    pct_conciliado: float | None
+    variacion_conciliado_pct: float | None
+    tasa_discrepancias: float | None
+    variacion_discrepancias_pct: float | None
+    margen_comision_promedio: float | None
+
+
+class PuntoConciliacionOut(BaseModel):
+    periodo: str
+    pct_conciliado: float
+    pct_discrepancia: float
+    total_registros: int
+
+
+class PuntoMargenOut(BaseModel):
+    periodo: str
+    margen: float
+    bruto_total: float
+    comisiones_total: float
+
+
+class ComparacionInteranualOut(BaseModel):
+    anio: str
+    pct_conciliado: float
+    total_registros: int
+
+
+class IntegridadFinancieraMetadataOut(BaseModel):
+    meses: int
+    interanual_disponible: bool
+    # `true` cuando el rango incluye más de un año: en este entorno eso
+    # significa mezclar el dataset NYC de calibración (2021) con la operación
+    # real de demo (2026). El frontend debe marcarlo, no presentarlo como una
+    # comparación interanual homogénea.
+    dataset_mixto: bool
+    fuentes: list[str]
+
+
+class PanelIntegridadFinancieraOut(BaseModel):
+    kpis: IntegridadFinancieraKpisOut
+    tendencia_conciliacion: list[PuntoConciliacionOut]
+    tendencia_margen: list[PuntoMargenOut]
+    periodos_con_discrepancia: list[PuntoConciliacionOut]
+    interanual: list[ComparacionInteranualOut]
+    metadata: IntegridadFinancieraMetadataOut

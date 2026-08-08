@@ -3,7 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from src.auditoria import schemas
+from src.auditoria import schemas, service
 from src.core.audit import ACCIONES_ADMINISTRATIVAS
 from src.core.db_clickhouse import fetch_latest_snapshot, get_clickhouse_client
 from src.core.db_mongo import get_database
@@ -87,3 +87,22 @@ async def obtener_uso_integraciones(
         client.close()
     filas.sort(key=lambda f: f["conteo"], reverse=True)
     return [schemas.UsoIntegracionOut(**f) for f in filas]
+
+
+# Nivel estratégico — Panel de Gobernanza de Datos y Seguridad (OE6b/CU-E05,
+# nivel_estrategico.md §3.6.b). La spec lo declara **exclusivo de
+# `gerencia`**: deliberadamente NO se comparte con `admin_sistema`, que ya
+# tiene su propia vista operativa de la misma bitácora en Administración
+# (Módulo 6.1) -- de ahí que este gate sea distinto de `_puede_leer_bitacora`
+# aunque lea la misma colección.
+_gerencia_estrategico = require_roles("gerencia")
+
+
+@router.get("/panel-estrategico/gobernanza", response_model=schemas.PanelGobernanzaOut)
+async def obtener_panel_gobernanza(
+    meses: int = Query(default=6, ge=1, le=36),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+    _actor=Depends(_gerencia_estrategico),
+):
+    datos = await service.obtener_gobernanza_datos(db, meses=meses)
+    return schemas.PanelGobernanzaOut(**datos)

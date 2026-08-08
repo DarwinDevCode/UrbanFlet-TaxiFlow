@@ -28,7 +28,8 @@ from __future__ import annotations
 
 from datetime import date
 
-from src.core.db_clickhouse import fetch_latest_snapshot, get_clickhouse_client
+from src.core.agregacion_estrategica import agrupar, variacion_pct
+from src.core.db_clickhouse import fetch_latest_snapshot, fetch_snapshot_history, get_clickhouse_client
 
 # (id_informe, nombre_visible, tabla)
 _CATALOGO: list[tuple[str, str, str]] = [
@@ -124,3 +125,97 @@ def obtener_cuarentena_dominio() -> list[dict]:
     finally:
         client.close()
     return sorted(filas, key=lambda f: f["dag_id"])
+
+
+# ---------------------------------------------------------------------------
+# Nivel estratégico — Panel de Capacidades y Plataforma
+# (OE3, nivel_estrategico.md §3.3, patrón Z)
+# ---------------------------------------------------------------------------
+
+
+def obtener_panel_capacidades(*, cortes: int = 12) -> dict:
+    """Segunda capa de agregación sobre `rpt_cuarentena_dominio`, sin tabla nueva.
+
+    `rpt_cuarentena_dominio` no tiene dimensión de periodo propia (es un corte
+    por corrida), así que la tendencia sale de `fetch_snapshot_history` sobre
+    `fecha_datos` -- caso 2 de `core/agregacion_estrategica`.
+
+    "Corridas OK vs. fallidas del periodo" se cuenta directo sobre la tabla
+    `corridas` de ClickHouse, la misma fuente que ya usa `listar_corridas`
+    (informe simple del panel táctico de Plataforma) -- sigue siendo
+    ClickHouse, no Mongo, así que no rompe la regla de la Sección 2 de la
+    spec estratégica.
+
+    **"Avance de capacitación por área" va siempre en `None`**: no existe
+    ningún dominio de capacitación en el sistema (backlog consciente ya
+    documentado en el nivel táctico). Se declara
+    `capacitacion_disponible=false` en metadata en vez de fabricar el dato.
+    """
+    client = get_clickhouse_client()
+    try:
+        actual = fetch_latest_snapshot(client, "rpt_cuarentena_dominio")
+        historial = fetch_snapshot_history(client, "rpt_cuarentena_dominio", limite_dias=cortes)
+        corridas = client.query(
+            """
+            SELECT estado, count() AS total
+            FROM urbanflet_gold.corridas
+            GROUP BY estado
+            """
+        ).result_rows
+    finally:
+        client.close()
+
+    por_estado = {str(estado): int(total) for estado, total in corridas}
+    corridas_ok = por_estado.get("OK", 0) + por_estado.get("WARN", 0)
+    corridas_fallidas = sum(v for k, v in por_estado.items() if k not in ("OK", "WARN"))
+
+    def _pct_global(filas: list[dict]) -> float | None:
+        extraidos = sum(f["registros_extraidos"] for f in filas)
+        if not extraidos:
+            return None
+        return round(sum(f["registros_cuarentena"] for f in filas) / extraidos, 4)
+
+    tendencia = [
+        {
+            "periodo": str(fecha),
+            "pct_cuarentena": _pct_global(filas) or 0.0,
+            "registros_extraidos": sum(f["registros_extraidos"] for f in filas),
+            "registros_cuarentena": sum(f["registros_cuarentena"] for f in filas),
+        }
+        for fecha, filas in sorted(agrupar(historial, "fecha_datos").items())
+    ]
+
+    dominios = sorted(
+        (
+            {
+                "dag_id": f["dag_id"],
+                "pct_cuarentena": f["pct_cuarentena"],
+                "registros_extraidos": f["registros_extraidos"],
+                "registros_cuarentena": f["registros_cuarentena"],
+            }
+            for f in actual
+        ),
+        key=lambda f: f["pct_cuarentena"],
+        reverse=True,
+    )
+
+    pct_actual = tendencia[-1]["pct_cuarentena"] if tendencia else None
+    pct_previo = tendencia[-2]["pct_cuarentena"] if len(tendencia) > 1 else None
+
+    return {
+        "kpis": {
+            "pct_cuarentena_global": pct_actual,
+            "variacion_cuarentena_pct": variacion_pct(pct_actual, pct_previo),
+            "dominio_mas_afectado": dominios[0]["dag_id"] if dominios else None,
+            "corridas_ok": corridas_ok,
+            "corridas_fallidas": corridas_fallidas,
+            "avance_capacitacion_pct": None,  # ver docstring
+        },
+        "tendencia_cuarentena": tendencia,
+        "dominios": dominios,
+        "metadata": {
+            "cortes": cortes,
+            "capacitacion_disponible": False,
+            "fuentes": ["rpt_cuarentena_dominio", "corridas"],
+        },
+    }

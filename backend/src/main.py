@@ -26,6 +26,7 @@ from src.core.validation import validation_error_handler
 from src.direcciones.router import router as direcciones_router
 from src.core.idempotency import IdempotencyMiddleware
 from src.cumplimiento.router import router as cumplimiento_router
+from src.estrategico.router import router as estrategico_router
 from src.flota.router import router as flota_router
 from src.mantenimiento.router import router as mantenimiento_router
 from src.notificaciones.router import router as notificaciones_router
@@ -109,6 +110,7 @@ app.include_router(parametros_router)
 app.include_router(notificaciones_router)
 app.include_router(auditoria_router)
 app.include_router(plataforma_router)
+app.include_router(estrategico_router)
 app.include_router(usuarios_router)
 app.include_router(seguridad_router)
 app.include_router(configuracion_router)

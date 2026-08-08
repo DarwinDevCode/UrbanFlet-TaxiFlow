@@ -32,3 +32,20 @@ async def obtener_cuarentena_dominio(
 ):
     filas = service.obtener_cuarentena_dominio()
     return [schemas.CuarentenaDominioOut(**f) for f in filas]
+
+
+# Nivel estratégico — Panel de Capacidades y Plataforma (OE3,
+# nivel_estrategico.md §3.3). La spec lo asigna a `gerencia` +
+# `responsable_plataforma` (lectura) -- ambos ya están en
+# `_consumidor_indicadores`, pero se declara un gate propio para no acoplar
+# el acceso estratégico al del catálogo de indicadores (CU-O16), que además
+# incluye `admin_plataforma`.
+_capacidades_estrategico = require_roles("gerencia", "responsable_plataforma")
+
+
+@router.get("/panel-estrategico/capacidades", response_model=schemas.PanelCapacidadesOut)
+async def obtener_panel_capacidades(
+    cortes: int = Query(default=12, ge=1, le=60),
+    _actor: Actor = Depends(_capacidades_estrategico),
+):
+    return schemas.PanelCapacidadesOut(**service.obtener_panel_capacidades(cortes=cortes))

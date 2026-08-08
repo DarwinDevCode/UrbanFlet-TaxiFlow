@@ -18,6 +18,7 @@ from datetime import date, datetime, timedelta, UTC
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from src.core.audit import AccionAuditoria, ResultadoAuditoria, write_audit_event
+from src.core.agregacion_estrategica import agrupar, promedio_ponderado, variacion_pct
 from src.core.db_clickhouse import fetch_latest_snapshot, fetch_snapshot_history, get_clickhouse_client
 from src.core.db_mongo import get_mongo_client
 from src.core.db_transaction import with_transaction
@@ -323,3 +324,72 @@ def obtener_documentacion_tendencia(*, dias: int = 30) -> list[dict]:
     finally:
         client.close()
     return sorted(filas, key=lambda f: (f["fecha_datos"], f["tipo"]))
+
+
+# ---------------------------------------------------------------------------
+# Nivel estratégico — Panel de Cumplimiento Normativo
+# (OE6a, nivel_estrategico.md §3.6.a, patrón Z)
+# ---------------------------------------------------------------------------
+
+
+def obtener_panel_cumplimiento_normativo(*, cortes: int = 12) -> dict:
+    """Segunda capa de agregación sobre `rpt_documentacion_vigente`, sin tabla nueva.
+
+    La tabla no tiene dimensión de periodo propia (es un corte por corrida de
+    `dag_cumplimiento_gold`), así que la tendencia sale de
+    `fetch_snapshot_history` sobre `fecha_datos` -- caso 2 de
+    `core/agregacion_estrategica`, el mismo mecanismo que ya usa la tendencia
+    del panel táctico de Documentación.
+
+    `documentos_vencidos` se deriva del propio snapshot
+    (`total_registros * (1 - pct_vigente)`, redondeado): la tabla publica el
+    porcentaje y el total, no el conteo de vencidos -- calcularlo acá es
+    aritmética sobre el dato publicado, no una consulta nueva a Mongo.
+    """
+    client = get_clickhouse_client()
+    try:
+        actual = fetch_latest_snapshot(client, "rpt_documentacion_vigente")
+        historial = fetch_snapshot_history(client, "rpt_documentacion_vigente", limite_dias=cortes)
+    finally:
+        client.close()
+
+    def _vencidos(filas: list[dict]) -> int:
+        return round(sum(f["total_registros"] * (1 - f["pct_vigente"]) for f in filas))
+
+    tendencia = [
+        {
+            "periodo": str(fecha),
+            "pct_vigente": promedio_ponderado(filas, "pct_vigente", "total_registros") or 0.0,
+            "total_registros": sum(f["total_registros"] for f in filas),
+            "documentos_vencidos": _vencidos(filas),
+        }
+        for fecha, filas in sorted(agrupar(historial, "fecha_datos").items())
+    ]
+
+    tipos = sorted(
+        (
+            {
+                "tipo": f["tipo"],
+                "pct_vigente": f["pct_vigente"],
+                "total_registros": f["total_registros"],
+                "documentos_vencidos": round(f["total_registros"] * (1 - f["pct_vigente"])),
+            }
+            for f in actual
+        ),
+        key=lambda f: f["pct_vigente"],
+    )
+
+    pct_actual = promedio_ponderado(actual, "pct_vigente", "total_registros")
+    pct_previo = tendencia[-2]["pct_vigente"] if len(tendencia) > 1 else None
+
+    return {
+        "kpis": {
+            "pct_vigente": pct_actual,
+            "variacion_vigencia_pct": variacion_pct(pct_actual, pct_previo),
+            "documentos_vencidos": _vencidos(actual),
+            "tipo_mas_expuesto": tipos[0]["tipo"] if tipos else None,
+        },
+        "tendencia_vigencia": tendencia,
+        "tipos": tipos,
+        "metadata": {"cortes": cortes, "fuentes": ["rpt_documentacion_vigente"]},
+    }

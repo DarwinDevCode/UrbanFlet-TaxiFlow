@@ -278,3 +278,21 @@ async def listar_alertas_saldo_negativo(
         )
         for a in alertas
     ]
+
+
+# Nivel estratégico — Panel de Integridad Financiera (OE5 / CU-E04,
+# nivel_estrategico.md §3.5). La spec lo asigna a `junta_socios` +
+# `gerencia`; `junta_socios` NO se crea como rol (decisión aprobada, ver el
+# comentario extenso en `mantenimiento/router.py`), así que queda bajo
+# `gerencia` + `admin_financiero`, el dominio dueño del dato.
+_integridad_financiera_estrategico = require_roles("gerencia", "admin_financiero")
+
+
+@router_liquidaciones.get(
+    "/panel-estrategico/integridad-financiera", response_model=schemas.PanelIntegridadFinancieraOut
+)
+async def obtener_panel_integridad_financiera(
+    meses: int = Query(default=12, ge=1, le=60),
+    _actor: Actor = Depends(_integridad_financiera_estrategico),
+):
+    return schemas.PanelIntegridadFinancieraOut(**service.obtener_panel_integridad_financiera(meses=meses))

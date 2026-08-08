@@ -20,7 +20,8 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from src.core.audit import AccionAuditoria, ResultadoAuditoria, write_audit_event
 from src.core.config import get_settings
-from src.core.db_clickhouse import fetch_latest_snapshot, get_clickhouse_client
+from src.core.agregacion_estrategica import agrupar, promedio_ponderado, ultimos_periodos, variacion_pct
+from src.core.db_clickhouse import fetch_latest_snapshot, fetch_snapshot_history, get_clickhouse_client
 from src.core.exceptions import DomainError
 from src.core.geo import distancia_km
 from src.core.tiempo import como_utc
@@ -470,3 +471,147 @@ def obtener_tasa_cancelacion() -> list[dict]:
     finally:
         client.close()
     return sorted(filas, key=lambda f: (f["periodo"], f["zona_origen_id"]))
+
+
+# ---------------------------------------------------------------------------
+# Nivel estratégico — Panel de Confiabilidad y Disponibilidad del Servicio
+# (OE2a, nivel_estrategico.md §3.2.a, patrón Z)
+# ---------------------------------------------------------------------------
+
+
+def obtener_panel_confiabilidad(*, meses: int = 6, cortes: int = 12) -> dict:
+    """Segunda capa de agregación sobre 3 `rpt_*` tácticos, sin tabla nueva.
+
+    Fuentes (nivel_estrategico.md §3.2.a): `rpt_tiempo_asignacion` +
+    `rpt_tasa_cancelacion` (Despacho) + `rpt_flota_activa_franja` (Flota).
+    Este endpoint vive en el router de `viajes` y no en uno central porque
+    2 de las 3 fuentes son de Despacho -- se aplica el mismo criterio
+    descentralizado que ya usa el nivel táctico (cada dominio expone lo suyo);
+    leer la tabla `rpt_*` de Flota desde acá es una lectura de solo lectura a
+    ClickHouse, no un acoplamiento de dominio.
+
+    Tendencia: `rpt_tasa_cancelacion` ya trae `periodo` (mes) en el propio
+    snapshot; `rpt_tiempo_asignacion` y `rpt_flota_activa_franja` no, así que
+    su tendencia sale del historial de `fecha_datos` (`fetch_snapshot_history`).
+
+    **Dos limitaciones reales de las fuentes tácticas, verificadas contra los
+    datos, que este endpoint declara en vez de disimular:**
+
+    1. `rpt_tasa_cancelacion.tasa_cancelacion` NO es una tasa consolidable.
+       El query que la publica (`indicadores.refrescar_tasa_cancelacion`)
+       agrupa por motivo/actor y filtra `HAVING cancelados > 0`, así que en
+       cada fila `solicitados == cancelados` y la tasa vale siempre 1.0 --
+       sumar filas no arregla eso, porque los viajes NO cancelados nunca
+       llegan a la tabla. Se expone el **volumen** de cancelaciones por mes
+       (dato real y consolidable) y su variación; la tasa se devuelve `None`
+       con `tasa_cancelacion_disponible=false` en metadata. Resolverlo de
+       verdad exige cambiar el DAG táctico, fuera del alcance de esta fase.
+    2. La dimensión "franja" no usa el mismo vocabulario en las dos tablas:
+       `rpt_flota_activa_franja` publica `00-06/06-12/12-18/18-24` y
+       `rpt_tiempo_asignacion` publica `DIURNA/NOCTURNA`. No se cruzan por
+       franja (un join daría 100% de nulos); se devuelven como dos listas
+       separadas, cada una con su propia taxonomía.
+    """
+    client = get_clickhouse_client()
+    try:
+        asignacion = fetch_latest_snapshot(client, "rpt_tiempo_asignacion")
+        cancelacion = fetch_latest_snapshot(client, "rpt_tasa_cancelacion")
+        flota = fetch_latest_snapshot(client, "rpt_flota_activa_franja")
+        asignacion_hist = fetch_snapshot_history(client, "rpt_tiempo_asignacion", limite_dias=cortes)
+        flota_hist = fetch_snapshot_history(client, "rpt_flota_activa_franja", limite_dias=cortes)
+    finally:
+        client.close()
+
+    # --- KPIs del último corte -------------------------------------------
+    segundos_promedio = promedio_ponderado(asignacion, "segundos_promedio", "total_registros")
+    pct_flota_activa = promedio_ponderado(flota, "pct_disponible", "total_registros")
+
+    por_periodo_cancelacion = agrupar(cancelacion, "periodo")
+    periodos = ultimos_periodos(por_periodo_cancelacion.keys(), meses)
+    tendencia_cancelacion = [
+        {
+            "periodo": periodo,
+            "cancelados": sum(f["cancelados"] for f in por_periodo_cancelacion[periodo]),
+            "sin_conductor": sum(
+                f["cancelados"] for f in por_periodo_cancelacion[periodo] if f["motivo"] == "SIN_CONDUCTOR"
+            ),
+        }
+        for periodo in periodos
+    ]
+
+    cancelados_actual = tendencia_cancelacion[-1]["cancelados"] if tendencia_cancelacion else None
+    cancelados_previo = tendencia_cancelacion[-2]["cancelados"] if len(tendencia_cancelacion) > 1 else None
+
+    # --- Tendencia por corte (tablas sin dimensión de periodo propia) ------
+    tendencia_asignacion = [
+        {
+            "periodo": str(fecha),
+            "segundos_promedio": promedio_ponderado(filas, "segundos_promedio", "total_registros") or 0.0,
+            "total_registros": sum(f["total_registros"] for f in filas),
+        }
+        for fecha, filas in sorted(agrupar(asignacion_hist, "fecha_datos").items())
+    ]
+    tendencia_flota = [
+        {
+            "periodo": str(fecha),
+            "pct_disponible": promedio_ponderado(filas, "pct_disponible", "total_registros") or 0.0,
+            "total_registros": sum(f["total_registros"] for f in filas),
+        }
+        for fecha, filas in sorted(agrupar(flota_hist, "fecha_datos").items())
+    ]
+
+    # --- Listas: franjas con menor disponibilidad / peor tiempo de asignación
+    # (dos taxonomías distintas, ver limitación 2 del docstring -- NO se cruzan)
+    franjas = sorted(
+        (
+            {
+                "franja": franja,
+                "pct_disponible": promedio_ponderado(filas, "pct_disponible", "total_registros") or 0.0,
+                "total_registros": sum(f["total_registros"] for f in filas),
+            }
+            for franja, filas in agrupar(flota, "franja").items()
+        ),
+        key=lambda f: f["pct_disponible"],
+    )
+    franjas_asignacion = sorted(
+        (
+            {
+                "franja": franja,
+                "segundos_promedio": promedio_ponderado(filas, "segundos_promedio", "total_registros") or 0.0,
+                "total_registros": sum(f["total_registros"] for f in filas),
+            }
+            for franja, filas in agrupar(asignacion, "franja").items()
+        ),
+        key=lambda f: f["segundos_promedio"],
+        reverse=True,
+    )
+
+    # La dimensión zona sigue sin dato real (`viajes.zona_origen_id` nunca se
+    # resuelve, ver docstring de este módulo): las filas Gold la traen como
+    # cadena vacía / literal "SIN_ZONA". Se declara explícitamente en vez de
+    # ofrecer un filtro que no filtraría nada -- mismo criterio que el Panel
+    # de Flota táctico ya usa para su propio gap de zona.
+    zonas = {str(f.get("zona_origen_id") or "").strip() for f in asignacion}
+    zona_disponible = bool(zonas - {"", "SIN_ZONA", "None"})
+
+    return {
+        "kpis": {
+            "segundos_asignacion_promedio": segundos_promedio,
+            "cancelaciones_periodo": cancelados_actual,
+            "variacion_cancelaciones_pct": variacion_pct(cancelados_actual, cancelados_previo),
+            "tasa_cancelacion": None,  # ver limitación 1 del docstring
+            "pct_flota_activa": pct_flota_activa,
+            "franja_menor_cobertura": franjas[0]["franja"] if franjas else None,
+        },
+        "tendencia_asignacion": tendencia_asignacion,
+        "tendencia_cancelacion": tendencia_cancelacion,
+        "tendencia_flota": tendencia_flota,
+        "franjas": franjas,
+        "franjas_asignacion": franjas_asignacion,
+        "metadata": {
+            "meses": meses,
+            "zona_disponible": zona_disponible,
+            "tasa_cancelacion_disponible": False,
+            "fuentes": ["rpt_tiempo_asignacion", "rpt_tasa_cancelacion", "rpt_flota_activa_franja"],
+        },
+    }

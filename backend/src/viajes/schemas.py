@@ -183,3 +183,74 @@ class TasaCancelacionOut(BaseModel):
     cancelados: int
     solicitados: int
     tasa_cancelacion: float
+
+
+# ---------------------------------------------------------------------------
+# Nivel estratégico — Panel de Confiabilidad y Disponibilidad (OE2a)
+# ---------------------------------------------------------------------------
+
+
+class ConfiabilidadKpisOut(BaseModel):
+    segundos_asignacion_promedio: float | None
+    cancelaciones_periodo: int | None
+    variacion_cancelaciones_pct: float | None
+    # Siempre `None`: `rpt_tasa_cancelacion` solo publica filas de viajes ya
+    # cancelados (`HAVING cancelados > 0`), así que no tiene denominador real
+    # para una tasa. Ver el docstring de `service.obtener_panel_confiabilidad`.
+    tasa_cancelacion: float | None = None
+    pct_flota_activa: float | None
+    franja_menor_cobertura: str | None
+
+
+class PuntoAsignacionOut(BaseModel):
+    periodo: str
+    segundos_promedio: float
+    total_registros: int
+
+
+class PuntoCancelacionOut(BaseModel):
+    periodo: str
+    cancelados: int
+    sin_conductor: int
+
+
+class PuntoFlotaOut(BaseModel):
+    periodo: str
+    pct_disponible: float
+    total_registros: int
+
+
+class FranjaCoberturaOut(BaseModel):
+    franja: str
+    pct_disponible: float
+    total_registros: int
+
+
+class FranjaAsignacionOut(BaseModel):
+    """Franja según la taxonomía de `rpt_tiempo_asignacion` (DIURNA/NOCTURNA),
+    distinta de la de `rpt_flota_activa_franja` (00-06/06-12/...) — por eso
+    va en su propia lista y no cruzada con `FranjaCoberturaOut`."""
+
+    franja: str
+    segundos_promedio: float
+    total_registros: int
+
+
+class ConfiabilidadMetadataOut(BaseModel):
+    meses: int
+    # `false` mientras `viajes.zona_origen_id` siga sin resolverse: el futuro
+    # frontend usa esta bandera para mostrar la limitación en vez de un filtro
+    # de zona que no filtraría nada.
+    zona_disponible: bool
+    tasa_cancelacion_disponible: bool
+    fuentes: list[str]
+
+
+class PanelConfiabilidadOut(BaseModel):
+    kpis: ConfiabilidadKpisOut
+    tendencia_asignacion: list[PuntoAsignacionOut]
+    tendencia_cancelacion: list[PuntoCancelacionOut]
+    tendencia_flota: list[PuntoFlotaOut]
+    franjas: list[FranjaCoberturaOut]
+    franjas_asignacion: list[FranjaAsignacionOut]
+    metadata: ConfiabilidadMetadataOut

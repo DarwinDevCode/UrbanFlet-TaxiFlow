@@ -49,3 +49,46 @@ class CuarentenaDominioOut(BaseModel):
     pct_cuarentena: float
     registros_extraidos: int
     registros_cuarentena: int
+
+
+# ---------------------------------------------------------------------------
+# Nivel estratégico — Panel de Capacidades y Plataforma (OE3)
+# ---------------------------------------------------------------------------
+
+
+class CapacidadesKpisOut(BaseModel):
+    pct_cuarentena_global: float | None
+    variacion_cuarentena_pct: float | None
+    dominio_mas_afectado: str | None
+    corridas_ok: int
+    corridas_fallidas: int
+    # Siempre `None`: no existe dominio de capacitación en el sistema
+    # (backlog consciente ya declarado en el nivel táctico).
+    avance_capacitacion_pct: float | None = None
+
+
+class PuntoCuarentenaOut(BaseModel):
+    periodo: str
+    pct_cuarentena: float
+    registros_extraidos: int
+    registros_cuarentena: int
+
+
+class DominioCuarentenaOut(BaseModel):
+    dag_id: str
+    pct_cuarentena: float
+    registros_extraidos: int
+    registros_cuarentena: int
+
+
+class CapacidadesMetadataOut(BaseModel):
+    cortes: int
+    capacitacion_disponible: bool
+    fuentes: list[str]
+
+
+class PanelCapacidadesOut(BaseModel):
+    kpis: CapacidadesKpisOut
+    tendencia_cuarentena: list[PuntoCuarentenaOut]
+    dominios: list[DominioCuarentenaOut]
+    metadata: CapacidadesMetadataOut

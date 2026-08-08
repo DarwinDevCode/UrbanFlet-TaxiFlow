@@ -18,7 +18,8 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from src.auth import service as auth_service
 from src.captacion import schemas
 from src.core.audit import AccionAuditoria, ResultadoAuditoria, write_audit_event
-from src.core.db_clickhouse import fetch_latest_snapshot, get_clickhouse_client
+from src.core.agregacion_estrategica import agrupar, promedio_ponderado, ultimos_periodos, variacion_pct
+from src.core.db_clickhouse import fetch_latest_snapshot, fetch_snapshot_history, get_clickhouse_client
 from src.core.db_mongo import get_mongo_client
 from src.core.db_transaction import with_transaction
 from src.core.exceptions import DomainError
@@ -518,3 +519,132 @@ def obtener_altas_retencion_canal() -> list[dict]:
     finally:
         client.close()
     return sorted(filas, key=lambda f: (f["periodo"], f["canal"]))
+
+
+# ---------------------------------------------------------------------------
+# Nivel estratégico — Panel de Crecimiento Estratégico
+# (OE1, nivel_estrategico.md §3.1, patrón Z)
+# ---------------------------------------------------------------------------
+
+
+def obtener_panel_crecimiento(*, meses: int = 12, cortes: int = 12) -> dict:
+    """Segunda capa de agregación sobre las 3 `rpt_*` de Captación, sin tabla nueva.
+
+    Fuentes: `rpt_conversion_captacion` y `rpt_altas_retencion_canal` (ambas
+    con `periodo` propio -- caso 1) + `rpt_conversion_onboarding` (corte sin
+    periodo -- caso 2, tendencia vía `fetch_snapshot_history`). La spec cita
+    la tabla como `rpt_altas_retencion`; el nombre real publicado por
+    `dag_captacion_gold` es `rpt_altas_retencion_canal`.
+
+    **Dos limitaciones que este endpoint declara en metadata en vez de
+    disimular:**
+
+    1. `canal_cobertura_parcial=true`. La dimensión `canal` no cubre el 100%
+       del padrón real: al 2026-08-08, 96 de 194 usuarios (49%) no tienen el
+       campo -- lo agregaron rondas de siembra posteriores al backfill
+       original, que no pasaron por el flujo que lo setea. Cualquier
+       desglose por canal subrepresenta sistemáticamente a esa mitad. Es el
+       mismo tratamiento que ya se le da al gap de zona: se sirve el dato y
+       se marca la limitación para que la UI la muestre.
+    2. `demanda_disponible=false`. La spec pide "crecimiento de demanda
+       (viajes solicitados/mes)", pero **ninguna vista `rpt_*` publica los
+       viajes solicitados por mes**: `rpt_tasa_cancelacion` es la única con
+       periodo y volumen de viajes, y solo contiene los cancelados
+       (`HAVING cancelados > 0`), así que su `solicitados` no es el universo
+       de demanda. Leerlo de `fact_ciclo_viaje` sería saltarse la regla de la
+       Sección 2 (agregar sobre `rpt_*`, no sobre los hechos Gold). Se
+       devuelve `None` en vez de un número que parecería demanda sin serlo.
+    """
+    client = get_clickhouse_client()
+    try:
+        conversion = fetch_latest_snapshot(client, "rpt_conversion_captacion")
+        altas = fetch_latest_snapshot(client, "rpt_altas_retencion_canal")
+        onboarding = fetch_latest_snapshot(client, "rpt_conversion_onboarding")
+        onboarding_hist = fetch_snapshot_history(client, "rpt_conversion_onboarding", limite_dias=cortes)
+    finally:
+        client.close()
+
+    periodos = ultimos_periodos(
+        [f["periodo"] for f in conversion] + [f["periodo"] for f in altas], meses
+    )
+    periodos_set = set(periodos)
+
+    por_periodo_altas = agrupar([f for f in altas if f["periodo"] in periodos_set], "periodo")
+    tendencia_altas = [
+        {
+            "periodo": periodo,
+            "altas": sum(f["altas"] for f in por_periodo_altas[periodo]),
+            "pct_retencion": promedio_ponderado(por_periodo_altas[periodo], "pct_retencion", "altas") or 0.0,
+        }
+        for periodo in periodos
+        if periodo in por_periodo_altas
+    ]
+
+    por_periodo_conv = agrupar([f for f in conversion if f["periodo"] in periodos_set], "periodo")
+    tendencia_conversion = [
+        {
+            "periodo": periodo,
+            "pct_conversion": promedio_ponderado(
+                por_periodo_conv[periodo], "pct_conversion", "total_solicitudes"
+            )
+            or 0.0,
+            "total_solicitudes": sum(f["total_solicitudes"] for f in por_periodo_conv[periodo]),
+        }
+        for periodo in periodos
+        if periodo in por_periodo_conv
+    ]
+
+    tendencia_onboarding = [
+        {
+            "periodo": str(fecha),
+            "pct_activo": promedio_ponderado(filas, "pct_activo", "total_registros") or 0.0,
+            "total_registros": sum(f["total_registros"] for f in filas),
+        }
+        for fecha, filas in sorted(agrupar(onboarding_hist, "fecha_datos").items())
+    ]
+
+    # Tabla: conversión consolidada por canal (todos los periodos de la ventana).
+    por_canal = agrupar([f for f in conversion if f["periodo"] in periodos_set], "canal")
+    canales = sorted(
+        (
+            {
+                "canal": canal,
+                "pct_conversion": promedio_ponderado(filas, "pct_conversion", "total_solicitudes") or 0.0,
+                "total_solicitudes": sum(f["total_solicitudes"] for f in filas),
+                "dias_aprobacion_promedio": promedio_ponderado(
+                    filas, "dias_aprobacion_promedio", "total_solicitudes"
+                ),
+                "altas": sum(f["altas"] for f in agrupar(altas, "canal").get(canal, [])),
+            }
+            for canal, filas in por_canal.items()
+        ),
+        key=lambda f: f["total_solicitudes"],
+        reverse=True,
+    )
+
+    altas_actual = tendencia_altas[-1]["altas"] if tendencia_altas else None
+    altas_previo = tendencia_altas[-2]["altas"] if len(tendencia_altas) > 1 else None
+
+    return {
+        "kpis": {
+            "pct_conversion_onboarding": promedio_ponderado(onboarding, "pct_activo", "total_registros"),
+            "pct_retencion_90d": promedio_ponderado(altas, "pct_retencion", "altas"),
+            "altas_periodo": altas_actual,
+            "variacion_altas_pct": variacion_pct(altas_actual, altas_previo),
+            "crecimiento_demanda_pct": None,  # ver limitación 2 del docstring
+        },
+        "tendencia_altas": tendencia_altas,
+        "tendencia_conversion": tendencia_conversion,
+        "tendencia_onboarding": tendencia_onboarding,
+        "canales": canales,
+        "metadata": {
+            "meses": meses,
+            "canal_cobertura_parcial": True,
+            "demanda_disponible": False,
+            "fuentes": [
+                "rpt_conversion_captacion",
+                "rpt_altas_retencion_canal",
+                "rpt_conversion_onboarding",
+            ],
+        },
+    }
