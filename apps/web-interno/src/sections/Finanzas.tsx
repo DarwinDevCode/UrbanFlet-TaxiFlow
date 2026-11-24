@@ -10,9 +10,11 @@ import {
   DetailPanel,
   invalidateSwrPrefix,
   Pagination,
+  Riel,
   Select,
   TextArea,
   TextField,
+  trayectoLiquidacion,
   useSwr,
   type ModoPanel,
 } from "@urbanflet/shared-ui";
@@ -103,6 +105,11 @@ function nombreConductor(id: string, nombre: string | null): ReactNode {
 
 export function SeccionFinanzas() {
   const [filtroEstadoLiq, setFiltroEstadoLiq] = useState("");
+  // Punto 5 de la ronda de correcciones (agosto 2026): "Ver liquidaciones de
+  // este periodo" (tras generar) filtra la MISMA tabla de abajo por
+  // `periodo_inicio` exacto -- reusa la lista ya existente, sin pantalla
+  // nueva. `null` = sin filtrar por periodo (comportamiento previo).
+  const [filtroPeriodoLiq, setFiltroPeriodoLiq] = useState<string | null>(null);
   const [pageLiq, setPageLiq] = useState(0);
   const [pageSizeLiq, setPageSizeLiq] = useState(20);
   const [ultimoResultado, setUltimoResultado] = useState<GenerarLiquidacionesResponse | null>(null);
@@ -116,6 +123,18 @@ export function SeccionFinanzas() {
   const [ajusteMonto, setAjusteMonto] = useState("");
   const [liquidacionSeleccionada, setLiquidacionSeleccionada] = useState<Liquidacion | null>(null);
   const [modoLiq, setModoLiq] = useState<ModoPanel>("consulta");
+
+  // Decisión 1: ajuste autorizado sobre un viaje ya recaudado (CU-O10 A2).
+  // Vive acá, en el detalle de la liquidación, y NO en la bandeja de
+  // discrepancias como se había supuesto: `crear_ajuste_movimiento` exige un
+  // pago en estado VALIDADO, y un pago de la bandeja está en DISCREPANCIA
+  // (antes Y después de resolverse -- `resolver_discrepancia` marca
+  // `resuelto:true` pero nunca cambia `estado`). Los viajes de esta tabla, en
+  // cambio, entraron a la liquidación precisamente porque su pago quedó
+  // VALIDADO, así que todos cumplen la precondición del endpoint.
+  const [viajeEnAjuste, setViajeEnAjuste] = useState<string | null>(null);
+  const [ajusteViajeMonto, setAjusteViajeMonto] = useState("");
+  const [ajusteViajeMotivo, setAjusteViajeMotivo] = useState("");
 
   const {
     data: bandeja = { discrepancias: [], viajes_sin_pago: [] },
@@ -132,6 +151,7 @@ export function SeccionFinanzas() {
   const claveLiquidaciones = (() => {
     const params = new URLSearchParams();
     if (filtroEstadoLiq) params.set("estado", filtroEstadoLiq);
+    if (filtroPeriodoLiq) params.set("periodo_inicio", filtroPeriodoLiq);
     params.set("limit", String(pageSizeLiq));
     params.set("offset", String(pageLiq * pageSizeLiq));
     return `${RECURSO_LIQUIDACIONES}?${params.toString()}`;
@@ -223,6 +243,34 @@ export function SeccionFinanzas() {
     }
   };
 
+  // Decisión 1: un solo `admin_financiero` autoriza, sin segundo aprobador --
+  // mismo nivel de control que ya tiene aprobar/pagar una liquidación
+  // completa (montos mayores). El control real es el mismo del resto del
+  // sistema: motivo obligatorio + auditoría write-ahead, que el backend ya
+  // hace en `crear_ajuste_movimiento`. No se inventa nada nuevo acá.
+  const crearAjusteViaje = async (viajeId: string) => {
+    setError(null);
+    setAccionando(viajeId);
+    try {
+      await apiFetch(`/pagos/${viajeId}/ajuste`, {
+        method: "POST",
+        body: { monto: Number(ajusteViajeMonto), motivo: ajusteViajeMotivo.trim() },
+      });
+      setViajeEnAjuste(null);
+      setAjusteViajeMonto("");
+      setAjusteViajeMotivo("");
+      // El ajuste crea un movimiento nuevo: la liquidación que lo agrega
+      // puede cambiar, así que se recargan ambas listas.
+      invalidateSwrPrefix(RECURSO_LIQUIDACIONES);
+      await refetchLiquidaciones();
+      await refetchAlertas();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "No se pudo crear el ajuste");
+    } finally {
+      setAccionando(null);
+    }
+  };
+
   const abrirDetalleLiquidacion = (l: Liquidacion) => {
     setLiquidacionSeleccionada(l);
     setModoLiq(l.estado === "OBSERVADA" ? "edicion" : "consulta");
@@ -234,8 +282,16 @@ export function SeccionFinanzas() {
 
   const limpiarBusquedaLiquidaciones = () => {
     setFiltroEstadoLiq("");
+    setFiltroPeriodoLiq(null);
     setPageLiq(0);
     setLiquidacionSeleccionada(null);
+  };
+
+  const verLiquidacionesDelPeriodo = () => {
+    if (!ultimoResultado) return;
+    setFiltroEstadoLiq("");
+    setFiltroPeriodoLiq(ultimoResultado.periodo_inicio);
+    setPageLiq(0);
   };
 
   const resolver = async (pagoId: string, aceptar: boolean) => {
@@ -375,11 +431,16 @@ export function SeccionFinanzas() {
           </Button>
         </div>
         {ultimoResultado && (
-          <p style={{ marginTop: "var(--space-3)", color: "var(--color-text-muted)" }}>
-            Periodo {new Date(ultimoResultado.periodo_inicio).toLocaleDateString()} –{" "}
-            {new Date(ultimoResultado.periodo_fin).toLocaleDateString()}: {ultimoResultado.generadas.length}{" "}
-            liquidación(es) emitida(s), {ultimoResultado.ya_existian.length} ya existían.
-          </p>
+          <div style={{ marginTop: "var(--space-3)", display: "flex", alignItems: "center", gap: "var(--space-3)", flexWrap: "wrap" }}>
+            <p style={{ margin: 0, color: "var(--color-text-muted)" }}>
+              Periodo {new Date(ultimoResultado.periodo_inicio).toLocaleDateString()} –{" "}
+              {new Date(ultimoResultado.periodo_fin).toLocaleDateString()}: {ultimoResultado.generadas.length}{" "}
+              liquidación(es) emitida(s), {ultimoResultado.ya_existian.length} ya existían.
+            </p>
+            <Button variant="secondary" onClick={verLiquidacionesDelPeriodo}>
+              Ver liquidaciones de este periodo
+            </Button>
+          </div>
         )}
 
         <div style={{ marginTop: "var(--space-4)", maxWidth: 320 }}>
@@ -401,16 +462,30 @@ export function SeccionFinanzas() {
         </div>
       </Card>
 
+      {/* "Nuevo"/"Eliminar" quitados (segunda pasada, punto 1): las
+          liquidaciones se generan por lote (botón propio más abajo) y no se
+          eliminan -- ningún rol tiene un uso real para ninguno de los dos
+          acá. */}
       <ActionBar
-        nuevo={{ onClick: () => {}, disabled: true, title: "No aplica: las liquidaciones se generan por lote, no una a una." }}
         actualizar={{ onClick: () => refetchLiquidaciones() }}
-        eliminar={{ onClick: () => {}, disabled: true, title: "No aplica: las liquidaciones no se eliminan." }}
         buscar={{ onClick: () => refetchLiquidaciones() }}
         salir={{ onClick: limpiarBusquedaLiquidaciones }}
       />
 
       <Card>
         <h2 style={{ marginTop: 0, fontSize: "var(--font-size-lg)" }}>Liquidaciones</h2>
+        {filtroPeriodoLiq && (
+          <p style={{ marginTop: 0, fontSize: "var(--font-size-sm)", color: "var(--color-text-muted)" }}>
+            Filtrando por el periodo {new Date(filtroPeriodoLiq).toLocaleDateString()} —{" "}
+            <button
+              type="button"
+              onClick={() => setFiltroPeriodoLiq(null)}
+              style={{ background: "none", border: "none", padding: 0, color: "var(--color-accent)", cursor: "pointer", font: "inherit" }}
+            >
+              quitar filtro
+            </button>
+          </p>
+        )}
         <DataTable
           rows={liquidaciones}
           keyField={(l) => l.id}
@@ -424,22 +499,9 @@ export function SeccionFinanzas() {
             },
             {
               header: "Estado",
-              render: (l) => (
-                <Badge
-                  texto={l.estado}
-                  tono={
-                    l.estado === "PAGADA"
-                      ? "exito"
-                      : l.estado === "APROBADA"
-                        ? "neutral"
-                        : l.estado === "OBSERVADA"
-                          ? "peligro"
-                          : "advertencia"
-                  }
-                />
-              ),
+              render: (l) => <Riel {...trayectoLiquidacion(l.estado)} variante="etiquetado" />,
             },
-            { header: "Neto (en mano)", render: (l) => `$${l.neto.toFixed(2)}` },
+            { header: "Neto (en mano)", numerica: true, render: (l) => `$${l.neto.toFixed(2)}` },
             {
               header: "Saldo",
               render: (l) => <Badge texto={`$${l.saldo.toFixed(2)}`} tono={l.saldo < 0 ? "peligro" : "exito"} />,
@@ -453,6 +515,7 @@ export function SeccionFinanzas() {
               ),
             },
           ]}
+          ocultarContador
         />
         <Pagination
           page={pageLiq}
@@ -527,20 +590,7 @@ export function SeccionFinanzas() {
               />
               <DetailField
                 label="Estado"
-                value={
-                  <Badge
-                    texto={liquidacionSeleccionada.estado}
-                    tono={
-                      liquidacionSeleccionada.estado === "PAGADA"
-                        ? "exito"
-                        : liquidacionSeleccionada.estado === "APROBADA"
-                          ? "neutral"
-                          : liquidacionSeleccionada.estado === "OBSERVADA"
-                            ? "peligro"
-                            : "advertencia"
-                    }
-                  />
-                }
+                value={<Riel {...trayectoLiquidacion(liquidacionSeleccionada.estado)} />}
               />
               <DetailField label="Bruto" value={`$${liquidacionSeleccionada.bruto.toFixed(2)}`} />
               <DetailField label="Comisiones" value={`$${liquidacionSeleccionada.comisiones.toFixed(2)}`} />
@@ -571,8 +621,65 @@ export function SeccionFinanzas() {
                     { header: "Comisión", render: (d) => `$${d.comision.toFixed(2)}` },
                     { header: "Neto socio", render: (d) => `$${d.neto_socio.toFixed(2)}` },
                     { header: "Fecha", render: (d) => new Date(d.ts).toLocaleString() },
+                    {
+                      header: "Ajuste",
+                      sinTruncar: true,
+                      render: (d) => (
+                        <div style={{ minWidth: 90 }}>
+                          <Button variant="secondary" onClick={() => {
+                            setViajeEnAjuste(d.viaje_id);
+                            setAjusteViajeMonto("");
+                            setAjusteViajeMotivo("");
+                            setError(null);
+                          }}>
+                            Ajustar
+                          </Button>
+                        </div>
+                      ),
+                    },
                   ]}
                 />
+
+                {viajeEnAjuste && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)", borderTop: "1px solid var(--color-border)", paddingTop: "var(--space-3)", marginTop: "var(--space-3)" }}>
+                    <p style={{ margin: 0, fontSize: "var(--font-size-sm)", color: "var(--color-accent-deep)" }}>
+                      Ajuste autorizado sobre el viaje <strong>{viajeEnAjuste.slice(0, 8)}…</strong>. Crea un
+                      movimiento nuevo y trazable; <strong>nunca modifica</strong> la comisión ni el neto ya
+                      calculados del viaje. Usa monto negativo para descontar. Queda registrado en la bitácora
+                      con tu usuario y el motivo.
+                    </p>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "var(--space-3)" }}>
+                      <TextField
+                        label="Monto del ajuste"
+                        type="number"
+                        value={ajusteViajeMonto}
+                        onChange={(e) => setAjusteViajeMonto(e.target.value)}
+                        hint="Positivo suma a favor del socio, negativo descuenta."
+                      />
+                      <TextField
+                        label="Motivo (obligatorio)"
+                        value={ajusteViajeMotivo}
+                        onChange={(e) => setAjusteViajeMotivo(e.target.value)}
+                      />
+                    </div>
+                    <div style={{ display: "flex", gap: "var(--space-2)" }}>
+                      <div style={{ minWidth: 150 }}>
+                        <Button
+                          onClick={() => crearAjusteViaje(viajeEnAjuste)}
+                          disabled={!ajusteViajeMotivo.trim() || ajusteViajeMonto.trim() === "" || Number.isNaN(Number(ajusteViajeMonto))}
+                          loading={accionando === viajeEnAjuste}
+                        >
+                          Confirmar ajuste
+                        </Button>
+                      </div>
+                      <div style={{ minWidth: 110 }}>
+                        <Button variant="secondary" onClick={() => setViajeEnAjuste(null)}>
+                          Cancelar
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

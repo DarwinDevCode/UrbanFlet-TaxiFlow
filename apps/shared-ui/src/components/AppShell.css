@@ -1,8 +1,9 @@
-/* AppShell — sidebar + header + content, compartido por las 3 apps.
-   Mobile-first: en pantallas angostas (web-pasajero/web-conductor corren
-   ahí) la barra lateral vive fuera de pantalla y se abre con el botón de
-   menú del header, en vez de robarle ancho permanente a un viewport de
-   teléfono. */
+/* EL ANDÉN — chasis del Sistema Riel (Fase 2). Ver AppShell.tsx.
+
+   Mobile-first: en pantallas angostas el andén vive fuera de pantalla y se
+   abre con el botón de menú; desde tablet queda fijo y visible. Ese
+   comportamiento se conserva tal cual del chasis anterior -- lo que cambia
+   es cómo se lee la navegación, no cómo se accede a ella. */
 
 .shell-root {
   min-height: 100dvh;
@@ -10,20 +11,31 @@
   background: var(--color-bg);
 }
 
+/* ── El andén ─────────────────────────────────────────────────────────
+   Sin bloque de color propio: vive sobre el mismo ground que el resto y se
+   separa por una línea. Eso es lo que lo saca del patrón "sidebar oscuro
+   de panel administrativo". */
 .shell-sidebar {
   position: fixed;
   inset: 0 auto 0 0;
   width: var(--shell-sidebar-width);
   background: var(--color-sidebar-bg);
   color: var(--color-sidebar-text);
+  border-right: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
-  padding: var(--space-4);
+  padding: var(--space-4) var(--space-3) var(--space-4) var(--space-4);
   gap: var(--space-4);
   transform: translateX(-100%);
   transition: transform 0.2s ease;
-  z-index: 40;
+  z-index: var(--z-sidebar);
   overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.shell-sidebar::-webkit-scrollbar {
+  display: none;
 }
 
 .shell-sidebar.shell-sidebar-open {
@@ -33,10 +45,212 @@
 .shell-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(10, 12, 22, 0.4);
-  z-index: 30;
+  background: rgba(10, 14, 16, 0.5);
+  z-index: var(--z-backdrop);
 }
 
+/* ── Marca ───────────────────────────────────────────────────────────── */
+.anden-marca {
+  display: grid;
+  align-items: center;
+  padding-bottom: var(--space-2);
+  flex-shrink: 0;
+}
+
+/* El logotipo horizontal (isotipo + "UrbanFleet", sin el eslogan -- acá no
+   cabe y es de menor prioridad para un espacio de uso constante) trae el
+   nombre en tinta fija dentro del propio PNG -- un raster no reacciona a
+   ninguna variable CSS por sí solo. Se resuelve con 2 variantes del mismo
+   archivo (tinta oscura de fábrica / tinta clara recoloreada, mismas
+   dimensiones exactas) superpuestas en la misma celda de grid, con un
+   crossfade de opacidad que lee `--logo-invertido` (0/1, fijado por
+   `sidebarTono.ts` según qué tinta es legible sobre cada tono) -- nunca una
+   placa de fondo detrás, que dejaría ver un rectángulo de color distinto al
+   fondo real del sidebar. */
+.anden-marca-logo {
+  grid-area: 1 / 1;
+  height: 34px;
+  width: auto;
+  max-width: 100%;
+  object-fit: contain;
+  transition: opacity 0.15s ease;
+}
+
+.anden-marca-logo--base {
+  opacity: calc(1 - var(--logo-invertido, 0));
+}
+
+.anden-marca-logo--invertido {
+  opacity: var(--logo-invertido, 0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anden-marca-logo {
+    transition: none;
+  }
+}
+
+/* ── La línea con paradas ─────────────────────────────────────────────
+   La línea vertical continua es un pseudo-elemento del contenedor de cada
+   tramo, no un borde de cada ítem: así se ve como UNA línea que atraviesa
+   todo el andén y se corta entre tramos, igual que un mapa de línea. */
+.anden {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.anden-tramo {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding-left: var(--space-5);
+  padding-bottom: var(--space-3);
+}
+
+.anden-tramo::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  background: var(--color-sidebar-border);
+}
+
+/* Los tramos de nivel (táctico, estratégico) llevan la línea más marcada:
+   la jerarquía se expresa en el grosor del riel, no en un cuadrito suelto
+   al lado del texto como en el chasis anterior. */
+.anden-tramo--nivel::before {
+  background: var(--color-sidebar-rail-subtle);
+  opacity: 0.55;
+}
+
+/* La zona de cuenta se separa con un corte real y una línea superior. */
+.anden-tramo--personal {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-sidebar-border);
+}
+
+.anden-tramo-nombre {
+  color: var(--color-sidebar-text-muted);
+  padding: var(--space-2) 0 var(--space-1);
+}
+
+/* ── Paradas ─────────────────────────────────────────────────────────── */
+.anden-parada {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* El nodo de la parada, sobre la línea del tramo. */
+.anden-parada::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--space-5) + 1px);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-sidebar-bg);
+  box-shadow: inset 0 0 0 2px var(--color-sidebar-border);
+  transition: box-shadow 0.14s ease, background-color 0.14s ease;
+}
+
+/* La parada actual: nodo encendido con halo, mismo gesto que el nodo
+   actual del riel de estado. Es la misma gramática en los dos lugares. */
+.anden-parada--actual::before {
+  background: var(--riel-actual);
+  box-shadow:
+    0 0 0 1.5px var(--riel-actual-contorno),
+    0 0 0 4px var(--riel-halo);
+}
+
+.anden-parada-boton {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  text-align: left;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: var(--space-2) var(--space-2) var(--space-2) 0;
+  font-size: var(--font-size-md);
+  font-weight: 500;
+  color: var(--color-sidebar-text);
+  transition: color 0.14s ease;
+}
+
+.anden-parada:hover .anden-parada-boton {
+  color: var(--color-sidebar-text-strong);
+}
+
+.anden-parada--actual .anden-parada-boton {
+  color: var(--color-sidebar-active-text);
+  font-weight: 700;
+}
+
+.anden-parada-nombre {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.anden-favorito {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 0 var(--space-1);
+  line-height: 1;
+  color: var(--color-sidebar-text-muted);
+  opacity: 0;
+  flex-shrink: 0;
+  transition: opacity 0.14s ease, color 0.14s ease;
+}
+
+/* La estrella aparece al recorrer el andén o al enfocar con teclado; una
+   marcada queda siempre visible. Evita 30 estrellas compitiendo con los
+   nombres de sección. */
+.anden-parada:hover .anden-favorito,
+.anden-favorito:focus-visible,
+.anden-favorito--on {
+  opacity: 1;
+}
+
+.anden-favorito--on {
+  color: var(--color-sidebar-rail-bold);
+}
+
+/* ── Salida ──────────────────────────────────────────────────────────── */
+.anden-salida {
+  flex-shrink: 0;
+  border: none;
+  border-top: 1px solid var(--color-sidebar-border);
+  background: transparent;
+  cursor: pointer;
+  padding: var(--space-3) 0 0;
+  text-align: left;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-sidebar-text-muted);
+  transition: color 0.14s ease;
+}
+
+.anden-salida:hover {
+  color: var(--color-danger);
+}
+
+/* ── Encabezado: el localizador ──────────────────────────────────────── */
 .shell-main {
   flex: 1;
   min-width: 0;
@@ -52,19 +266,73 @@
   justify-content: space-between;
   gap: var(--space-3);
   padding: 0 var(--space-4);
-  background: var(--color-surface);
+  background: var(--color-bg);
   border-bottom: 1px solid var(--color-border);
   position: sticky;
   top: 0;
-  z-index: 20;
+  z-index: var(--z-header);
+}
+
+.shell-localizador {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.shell-tramo {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* El fragmento de riel que une tramo y parada. */
+.shell-conector {
+  width: 22px;
+  height: 2px;
+  background: var(--color-border);
+  flex-shrink: 0;
+}
+
+.shell-parada {
+  font-family: var(--font-display);
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  line-height: 1;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text);
+}
+
+.shell-header-acciones {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.shell-usuario {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.shell-usuario-nombre {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .shell-menu-button {
   background: none;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  width: 40px;
-  height: 40px;
+  border-radius: var(--radius-sm);
+  width: 38px;
+  height: 38px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -73,16 +341,35 @@
   flex-shrink: 0;
 }
 
+.shell-aviso-baja {
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  border-bottom: 1px solid var(--color-border);
+}
+
 .shell-content {
   flex: 1;
   padding: var(--space-4);
   display: flex;
   flex-direction: column;
   min-height: 0;
+  gap: var(--space-4);
 }
 
-/* A partir de un ancho de tablet en adelante, la barra lateral queda fija y
-   visible siempre — deja de ser un panel que se abre/cierra. */
+/* En pantallas angostas el nombre del tramo se oculta: el localizador deja
+   solo la parada, que es el dato que importa cuando hay poco ancho. */
+@media (max-width: 620px) {
+  .shell-tramo,
+  .shell-conector,
+  .shell-usuario-nombre {
+    display: none;
+  }
+}
+
+/* Desde tablet, el andén queda fijo y visible siempre. */
 @media (min-width: 900px) {
   .shell-sidebar {
     position: sticky;
@@ -91,15 +378,16 @@
     transform: none;
   }
 
-  .shell-backdrop {
-    display: none;
-  }
-
+  .shell-backdrop,
   .shell-menu-button {
     display: none;
   }
 
   .shell-content {
     padding: var(--space-5);
+  }
+
+  .shell-header {
+    padding: 0 var(--space-5);
   }
 }

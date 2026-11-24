@@ -1,0 +1,367 @@
+/* EL CHASIS DE CALLE — Fase 3 del Sistema Riel.
+   Pasajero y conductor. Diseñado para pulgar, vertical y a la intemperie:
+   sin barra lateral, todo a un toque, objetivos grandes abajo. */
+
+.calle-root {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+}
+
+/* ── Encabezado mínimo ────────────────────────────────────────────────
+   En vertical el alto es el recurso escaso. Queda la marca, la parada y
+   las acciones; el nombre de la cuenta y el cierre de sesión bajan a la
+   hoja, donde no compiten con el mapa. */
+.calle-cabecera {
+  flex-shrink: 0;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* Mismo criterio que `.anden-marca-logo` (AppShell.css): el isotipo trae su
+   ámbar fijo dentro del PNG -- una placa clara fija (no reactiva al tema)
+   le da un fondo consistente sin depender de qué superficie tenga detrás. */
+/* Solo el isotipo (sin el wordmark, que no cabe en 52px de encabezado) --
+   es ámbar puro sobre transparente, sin tinta oscura horneada dentro, así
+   que no necesita ninguna placa de fondo para leerse sobre cualquier
+   superficie: un logotipo de marca está exento del mínimo de contraste que
+   sí aplica a un indicador funcional. */
+.calle-marca {
+  flex-shrink: 0;
+  height: 30px;
+  width: auto;
+  object-fit: contain;
+}
+
+.calle-parada-titulo {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--font-size-lg);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calle-cabecera-acciones {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.calle-aviso-baja {
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* ── Contenido ───────────────────────────────────────────────────────── */
+.calle-contenido {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-3);
+  overflow-y: auto;
+}
+
+/* Vistas de mapa: el contenido llena el alto y maneja su propio scroll
+   interno (el mapa no scrollea, se arrastra). */
+.calle-contenido--lleno {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* ── El riel inferior ────────────────────────────────────────────────
+   La misma línea con paradas del andén, acostada y al alcance del pulgar.
+   `--calle-nodo-centro` fija dónde cae el centro del nodo para que la
+   línea de fondo lo cruce exactamente: si cambia el relleno de arriba,
+   cambia acá y no en dos lugares. */
+.calle-riel {
+  --calle-nodo-centro: 20px;
+
+  /* `sticky` ya crea contexto de posicionamiento para la línea de fondo,
+     así que no necesita un `relative` aparte (declarar los dos deja el
+     último ganando y el riel deja de fijarse). */
+  position: sticky;
+  bottom: 0;
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+  padding-bottom: max(var(--space-1), env(safe-area-inset-bottom));
+  z-index: var(--z-header);
+}
+
+/* Una sola línea que atraviesa el riel, no un borde por botón. Se recorta
+   a los extremos para que arranque y termine en un nodo, como el tramo del
+   andén. */
+.calle-riel-linea {
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  top: var(--calle-nodo-centro);
+  height: var(--riel-grosor);
+  transform: translateY(-50%);
+  background: var(--riel-pendiente);
+  pointer-events: none;
+}
+
+.calle-parada {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  /* Objetivo táctil holgado: 14px arriba + nodo + etiqueta + 12px abajo
+     pasa cómodamente los 48px mínimos de un objetivo de pulgar. */
+  padding: 14px var(--space-1) 12px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  font-family: inherit;
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  transition: color 0.14s ease;
+}
+
+/* El nodo: mismo objeto que el nodo del `Riel` de estado y el del andén.
+   Fondo de superficie para tapar la línea que pasa por detrás. */
+.calle-nodo {
+  width: var(--riel-nodo);
+  height: var(--riel-nodo);
+  border-radius: 50%;
+  background: var(--color-surface);
+  box-shadow: inset 0 0 0 2px var(--riel-pendiente);
+  transition: box-shadow 0.14s ease, background-color 0.14s ease;
+}
+
+/* La parada actual: nodo encendido con contorno y halo. El contorno no es
+   decoración — el ámbar de marca solo da 2.08:1 sobre superficie clara, y
+   este nodo es lo que dice en qué sección estás. Ver §29.3. */
+/* El nodo NO cambia de tamaño al activarse — se enciende. Mismo criterio
+   que el andén, y no es solo estética: creciendo de 9 a 13 px su centro
+   caía 2 px por debajo de la línea que debe atravesarlo (medido). El halo
+   da la jerarquía sin mover el nodo de su sitio. */
+.calle-parada--actual .calle-nodo {
+  background: var(--riel-actual);
+  box-shadow:
+    0 0 0 1.5px var(--riel-actual-contorno),
+    0 0 0 4px var(--riel-halo);
+}
+
+.calle-parada--actual {
+  color: var(--color-text);
+  font-weight: 700;
+}
+
+.calle-parada-nombre {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.calle-parada-badge {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  margin-left: 4px;
+}
+
+/* ── La hoja ─────────────────────────────────────────────────────────
+   Sube desde el riel, anclada abajo: nace donde el pulgar la abrió. */
+.calle-hoja-fondo {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: var(--z-backdrop);
+}
+
+.calle-hoja {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 82dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface);
+  /* Barra superior de 2px: la misma marca que define el plano. */
+  border-top: var(--riel-grosor) solid var(--color-accent);
+  padding: var(--space-3) var(--space-3) max(var(--space-3), env(safe-area-inset-bottom));
+  z-index: var(--z-modal);
+  animation: calle-hoja-sube 0.16s ease-out;
+}
+
+@keyframes calle-hoja-sube {
+  from {
+    transform: translateY(12%);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .calle-hoja {
+    animation: none;
+  }
+}
+
+.calle-hoja-titular {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.calle-hoja-nombre {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calle-hoja-cerrar {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: var(--space-1);
+  line-height: 0;
+  color: var(--color-text-muted);
+}
+
+.calle-hoja-tramos {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-2) 0;
+}
+
+/* Cada tramo conserva su línea con nodos, igual que en el andén: la hoja
+   es la continuación de la misma línea, no otra clase de menú. */
+.calle-hoja-tramo {
+  position: relative;
+  padding-left: var(--space-4);
+  padding-block: var(--space-2);
+}
+
+.calle-hoja-tramo::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 10px;
+  bottom: 10px;
+  width: var(--riel-grosor);
+  background: var(--riel-pendiente);
+}
+
+.calle-hoja-tramo-nombre {
+  display: block;
+  color: var(--color-text-muted);
+  padding-bottom: var(--space-1);
+}
+
+.calle-hoja-parada {
+  position: relative;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: var(--space-3) 0;
+  text-align: left;
+  font-family: inherit;
+  font-size: var(--font-size-lg);
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.calle-hoja-parada::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--space-4) + 1px);
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--riel-nodo);
+  height: var(--riel-nodo);
+  border-radius: 50%;
+  background: var(--color-surface);
+  box-shadow: inset 0 0 0 2px var(--riel-pendiente);
+}
+
+.calle-hoja-parada--actual::before {
+  background: var(--riel-actual);
+  box-shadow:
+    0 0 0 1.5px var(--riel-actual-contorno),
+    0 0 0 4px var(--riel-halo);
+}
+
+.calle-hoja-parada--actual {
+  font-weight: 700;
+}
+
+.calle-hoja-salida {
+  flex-shrink: 0;
+  border: none;
+  border-top: 1px solid var(--color-border);
+  background: transparent;
+  cursor: pointer;
+  padding: var(--space-3) 0 0;
+  text-align: left;
+  font-family: inherit;
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.calle-hoja-salida:hover {
+  color: var(--color-danger);
+}
+
+/* ── Ancho de escritorio ─────────────────────────────────────────────
+   Estos portales son de calle, pero también se abren en un navegador de
+   escritorio (y así se prueban). El riel no se estira a 1400 px: se
+   centra en un ancho de lectura, y el contenido con él. */
+@media (min-width: 760px) {
+  .calle-cabecera,
+  .calle-riel {
+    padding-inline: max(var(--space-3), calc((100% - 760px) / 2));
+  }
+
+  .calle-contenido:not(.calle-contenido--lleno) {
+    width: min(760px, 100%);
+    margin-inline: auto;
+  }
+
+  .calle-hoja {
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(760px, 100%);
+  }
+}

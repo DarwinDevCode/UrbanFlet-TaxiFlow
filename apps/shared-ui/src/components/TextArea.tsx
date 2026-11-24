@@ -1,31 +1,25 @@
 import type { TextareaHTMLAttributes } from "react";
+import "./campos.css";
 
 interface TextAreaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
   label: string;
 }
 
+/** EL CAMPO EXTENSO — mismo tratamiento de línea que el resto de campos
+ * (ver `campos.css`), con alto propio y redimensionado vertical. */
 export function TextArea({ label, id, style, ...rest }: TextAreaProps) {
-  const fieldId = id ?? label.toLowerCase().replace(/\s+/g, "-");
+  const fieldId = id ?? label.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-1)", width: "100%" }}>
-      <label htmlFor={fieldId} style={{ fontSize: "var(--font-size-sm)", color: "var(--color-text-muted)" }}>
+    <div className="uf-campo">
+      <label htmlFor={fieldId} className="uf-rotulo uf-campo-label">
         {label}
       </label>
       <textarea
         {...rest}
         id={fieldId}
         rows={rest.rows ?? 3}
-        style={{
-          border: "1px solid var(--color-border)",
-          borderRadius: "var(--radius-sm)",
-          padding: "var(--space-3)",
-          fontSize: "var(--font-size-md)",
-          background: "var(--color-surface)",
-          color: "var(--color-text)",
-          fontFamily: "inherit",
-          resize: "vertical",
-          ...style,
-        }}
+        className="uf-campo-control uf-campo-control--area"
+        style={style}
       />
     </div>
   );

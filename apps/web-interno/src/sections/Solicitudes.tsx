@@ -8,11 +8,15 @@ import {
   DataTable,
   DetailField,
   DetailPanel,
+  EvidenciaImagen,
   invalidateSwrPrefix,
+  nombreTipoDocumento,
   Pagination,
+  Riel,
   Select,
   TextArea,
   TextField,
+  trayectoSolicitud,
   useSwr,
   type ModoPanel,
 } from "@urbanflet/shared-ui";
@@ -20,16 +24,62 @@ import { useState } from "react";
 
 const RECURSO_SOLICITUDES = "/captacion/solicitudes";
 
+interface VehiculoSolicitud {
+  placa: string;
+  marca: string;
+  modelo: string;
+  anio: number;
+  color: string;
+  capacidad: number;
+}
+
 interface Solicitud {
   id: string;
   usuario_id: string;
   usuario_nombre: string | null;
   cedula: string;
+  // Ronda "corrección acotada por estado": el backend nunca los había
+  // expuesto por API pese a pedirse al crear la solicitud -- sin esto, ni
+  // esta pantalla podía mostrarlos, ni había nada que corregir.
+  licencia_numero: string;
+  vehiculo: VehiculoSolicitud;
   estado: string;
   fecha_envio: string | null;
   fecha_decision: string | null;
   revision_reforzada: boolean;
   motivo_rechazo: string | null;
+  // Gestión documental en la postulación (Fase 2). El backend ya los exponía
+  // en `SolicitudOut.documentos`; esta pantalla simplemente no los mostraba,
+  // así que quien decidía aprobar o rechazar lo hacía sin ver un solo
+  // documento. Vacío en solicitudes anteriores a esa ronda: es el estado real
+  // de esos registros, no un error de carga.
+  documentos: DocumentoSolicitud[];
+}
+
+interface DocumentoSolicitud {
+  tipo: string;
+  propietario_tipo: string;
+  archivo_id: string;
+  fecha_emision: string | null;
+  fecha_vencimiento: string | null;
+}
+
+/** Vigencia de un documento de la postulación, calculada contra HOY. No es un
+ * estado guardado: los documentos de una solicitud todavía no existen en la
+ * colección `documentos` (se crean recién al aprobar), así que el control de
+ * vigencia diario aún no los ha tocado. Sirve para que quien revisa vea de
+ * entrada si le están mandando una licencia ya vencida. */
+function vigenciaDocumento(fechaVencimiento: string | null): {
+  texto: string;
+  tono: "neutral" | "exito" | "advertencia" | "peligro";
+} {
+  if (!fechaVencimiento) return { texto: "Sin fecha", tono: "neutral" };
+  const hoy = new Date();
+  hoy.setHours(0, 0, 0, 0);
+  const dias = Math.round((new Date(`${fechaVencimiento}T00:00:00`).getTime() - hoy.getTime()) / 86400000);
+  if (dias < 0) return { texto: `Vencido hace ${Math.abs(dias)} d`, tono: "peligro" };
+  if (dias <= 30) return { texto: `Vence en ${dias} d`, tono: "advertencia" };
+  return { texto: "Vigente", tono: "exito" };
 }
 
 interface SolicitudListOut {
@@ -37,13 +87,9 @@ interface SolicitudListOut {
   total: number;
 }
 
-const tonoPorEstado: Record<string, "neutral" | "exito" | "advertencia" | "peligro"> = {
-  ENVIADA: "neutral",
-  EN_VERIFICACION: "advertencia",
-  OBSERVADA: "advertencia",
-  APROBADA: "exito",
-  RECHAZADA: "peligro",
-};
+// El estado de la solicitud ya no se pinta como píldora de color: va en el
+// riel, que además muestra cuánto le falta al trayecto (ver `trayectos.ts`
+// en shared-ui). El mapa de tonos por estado que vivía acá quedó sin uso.
 
 // Convención de "Salir" para esta pantalla (y las otras dos del mismo
 // patrón): en la barra fija de acciones, "Salir" limpia los criterios de
@@ -182,18 +228,14 @@ export function SeccionSolicitudes() {
         </div>
       </Card>
 
+      {/* Bitácora de revisión (segunda pasada, punto 1): "Nuevo" y "Eliminar"
+          quitados por completo (no solo deshabilitados) -- las solicitudes
+          las crea el propio postulante desde su registro público (nunca el
+          personal interno) y no se eliminan, solo cambian de estado. Ningún
+          rol que llega a este workpanel tiene un uso real para ninguno de
+          los dos. */}
       <ActionBar
-        nuevo={{
-          onClick: () => {},
-          disabled: true,
-          title: "No aplica: las solicitudes las crean los propios postulantes, no el personal interno.",
-        }}
         actualizar={{ onClick: () => refetch() }}
-        eliminar={{
-          onClick: () => {},
-          disabled: true,
-          title: "No aplica: las solicitudes no se eliminan, solo cambian de estado.",
-        }}
         buscar={{ onClick: buscar }}
         salir={{ onClick: limpiarBusqueda }}
       />
@@ -211,7 +253,7 @@ export function SeccionSolicitudes() {
               header: "Estado",
               render: (s) => (
                 <>
-                  <Badge texto={s.estado} tono={tonoPorEstado[s.estado] ?? "neutral"} />
+                  <Riel {...trayectoSolicitud(s.estado)} variante="etiquetado" />
                   {s.revision_reforzada && (
                     <span style={{ marginLeft: "var(--space-2)" }}>
                       <Badge texto="Revisión reforzada" tono="advertencia" />
@@ -230,6 +272,7 @@ export function SeccionSolicitudes() {
               ),
             },
           ]}
+          ocultarContador
         />
         <Pagination page={page} pageSize={pageSize} total={total} onPageChange={setPage} onPageSizeChange={(n) => { setPageSize(n); setPage(0); }} />
       </Card>
@@ -243,7 +286,12 @@ export function SeccionSolicitudes() {
             <>
               {puedeTomar && (
                 <div style={{ minWidth: 140 }}>
-                  <Button variant="secondary" onClick={tomar} loading={tomando}>
+                  <Button
+                    variant="secondary"
+                    onClick={tomar}
+                    loading={tomando}
+                    title="Te asigna esta solicitud para revisarla — evita que otro compañero la revise al mismo tiempo."
+                  >
                     Tomar
                   </Button>
                 </div>
@@ -269,11 +317,57 @@ export function SeccionSolicitudes() {
                 }
               />
               <DetailField label="Cédula" value={seleccionada.cedula} />
-              <DetailField label="Estado" value={<Badge texto={seleccionada.estado} tono={tonoPorEstado[seleccionada.estado] ?? "neutral"} />} />
+              <DetailField label="Licencia" value={seleccionada.licencia_numero} />
+              <DetailField
+                label="Vehículo"
+                value={`${seleccionada.vehiculo.placa} — ${seleccionada.vehiculo.marca} ${seleccionada.vehiculo.modelo} ${seleccionada.vehiculo.anio}, ${seleccionada.vehiculo.color}`}
+              />
+              <DetailField label="Estado" value={<Riel {...trayectoSolicitud(seleccionada.estado)} />} />
               <DetailField label="Revisión reforzada" value={seleccionada.revision_reforzada ? "Sí" : "No"} />
               <DetailField label="Fecha de envío" value={seleccionada.fecha_envio ? new Date(seleccionada.fecha_envio).toLocaleString() : "—"} />
               <DetailField label="Fecha de decisión" value={seleccionada.fecha_decision ? new Date(seleccionada.fecha_decision).toLocaleString() : "—"} />
               <DetailField label="Motivo de rechazo" value={seleccionada.motivo_rechazo ?? "—"} />
+            </div>
+
+            {/* Fase 2: revisión de los documentos enviados. Se ven de verdad
+                (mismo visor de evidencia del resto del sistema, con
+                ampliación a pantalla completa), con su fecha de caducidad y
+                un semáforo de vigencia calculado contra hoy. La decisión en sí
+                no estrena una máquina de estados propia: aprobar u observar la
+                documentación ES la decisión de la solicitud
+                (APROBADA/OBSERVADA/RECHAZADA, con motivo obligatorio cuando no
+                es aprobación), que ya existía abajo en este mismo panel. */}
+            <div style={{ borderTop: "1px solid var(--color-border)", paddingTop: "var(--space-3)" }}>
+              <h3 style={{ margin: 0, marginBottom: "var(--space-2)", fontSize: "var(--font-size-md)" }}>
+                Documentos enviados
+              </h3>
+              {seleccionada.documentos.length === 0 ? (
+                <p style={{ margin: 0, color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
+                  Esta solicitud no trae documentos adjuntos. Las solicitudes creadas antes de que el
+                  formulario de postulación permitiera cargarlos quedan así — no es un fallo de carga.
+                </p>
+              ) : (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-4)" }}>
+                  {seleccionada.documentos.map((d) => {
+                    const vigencia = vigenciaDocumento(d.fecha_vencimiento);
+                    return (
+                      <div
+                        key={d.archivo_id}
+                        style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)", minWidth: 200 }}
+                      >
+                        <strong style={{ fontSize: "var(--font-size-sm)" }}>{nombreTipoDocumento(d.tipo)}</strong>
+                        <EvidenciaImagen archivoId={d.archivo_id} tamano={200} alt={`Documento ${nombreTipoDocumento(d.tipo)}`} />
+                        <span style={{ fontSize: "var(--font-size-sm)", color: "var(--color-text-muted)" }}>
+                          Caduca: {d.fecha_vencimiento ? new Date(d.fecha_vencimiento).toLocaleDateString() : "—"}
+                        </span>
+                        <div>
+                          <Badge texto={vigencia.texto} tono={vigencia.tono} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {puedeDecidir && (

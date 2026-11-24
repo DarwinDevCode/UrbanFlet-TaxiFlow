@@ -1,0 +1,37 @@
+/* LA MARCA — ver Badge.tsx. Bloque recto con barra de color a la
+   izquierda, en vez de la píldora universal de esquinas completas. */
+
+.uf-marca {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--space-2) 2px calc(var(--space-2) - 1px);
+  border-left: 3px solid currentColor;
+  border-radius: 0;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.uf-marca--neutral {
+  color: var(--color-text-muted);
+  background: var(--color-neutral-bg);
+}
+
+.uf-marca--exito {
+  color: var(--color-success);
+  background: var(--color-success-bg);
+}
+
+.uf-marca--advertencia {
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
+}
+
+.uf-marca--peligro {
+  color: var(--color-danger);
+  background: var(--color-danger-bg);
+}

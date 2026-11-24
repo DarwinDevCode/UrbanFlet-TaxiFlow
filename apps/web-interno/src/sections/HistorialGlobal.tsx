@@ -2,15 +2,18 @@ import {
   ActionBar,
   ApiError,
   apiFetch,
-  Badge,
+  Avatar,
   Button,
   Card,
   DataTable,
   DetailField,
   DetailPanel,
+  MapaRutaViaje,
   Pagination,
+  Riel,
   Select,
   TextField,
+  trayectoViaje,
   useSwr,
   type ModoPanel,
 } from "@urbanflet/shared-ui";
@@ -23,7 +26,13 @@ interface Viaje {
   pasajero_id: string;
   conductor_id: string | null;
   estado: string;
+  // Coordenadas: el backend ya las devolvía siempre en `ViajeOut`, esta
+  // interfaz simplemente no las tipaba porque no había mapa en esta pantalla.
+  origen_lat: number;
+  origen_lon: number;
   origen_direccion: string;
+  destino_lat: number | null;
+  destino_lon: number | null;
   destino_direccion: string | null;
   franja: string;
   ts_solicitud: string;
@@ -34,9 +43,11 @@ interface Viaje {
   motivo_cancelacion: string | null;
   conductor_nombre: string | null;
   conductor_calificacion: number | null;
+  conductor_foto_url: string | null;
   vehiculo_placa: string | null;
   pasajero_nombre: string | null;
   pasajero_calificacion: number | null;
+  pasajero_foto_url: string | null;
   calificacion_pasajero_a_conductor: { puntaje: number; comentario: string | null; ts: string } | null;
   calificacion_conductor_a_pasajero: { puntaje: number; comentario: string | null; ts: string } | null;
 }
@@ -46,12 +57,12 @@ interface HistorialOut {
   total: number;
 }
 
-const tonoPorEstado: Record<string, "neutral" | "exito" | "advertencia" | "peligro"> = {
-  FINALIZADO: "exito",
-  PAGADO: "exito",
-  CANCELADO: "peligro",
-  SIN_CONDUCTOR: "peligro",
-};
+// Fase 4 del Sistema Riel: esta pantalla mostraba el estado del viaje como
+// píldora de color (`Badge`) con un `tonoPorEstado` propio -- el mismo
+// enum crudo que las otras 3 pantallas de trayecto ya habían dejado atrás
+// en la Fase 2. `trayectoViaje` ya existía en `trayectos.ts` desde esa
+// fase, pero nunca se había cableado acá. Va en el riel, que además
+// muestra cuánto le falta al trayecto.
 
 /** Sección 3.3 de `specs/specs-administrativas/ux_complementaria.md` —
  * historial navegable de todos los viajes de la cooperativa (no solo
@@ -70,6 +81,11 @@ export function SeccionHistorialGlobal() {
 
   const [seleccionado, setSeleccionado] = useState<Viaje | null>(null);
   const [modo, setModo] = useState<ModoPanel>("consulta");
+  // Traza GPS del viaje abierto. Se pide aparte y solo al abrir el detalle:
+  // la LISTA nunca la trae (ver `to_out(..., incluir_traza)` en el backend --
+  // 20 filas con hasta 20 000 puntos cada una no tendría sentido). `undefined`
+  // = todavía cargando, `null` = el viaje no tiene traza registrada.
+  const [traza, setTraza] = useState<[number, number][] | null | undefined>(undefined);
 
   // Caché stale-while-revalidate (ver `swrCache.ts`): con un dataset de
   // ~1.3M viajes históricos (ver CLAUDE.md §7), volver a una combinación de
@@ -108,6 +124,14 @@ export function SeccionHistorialGlobal() {
   const abrirDetalle = (v: Viaje) => {
     setSeleccionado(v);
     setModo("consulta");
+    setTraza(undefined);
+    // Ruta propia para roles internos: `GET /viajes/{id}` exige que el actor
+    // sea el pasajero o el conductor del viaje, así que un supervisor siempre
+    // recibiría el 404 genérico ahí. Un fallo acá no rompe el detalle -- el
+    // mapa cae al estado "sin traza", que es la verdad más conservadora.
+    apiFetch<{ traza: [number, number][] | null }>(`${RECURSO_HISTORIAL_GLOBAL}/${v.id}`)
+      .then((r) => setTraza(r.traza ?? null))
+      .catch(() => setTraza(null));
   };
 
   const mensajeGeneral =
@@ -173,10 +197,12 @@ export function SeccionHistorialGlobal() {
         </div>
       </Card>
 
+      {/* "Nuevo"/"Eliminar" quitados (segunda pasada, punto 1): los viajes
+          los crean los pasajeros (nunca el personal interno) y un viaje
+          histórico no se elimina -- ningún rol tiene un uso real para
+          ninguno de los dos acá. */}
       <ActionBar
-        nuevo={{ onClick: () => {}, disabled: true, title: "No aplica: los viajes los crean los pasajeros, no el personal interno." }}
         actualizar={{ onClick: () => refetch() }}
-        eliminar={{ onClick: () => {}, disabled: true, title: "No aplica: un viaje histórico no se elimina." }}
         buscar={{ onClick: buscar }}
         salir={{ onClick: limpiarBusqueda }}
       />
@@ -188,9 +214,31 @@ export function SeccionHistorialGlobal() {
           keyField={(v) => v.id}
           vacio="No hay viajes con este filtro."
           columns={[
-            { header: "Pasajero", render: (v) => v.pasajero_nombre ?? "—" },
-            { header: "Conductor", render: (v) => v.conductor_nombre ?? "—" },
-            { header: "Estado", render: (v) => <Badge texto={v.estado} tono={tonoPorEstado[v.estado] ?? "neutral"} /> },
+            {
+              header: "Pasajero",
+              render: (v) =>
+                v.pasajero_nombre ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                    <Avatar fotoUrl={v.pasajero_foto_url} nombre={v.pasajero_nombre} tamano={28} />
+                    {v.pasajero_nombre}
+                  </div>
+                ) : (
+                  "—"
+                ),
+            },
+            {
+              header: "Conductor",
+              render: (v) =>
+                v.conductor_nombre ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                    <Avatar fotoUrl={v.conductor_foto_url} nombre={v.conductor_nombre} tamano={28} />
+                    {v.conductor_nombre}
+                  </div>
+                ) : (
+                  "—"
+                ),
+            },
+            { header: "Estado", render: (v) => <Riel {...trayectoViaje(v.estado)} variante="etiquetado" /> },
             { header: "Solicitado", render: (v) => new Date(v.ts_solicitud).toLocaleString() },
             {
               header: "Detalle",
@@ -201,6 +249,7 @@ export function SeccionHistorialGlobal() {
               ),
             },
           ]}
+          ocultarContador
         />
         <Pagination
           page={page}
@@ -216,13 +265,55 @@ export function SeccionHistorialGlobal() {
 
       {seleccionado && (
         <DetailPanel titulo={`Viaje — ${seleccionado.id}`} modo={modo} onSalir={() => setSeleccionado(null)}>
+          {/* CU-O14 paso 3 llevado al historial global: mismo componente que
+              usan web-pasajero y web-conductor. Solo dibuja la traza GPS real;
+              si el viaje no la tiene (p. ej. los viajes históricos sembrados,
+              que nacen sin traza) muestra origen/destino y lo declara. */}
+          <div style={{ marginBottom: "var(--space-3)" }}>
+            <MapaRutaViaje
+              viajeId={seleccionado.id}
+              origen={{ lat: seleccionado.origen_lat, lon: seleccionado.origen_lon }}
+              destino={
+                seleccionado.destino_lat !== null && seleccionado.destino_lon !== null
+                  ? { lat: seleccionado.destino_lat, lon: seleccionado.destino_lon }
+                  : null
+              }
+              traza={traza ?? null}
+              origenDireccion={seleccionado.origen_direccion}
+              destinoDireccion={seleccionado.destino_direccion}
+            />
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "var(--space-3)" }}>
-            <DetailField label="Pasajero" value={seleccionado.pasajero_nombre ?? "—"} />
+            <DetailField
+              label="Pasajero"
+              value={
+                seleccionado.pasajero_nombre ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                    <Avatar fotoUrl={seleccionado.pasajero_foto_url} nombre={seleccionado.pasajero_nombre} tamano={32} />
+                    {seleccionado.pasajero_nombre}
+                  </div>
+                ) : (
+                  "—"
+                )
+              }
+            />
             <DetailField label="Calificación del pasajero" value={seleccionado.pasajero_calificacion ?? "—"} />
-            <DetailField label="Conductor" value={seleccionado.conductor_nombre ?? "—"} />
+            <DetailField
+              label="Conductor"
+              value={
+                seleccionado.conductor_nombre ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                    <Avatar fotoUrl={seleccionado.conductor_foto_url} nombre={seleccionado.conductor_nombre} tamano={32} />
+                    {seleccionado.conductor_nombre}
+                  </div>
+                ) : (
+                  "—"
+                )
+              }
+            />
             <DetailField label="Calificación del conductor" value={seleccionado.conductor_calificacion ?? "—"} />
             <DetailField label="Vehículo" value={seleccionado.vehiculo_placa ?? "—"} />
-            <DetailField label="Estado" value={<Badge texto={seleccionado.estado} tono={tonoPorEstado[seleccionado.estado] ?? "neutral"} />} />
+            <DetailField label="Estado" value={<Riel {...trayectoViaje(seleccionado.estado)} />} />
             <DetailField label="Franja" value={seleccionado.franja} />
             <DetailField label="Origen" value={seleccionado.origen_direccion} />
             <DetailField label="Destino" value={seleccionado.destino_direccion ?? "—"} />

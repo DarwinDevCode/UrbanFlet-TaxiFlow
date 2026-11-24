@@ -10,6 +10,7 @@ import {
   DetailPanel,
   Select,
   TextArea,
+  TabButton,
   TextField,
   useAuth,
 } from "@urbanflet/shared-ui";
@@ -85,26 +86,6 @@ function formatearTamano(bytes: number | null): string {
 }
 
 type Pestana = "respaldos" | "continuidad";
-
-function TabButton({ activa, onClick, children }: { activa: boolean; onClick: () => void; children: string }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        padding: "var(--space-2) var(--space-4)",
-        borderRadius: "var(--radius-md)",
-        border: "1px solid var(--color-border)",
-        background: activa ? "var(--color-accent)" : "var(--color-surface)",
-        color: activa ? "#fff" : "var(--color-text)",
-        fontWeight: 600,
-        cursor: "pointer",
-      }}
-    >
-      {children}
-    </button>
-  );
-}
 
 function SeccionRespaldos() {
   const [respaldos, setRespaldos] = useState<Respaldo[]>([]);
@@ -188,15 +169,15 @@ function SeccionRespaldos() {
     <Card>
       <h3 style={{ marginTop: 0, fontSize: "var(--font-size-md)" }}>Respaldos</h3>
       <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
-        Exportación real vía los drivers del backend (no <code>mongodump</code>/<code>clickhouse-client</code>,
-        ver nota en el detalle de cada respaldo). Corre siempre contra las bases de este entorno de desarrollo.
-        Cifrado en reposo: <strong>no implementado</strong> en este entorno.
+        Exportación real de los datos de MongoDB y ClickHouse. Corre siempre contra las bases de este entorno
+        de desarrollo. Cifrado en reposo: <strong>no implementado</strong> en este entorno.
       </p>
+      {/* "Eliminar"/"Buscar" quitados (segunda pasada, punto 1): un respaldo
+          no se elimina desde esta interfaz y la lista no pagina -- ningún
+          rol tiene un uso real para ninguno de los dos acá. */}
       <ActionBar
         nuevo={{ onClick: disparar, disabled: disparando }}
         actualizar={{ onClick: () => cargar() }}
-        eliminar={{ onClick: () => {}, disabled: true, title: "No aplica: un respaldo no se elimina desde aquí." }}
-        buscar={{ onClick: () => {}, disabled: true, title: "No aplica: la lista no pagina." }}
         salir={{ onClick: () => setSeleccionado(null) }}
       />
       {error && !seleccionado && (
@@ -463,7 +444,7 @@ export function SeccionRespaldosYContinuidad() {
       <Card>
         <h2 style={{ marginTop: 0, fontSize: "var(--font-size-lg)" }}>Respaldos y continuidad</h2>
         <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
-          Respaldo/restauración de prueba de MongoDB y ClickHouse, y plan de recuperación ante desastres (DR).
+          Respaldo/restauración de prueba de MongoDB y ClickHouse, y plan de recuperación ante desastres.
         </p>
       </Card>
 

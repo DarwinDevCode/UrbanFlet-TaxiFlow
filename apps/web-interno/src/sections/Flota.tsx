@@ -8,6 +8,7 @@ import {
   DataTable,
   DetailField,
   DetailPanel,
+  MapaPosicion,
   Pagination,
   Select,
   TextField,
@@ -131,18 +132,12 @@ export function SeccionFlota() {
         </div>
       </Card>
 
+      {/* "Nuevo"/"Eliminar" quitados (segunda pasada, punto 1): un vehículo
+          entra a la flota al aprobarse la postulación de su conductor (no
+          desde acá), y este tablero es de solo lectura -- ningún rol tiene
+          un uso real para ninguno de los dos acá. */}
       <ActionBar
-        nuevo={{
-          onClick: () => {},
-          disabled: true,
-          title: "No aplica: un vehículo entra a la flota al aprobarse la postulación de su conductor (CU-O01), no desde acá.",
-        }}
         actualizar={{ onClick: () => cargar(), loading: actualizando }}
-        eliminar={{
-          onClick: () => {},
-          disabled: true,
-          title: "No aplica: este tablero es de solo lectura, refleja el estado en vivo de la flota.",
-        }}
         buscar={{ onClick: buscar }}
         salir={{ onClick: limpiarBusqueda }}
       />
@@ -190,6 +185,7 @@ export function SeccionFlota() {
               ),
             },
           ]}
+          ocultarContador
         />
         <Pagination
           page={page}
@@ -229,6 +225,27 @@ export function SeccionFlota() {
             />
             <DetailField label="Sin señal" value={seleccionado.sin_senal ? "Sí" : "No"} />
           </div>
+
+          {/* Punto 3 de la ronda de auditoría de pantallas: mapa real en el
+              detalle, misma fuente de posición que ya usa este tablero
+              (`GET /flota/tablero` -> caché Redis `pos:{vehiculo_id}`, ver
+              `flota/service.py::listar_estado_flota`) -- no una consulta
+              nueva, `seleccionado.lat/lon` ya estaba en memoria. Sin
+              `heading`: esa caché nunca guardó `rumbo` (confirmado antes de
+              construir esto), así que la flecha queda fija. */}
+          {seleccionado.lat != null && seleccionado.lon != null ? (
+            <div style={{ marginTop: "var(--space-3)" }}>
+              <MapaPosicion lat={seleccionado.lat} lon={seleccionado.lon} alto={260} />
+              <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)", marginTop: "var(--space-2)" }}>
+                Posición reportada por el conductor cada ~15s; este tablero refresca cada 10s — no es una posición
+                instantánea, es la última que llegó.
+              </p>
+            </div>
+          ) : (
+            <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)", marginTop: "var(--space-3)" }}>
+              Sin posición conocida todavía — el vehículo no reportó ninguna coordenada.
+            </p>
+          )}
         </DetailPanel>
       )}
     </div>

@@ -8,6 +8,7 @@ import {
   DataTable,
   DetailField,
   DetailPanel,
+  nombreRol,
   TextField,
   type ModoPanel,
 } from "@urbanflet/shared-ui";
@@ -52,7 +53,7 @@ function RolesCheckboxes({ seleccionados, onChange }: { seleccionados: string[];
       {TODOS_LOS_ROLES.map((rol) => (
         <label key={rol} style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", fontSize: "var(--font-size-sm)" }}>
           <input type="checkbox" checked={seleccionados.includes(rol)} onChange={() => alternar(rol)} />
-          {rol}
+          {nombreRol(rol)}
         </label>
       ))}
     </div>
@@ -83,7 +84,7 @@ export function SeccionFeatureFlags() {
   };
 
   useEffect(() => {
-    cargar().catch((e) => setError(e instanceof ApiError ? e.message : "No se pudieron cargar los flags"));
+    cargar().catch((e) => setError(e instanceof ApiError ? e.message : "No se pudieron cargar las funcionalidades"));
   }, []);
 
   const abrirNuevo = () => {
@@ -121,7 +122,7 @@ export function SeccionFeatureFlags() {
       setModo("consulta");
       await cargar();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "No se pudo crear el flag");
+      setError(e instanceof ApiError ? e.message : "No se pudo crear la funcionalidad");
     } finally {
       setCargando(false);
     }
@@ -143,7 +144,7 @@ export function SeccionFeatureFlags() {
       setSeleccionado(actualizado);
       await cargar();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "No se pudo actualizar el flag");
+      setError(e instanceof ApiError ? e.message : "No se pudo actualizar la funcionalidad");
     } finally {
       setCargando(false);
     }
@@ -152,18 +153,19 @@ export function SeccionFeatureFlags() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
       <Card>
-        <h2 style={{ marginTop: 0, fontSize: "var(--font-size-lg)" }}>Funcionalidades (feature flags)</h2>
+        <h2 style={{ marginTop: 0, fontSize: "var(--font-size-lg)" }}>Funcionalidades activables</h2>
         <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
-          Activa o desactiva una función por porcentaje de usuarios o por rol, sin desplegar código nuevo. Los flags
-          gobiernan visibilidad de funcionalidad — nunca reemplazan un control de acceso real.
+          Activa o desactiva una función por porcentaje de usuarios o por rol, sin desplegar código nuevo. Estas
+          funcionalidades gobiernan visibilidad — nunca reemplazan un control de acceso real.
         </p>
       </Card>
 
+      {/* "Eliminar"/"Buscar" quitados (segunda pasada, punto 1): una
+          funcionalidad se desactiva (no se elimina) y la lista no pagina --
+          ningún rol tiene un uso real para ninguno de los dos acá. */}
       <ActionBar
         nuevo={{ onClick: abrirNuevo }}
         actualizar={{ onClick: () => cargar() }}
-        eliminar={{ onClick: () => {}, disabled: true, title: "No aplica: un flag se desactiva, no se elimina." }}
-        buscar={{ onClick: () => {}, disabled: true, title: "No aplica: la lista de flags no pagina, se ve completa." }}
         salir={{ onClick: () => setSeleccionado(null) }}
       />
 
@@ -172,12 +174,12 @@ export function SeccionFeatureFlags() {
         <DataTable
           rows={flags}
           keyField={(f) => f.id}
-          vacio="No hay feature flags creados todavía."
+          vacio="No hay funcionalidades activables creadas todavía."
           columns={[
             { header: "Nombre", render: (f) => f.nombre },
             { header: "Estado", render: (f) => <Badge texto={f.activo ? "ACTIVO" : "INACTIVO"} tono={f.activo ? "exito" : "neutral"} /> },
             { header: "Porcentaje", render: (f) => (f.porcentaje === null ? "100%" : `${f.porcentaje}%`) },
-            { header: "Roles", render: (f) => (f.roles.length > 0 ? f.roles.join(", ") : "Todos") },
+            { header: "Roles", render: (f) => (f.roles.length > 0 ? f.roles.map(nombreRol).join(", ") : "Todos") },
             {
               header: "Detalle",
               render: (f) => (
@@ -192,11 +194,11 @@ export function SeccionFeatureFlags() {
 
       {modo === "nuevo" && (
         <DetailPanel
-          titulo="Nuevo feature flag"
+          titulo="Nueva funcionalidad activable"
           modo="nuevo"
           onSalir={() => setModo("consulta")}
           onAceptar={crear}
-          aceptarLabel="Crear flag"
+          aceptarLabel="Crear funcionalidad"
           aceptarDisabled={!nombre}
           aceptarLoading={cargando}
         >
@@ -204,7 +206,16 @@ export function SeccionFeatureFlags() {
             {error && <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)" }}>{error}</p>}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "var(--space-3)" }}>
               <TextField label="Nombre" value={nombre} onChange={(e) => setNombre(e.target.value)} />
-              <TextField label="Porcentaje (vacío = 100%)" type="number" value={porcentaje} onChange={(e) => setPorcentaje(e.target.value)} />
+              <TextField
+                label="Porcentaje (vacío = 100%)"
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                bloquearNegativo
+                value={porcentaje}
+                onChange={(e) => setPorcentaje(e.target.value)}
+              />
             </div>
             <label style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
               <input type="checkbox" checked={activo} onChange={(e) => setActivo(e.target.checked)} />
@@ -221,7 +232,7 @@ export function SeccionFeatureFlags() {
       )}
 
       {seleccionado && modo === "edicion" && (
-        <DetailPanel titulo={`Flag — ${seleccionado.nombre}`} modo={modo} onSalir={() => setSeleccionado(null)} onAceptar={guardar} aceptarLabel="Guardar cambios" aceptarLoading={cargando}>
+        <DetailPanel titulo={`Funcionalidad — ${seleccionado.nombre}`} modo={modo} onSalir={() => setSeleccionado(null)} onAceptar={guardar} aceptarLabel="Guardar cambios" aceptarLoading={cargando}>
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
             {error && <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)" }}>{error}</p>}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "var(--space-3)" }}>
@@ -233,7 +244,16 @@ export function SeccionFeatureFlags() {
               <input type="checkbox" checked={activoEdit} onChange={(e) => setActivoEdit(e.target.checked)} />
               Activo
             </label>
-            <TextField label="Porcentaje (vacío = 100%)" type="number" value={porcentajeEdit} onChange={(e) => setPorcentajeEdit(e.target.value)} />
+            <TextField
+              label="Porcentaje (vacío = 100%)"
+              type="number"
+              min={0}
+              max={100}
+              step={1}
+              bloquearNegativo
+              value={porcentajeEdit}
+              onChange={(e) => setPorcentajeEdit(e.target.value)}
+            />
             <div>
               <p style={{ fontSize: "var(--font-size-sm)", color: "var(--color-text-muted)", marginBottom: "var(--space-2)" }}>
                 Roles habilitados (vacío = todos los roles)

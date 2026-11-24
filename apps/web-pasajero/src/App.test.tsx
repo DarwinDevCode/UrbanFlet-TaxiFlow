@@ -12,7 +12,7 @@
 // navigator.geolocation (mockeado), que es lo que habilita el botón
 // "Solicitar taxi" independientemente del mapa.
 import { AuthProvider } from "@urbanflet/shared-ui";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -124,6 +124,13 @@ function mockFetch(handlers: Ruta[]) {
     if (method === "GET" && path.startsWith("/notificaciones/mias")) {
       return responder(200, { items: [], total: 0, no_leidas: 0 });
     }
+    // Ronda de foto de perfil: AuthProvider lee /perfil una vez al iniciar
+    // sesión para poblar el avatar del header -- fetch de fondo en cada
+    // test, sin relación con el foco de la mayoría de ellos. Coincidencia
+    // EXACTA (no startsWith) para no tragarse /perfil/sesiones.
+    if (method === "GET" && path === "/perfil") {
+      return responder(200, { foto_url: null });
+    }
     // Direcciones favoritas (Sección 1.1) -- se cargan apenas VistaViaje
     // monta sin viaje activo, sin relación con el foco de la mayoría de
     // los tests existentes.
@@ -232,11 +239,16 @@ describe("web-pasajero — solicitar viaje (CU-O04/CU-O05)", () => {
 });
 
 describe("web-pasajero — cancelar solicitud (CU-O04 A4)", () => {
-  it("cancela el viaje SOLICITADO y vuelve a la pantalla de pedir un taxi", async () => {
+  it("cancela el viaje SOLICITADO con motivo obligatorio y vuelve a la pantalla de pedir un taxi", async () => {
     mockGeolocationExitoso();
     const viajeActivo = crearViaje({ estado: "SOLICITADO" });
-    mockFetch([
+    const { llamadas } = mockFetch([
       { method: "GET", path: "/viajes/activo", body: viajeActivo },
+      {
+        method: "GET",
+        path: "/catalogos/motivos",
+        body: [{ id: "m1", nombre: "Cambié de planes" }, { id: "m2", nombre: "Demora en el conductor" }],
+      },
       { method: "POST", path: "/viajes/activo/cancelar", body: null },
     ]);
     const user = userEvent.setup();
@@ -246,7 +258,16 @@ describe("web-pasajero — cancelar solicitud (CU-O04 A4)", () => {
     const botonCancelar = await screen.findByRole("button", { name: "Cancelar solicitud" });
     await user.click(botonCancelar);
 
+    const select = await screen.findByLabelText("Motivo de la cancelación");
+    await user.selectOptions(select, "Cambié de planes");
+
+    const botonConfirmar = screen.getByRole("button", { name: "Confirmar cancelación" });
+    expect(botonConfirmar).toBeEnabled();
+    await user.click(botonConfirmar);
+
     expect(await screen.findByRole("button", { name: "Solicitar taxi" })).toBeInTheDocument();
+    const cancelacion = llamadas.find((c) => c.path === "/viajes/activo/cancelar");
+    expect(cancelacion?.body).toEqual({ motivo: "Cambié de planes" });
   });
 });
 
@@ -339,6 +360,11 @@ describe("web-pasajero — Mi perfil (Sección 1.3 de ux_complementaria.md)", ()
     };
     const { llamadas } = mockFetch([
       { method: "GET", path: "/viajes/activo", body: null },
+      // 2 handlers para el mismo GET /perfil: uno lo consume el fetch
+      // proactivo de AuthProvider al iniciar sesión (ronda de foto de
+      // perfil, puebla el avatar del header), el otro lo consume
+      // PerfilPropio al montar su propia tarjeta.
+      { method: "GET", path: "/perfil", body: perfil },
       { method: "GET", path: "/perfil", body: perfil },
       { method: "GET", path: "/perfil/sesiones", body: [] },
       { method: "PATCH", path: "/perfil", body: { ...perfil, nombre: "Pasajera Actualizada" } },
@@ -346,6 +372,10 @@ describe("web-pasajero — Mi perfil (Sección 1.3 de ux_complementaria.md)", ()
     const user = userEvent.setup();
 
     renderApp();
+    // Fase 3 del Sistema Riel: la zona personal ya no está en una barra
+    // lateral siempre visible -- vive detrás de la parada "Cuenta" del
+    // riel inferior. Un toque más, que es el recorrido real en el portal.
+    await user.click(await screen.findByRole("button", { name: "Cuenta" }));
     await user.click(await screen.findByRole("button", { name: "Mi perfil" }));
 
     await user.click(await screen.findByRole("button", { name: "Editar" }));
@@ -382,6 +412,10 @@ describe("web-pasajero — Ajustes (Sección 1.4 de ux_complementaria.md)", () =
     const user = userEvent.setup();
 
     renderApp();
+    // Fase 3 del Sistema Riel: la zona personal ya no está en una barra
+    // lateral siempre visible -- vive detrás de la parada "Cuenta" del
+    // riel inferior. Un toque más, que es el recorrido real en el portal.
+    await user.click(await screen.findByRole("button", { name: "Cuenta" }));
     await user.click(await screen.findByRole("button", { name: "Ajustes" }));
 
     const selectTema = await screen.findByLabelText("Tema");
@@ -413,9 +447,14 @@ describe("web-pasajero — campana de notificaciones (Sección 4.2 de ux_complem
     const user = userEvent.setup();
 
     renderApp();
-    expect(await screen.findByText("1")).toBeInTheDocument();
+    // Ronda del Centro de notificaciones: el contador ahora aparece EN DOS
+    // lugares a la vez (campana + entrada "Notificaciones" del sidebar, ver
+    // AuthProvider.noLeidas) -- se acota la búsqueda al botón de la campana
+    // para no ambigüar con el badge del sidebar, que también dice "1".
+    const campana = await screen.findByRole("button", { name: "Bandeja de notificaciones" });
+    expect(await within(campana).findByText("1")).toBeInTheDocument();
 
-    await user.click(await screen.findByRole("button", { name: "Bandeja de notificaciones" }));
+    await user.click(campana);
     expect(await screen.findByText("Se asignó un conductor a tu viaje")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Marcar leída" }));

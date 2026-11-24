@@ -89,7 +89,7 @@ export function SeccionVersionSistema() {
       <Card>
         <h3 style={{ marginTop: 0, fontSize: "var(--font-size-md)" }}>Registrar un despliegue</h3>
         <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
-          Registro manual — este proyecto no tiene un pipeline de CI/CD que lo llene automáticamente. Se agrega a
+          Registro manual — este proyecto no tiene un proceso de CI/CD que lo llene automáticamente. Se agrega a
           mano al cerrar una sesión de desarrollo que cambió la versión de un componente.
         </p>
         {ok && <p style={{ color: "var(--color-success)", fontSize: "var(--font-size-sm)" }}>{ok}</p>}

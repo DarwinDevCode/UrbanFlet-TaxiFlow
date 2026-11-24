@@ -1,0 +1,122 @@
+/* EL REGISTRO — reemplaza a la tabla genérica (Fase 1 del Sistema Riel).
+
+   La tabla anterior era la que produce cualquier librería: cabecera en
+   versalitas con letter-spacing y una línea bajo cada fila, todo del mismo
+   peso. El registro cambia tres cosas, todas al servicio de la lectura:
+
+   1. La cabecera se apoya en una línea de 2px (el mismo grosor que la barra
+      superior de un plano), y las filas se separan con línea de 1px suave:
+      la jerarquía se ve sin necesidad de fondo alterno ni de negritas.
+   2. La primera columna es el identificador de la fila y va en peso 600 --
+      es lo que se busca al escanear, y en un registro siempre se escanea
+      por la izquierda.
+   3. Las cifras van con `tabular-nums` y alineadas a la derecha cuando la
+      columna las declara, para que las unidades caigan en la misma
+      vertical y se puedan comparar de un vistazo. */
+
+.uf-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.uf-table thead th {
+  text-align: left;
+  padding: 0 var(--space-3) var(--space-2) 0;
+  border-bottom: 2px solid var(--color-border);
+  font-size: var(--rotulo-size);
+  font-weight: 700;
+  letter-spacing: var(--rotulo-tracking);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.uf-table tbody td {
+  padding: var(--table-cell-padding-y, var(--space-3)) var(--table-cell-padding-x, var(--space-3))
+    var(--table-cell-padding-y, var(--space-3)) 0;
+  border-bottom: 1px solid var(--color-border-soft);
+  vertical-align: middle;
+  font-size: var(--font-size-md);
+}
+
+/* El identificador de la fila: lo que se busca al escanear. */
+.uf-table tbody td:first-child {
+  font-weight: 600;
+}
+
+.uf-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Fila con hover sutil -- necesita :hover real, no se puede expresar como
+   estilo inline en React. */
+.uf-table tbody tr:hover {
+  background: var(--color-row-hover);
+}
+
+/* Grupo C de la ronda de correcciones UX/UI.
+
+   El ancho que le sobra a una tabla NO se decide por el tamaño de la pantalla
+   sino por el de su contenedor: la bitácora del panel de Auditoría vive en la
+   columna angosta del patrón F y medía 1240px dentro de un contenedor de
+   559px en un viewport de 1280px -- una media query de viewport no habría
+   visto ese caso. Por eso el contenedor de scroll se declara `container` y
+   las reglas de abajo son `@container`, no `@media`. */
+.uf-table-scroll {
+  container-type: inline-size;
+  container-name: uf-table;
+}
+
+/* Techo de ancho por celda. Sin esto, el layout automático de <table> estira
+   una columna hasta el largo de su celda más larga (un UUID de actor, varios
+   roles concatenados). El valor completo no se pierde: la celda truncada abre
+   una previsualización (ver DataTable.tsx). Se puede ajustar por pantalla
+   sobreescribiendo --table-cell-max-width, igual que --table-cell-padding-*. */
+.uf-table .uf-cell-truncable {
+  max-width: var(--table-cell-max-width, 260px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uf-cell-preview {
+  position: fixed;
+  z-index: var(--z-dropdown);
+  max-width: min(420px, calc(100vw - 2 * var(--space-4)));
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  font-size: var(--font-size-sm);
+  overflow-wrap: break-word;
+  pointer-events: none;
+}
+
+/* Contenedor mediano (columna de dashboard, tablet): se retira la columna de
+   menor prioridad y se aprieta el techo por celda. */
+@container uf-table (max-width: 900px) {
+  .uf-table [data-prioridad="baja"] {
+    display: none;
+  }
+
+  .uf-table .uf-cell-truncable {
+    max-width: var(--table-cell-max-width-medio, 180px);
+  }
+}
+
+/* Contenedor angosto (teléfono, tablet en vertical, o una columna lateral de
+   dashboard): quedan solo las columnas de prioridad alta. El umbral es 700px
+   y no 640px porque el caso real medido -- la bitácora en tablet 768, donde
+   el patrón F ya colapsó a una columna -- deja un contenedor de 667px que
+   todavía necesita soltar una columna más para entrar sin scroll. */
+@container uf-table (max-width: 700px) {
+  .uf-table [data-prioridad="media"] {
+    display: none;
+  }
+
+  .uf-table .uf-cell-truncable {
+    max-width: var(--table-cell-max-width-angosto, 120px);
+  }
+}

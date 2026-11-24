@@ -1,0 +1,38 @@
+/* Trazo del recorrido real en el mapa del historial. Va por CSS y no por
+   `pathOptions={{ color }}` porque el color sale de un token del sistema de
+   diseño (`--color-accent-deep`, distinto en tema claro y oscuro) y una
+   custom property no se resuelve dentro de un ATRIBUTO de presentación SVG
+   -- sí dentro de una propiedad CSS, que es lo que `className` habilita. */
+.uf-traza-viaje {
+  stroke: var(--color-accent-deep);
+}
+
+/* Ruta CALCULADA (no una traza real) -- ver `estimarRuta` en
+   `MapaRutaViaje.tsx`. Deliberadamente distinta de `.uf-traza-viaje` en 2
+   señales a la vez (tono desaturado + punteado vía `dashArray` en el propio
+   `<Polyline>`), para que nunca se confunda con el recorrido real: un color
+   parecido con solo el punteado, o viceversa, seguiría siendo ambiguo a
+   simple vista. */
+.uf-ruta-calculada {
+  stroke: var(--color-text-muted);
+}
+
+/* Marcadores de origen/destino: mismas formas que la franja de ruta
+   "signature" del panel de solicitud de web-pasajero (círculo hueco =
+   recogida, círculo sólido = destino), reusadas literalmente sobre el mapa
+   en vez del pin genérico de Leaflet. El halo blanco las mantiene legibles
+   sobre cualquier tile de OSM. */
+.uf-marcador-ruta {
+  border-radius: 50%;
+  box-sizing: border-box;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9), 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.uf-marcador-ruta--origen {
+  border: 3px solid var(--color-accent-deep);
+  background: var(--color-surface);
+}
+
+.uf-marcador-ruta--destino {
+  background: var(--color-text);
+}

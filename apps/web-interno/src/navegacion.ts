@@ -24,6 +24,18 @@ import { createContext, useContext } from "react";
  * "secciones con id" es exclusivo de esta app (las PWAs de pasajero/conductor
  * no tienen sidebar ni secciones), así que subirlo al paquete compartido lo
  * acoplaría a un concepto que solo un consumidor entiende.
+ *
+ * Nota histórica: este contexto tuvo brevemente un `filtro` opcional en
+ * `ir()` (más `filtroPendiente`/`consumirFiltroInicial`/`useFiltroInicial`)
+ * para un piloto de drill-down por NAVEGACIÓN (KPI → cambia de sección con un
+ * filtro ya aplicado). Ese piloto se descartó a favor de un modal en la
+ * misma pantalla (`KpiDetalleModal`, ver `PanelCapacidades.tsx`/
+ * `PanelDespacho.tsx`/`PanelRendimientoConductores.tsx`) — con eso, el
+ * filtro de `ir()` quedó sin ningún consumidor real y se retiró para no
+ * dejar 2 mecanismos de drill-down conviviendo. Si un caso futuro necesita
+ * de verdad cambiar de sección CON un filtro pre-aplicado, reintroducirlo es
+ * sencillo (ver el historial de este archivo), pero no antes de que exista
+ * un consumidor real otra vez.
  */
 export interface NavegacionSecciones {
   ir: (id: string) => void;

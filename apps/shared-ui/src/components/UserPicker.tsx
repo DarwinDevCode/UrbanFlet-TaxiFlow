@@ -61,8 +61,14 @@ export function UserPicker({ label, seleccionados, onChange }: UserPickerProps) 
     setError(null);
     setBuscando(true);
     try {
+      // `estado=ACTIVO` (PROPUESTA_CRUD_Y_BAJA_LOGICA.md, Fase C item 5):
+      // una cuenta suspendida o dada de baja no debe poder elegirse como
+      // destinataria de un proceso nuevo -- no recibiría la notificación
+      // (no puede iniciar sesión) y quedaría como un destinatario fantasma.
+      // El filtro ya existía en el backend (`listar_usuarios`), solo no se
+      // estaba usando desde acá.
       const resp = await apiFetch<{ items: UsuarioResumen[]; total: number }>(
-        `/usuarios?texto=${encodeURIComponent(valor)}&limit=20`,
+        `/usuarios?texto=${encodeURIComponent(valor)}&estado=ACTIVO&limit=20`,
       );
       setResultados(resp.items);
     } catch {

@@ -1,17 +1,25 @@
 import {
   AjustesPropios,
   ApiError,
-  AppShell,
+  Avatar,
   Badge,
+  BuscadorLugar,
   Button,
+  CalleShell,
   Card,
   CentroAyuda,
   DataTable,
+  DesgloseTarifa,
   DetailField,
   DetailPanel,
-  logoUrbanFleetFull,
+  LandingPage,
+  LoginLogo,
+  MapaRutaViaje,
+  MapOverlayCard,
   NotificacionesBell,
+  PasswordField,
   PerfilPropio,
+  SeccionNotificaciones,
   Select,
   TextArea,
   TextField,
@@ -19,6 +27,7 @@ import {
   getApiBaseUrl,
   tokenStorage,
   useAuth,
+  type DesgloseTarifaValores,
   type PreguntaFrecuente,
 } from "@urbanflet/shared-ui";
 import { useEffect, useState, type CSSProperties } from "react";
@@ -30,14 +39,15 @@ const VERSION_CONSENTIMIENTO = "v1-2026-07";
 const TELEFONO_VALIDO = /^\+\d{7,15}$/;
 const EMAIL_VALIDO = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function LoginCard() {
+function LoginCard({ modoInicial = "login" }: { modoInicial?: "login" | "registro" }) {
   const { registrar, login } = useAuth();
-  const [modo, setModo] = useState<"login" | "registro">("login");
+  const [modo, setModo] = useState<"login" | "registro">(modoInicial);
   const [tipoIdentificador, setTipoIdentificador] = useState<"telefono" | "email">("telefono");
   const [nombre, setNombre] = useState("");
   const [identificadorLogin, setIdentificadorLogin] = useState("");
   const [identificadorRegistro, setIdentificadorRegistro] = useState("");
   const [password, setPassword] = useState("");
+  const [passwordConfirmar, setPasswordConfirmar] = useState("");
   const [aceptaConsentimiento, setAceptaConsentimiento] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
@@ -83,7 +93,15 @@ function LoginCard() {
 
   return (
     <Card>
-      <h1 style={{ fontSize: "var(--font-size-lg)", margin: 0, marginBottom: "var(--space-4)" }}>
+      <h1
+        style={{
+          fontFamily: "var(--font-display)",
+          fontWeight: 700,
+          fontSize: "var(--font-size-xl)",
+          margin: 0,
+          marginBottom: "var(--space-4)",
+        }}
+      >
         {modo === "login" ? "Ingresa a tu cuenta" : "Crea tu cuenta"}
       </h1>
 
@@ -94,9 +112,8 @@ function LoginCard() {
             value={identificadorLogin}
             onChange={(e) => setIdentificadorLogin(e.target.value)}
           />
-          <TextField
+          <PasswordField
             label="Contraseña"
-            type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
@@ -165,11 +182,16 @@ function LoginCard() {
             </span>
           )}
 
-          <TextField
+          <PasswordField
             label="Contraseña (mínimo 8 caracteres)"
-            type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+          />
+          <PasswordField
+            label="Confirmar contraseña"
+            value={passwordConfirmar}
+            onChange={(e) => setPasswordConfirmar(e.target.value)}
+            confirmarContra={password}
           />
 
           <label
@@ -187,7 +209,11 @@ function LoginCard() {
             onClick={crearCuenta}
             loading={cargando}
             disabled={
-              !nombre || !identificadorRegistroValido || password.length < 8 || !aceptaConsentimiento
+              !nombre ||
+              !identificadorRegistroValido ||
+              password.length < 8 ||
+              password !== passwordConfirmar ||
+              !aceptaConsentimiento
             }
           >
             Crear cuenta
@@ -240,8 +266,12 @@ interface Viaje {
   destino_direccion: string | null;
   tarifa_estimada: number | null;
   tarifa_final: number | null;
+  desglose_tarifa: DesgloseTarifaValores | null;
+  km_recorridos: number | null;
+  min_espera: number | null;
   conductor_nombre: string | null;
   conductor_calificacion: number | null;
+  conductor_foto_url: string | null;
   vehiculo_placa: string | null;
   vehiculo_marca: string | null;
   vehiculo_color: string | null;
@@ -314,34 +344,52 @@ interface TarifaVigente {
   carrera_minima: number;
 }
 
-// Panel flotante que se superpone al mapa (nunca lo reemplaza) — usado tanto
-// para "¿A dónde vamos?" como para el estado del viaje activo. Se ancla
-// abajo del mapa para no tapar los controles propios de Leaflet (zoom
-// arriba-izquierda, "ir a mi ubicación" arriba-derecha).
-// Compacto a propósito: el mapa es el elemento principal de la pantalla, el
-// panel es un overlay que se le agrega encima, no una segunda pantalla que
-// lo tapa. Ancho acotado (no left+right = todo el ancho).
-// Rediseño (ronda de correcciones tras UX complementaria): el mapa ahora
-// llena todo el alto disponible de la pantalla (ver `llenarAltura` en
-// RideMap) en vez de un recuadro fijo de 480px, así que el panel ya no
-// necesita el tope duro de 260px que antes forzaba scroll interno con
-// contenido normal (detalle del conductor, compartir, cancelar) — el tope
-// ahora es relativo al alto real del mapa, con margen arriba/abajo para no
-// tapar los controles de Leaflet.
-const overlayPanelStyle: CSSProperties = {
-  position: "absolute",
-  left: "var(--space-3)",
-  bottom: "var(--space-3)",
-  width: "min(340px, calc(100% - 2 * var(--space-3)))",
-  maxHeight: "calc(100% - 2 * var(--space-3))",
-  overflowY: "auto",
-  zIndex: 500,
+// Marcadores de la franja de ruta -- elemento "signature" del rediseño visual
+// (PLAN_REDISENO_VISUAL.md §4): origen = punto hueco, destino = punto sólido,
+// línea punteada entre ambos. Extraídos a constantes porque el motivo se usa
+// en DOS presentaciones del mismo panel: vertical (estado expandido, anclando
+// los 2 TextField) y horizontal (estado colapsado, resumen de una línea). Es
+// el mismo lenguaje visual en ambas, no una reconstrucción aparte.
+const puntoOrigenStyle: CSSProperties = {
+  width: 12,
+  height: 12,
+  borderRadius: "50%",
+  border: "2px solid var(--color-accent-deep)",
   background: "var(--color-surface)",
-  border: "1px solid var(--color-border)",
-  borderRadius: "var(--radius-md)",
-  boxShadow: "0 4px 16px rgba(0, 0, 0, 0.28)",
-  padding: "var(--space-3)",
+  flexShrink: 0,
 };
+const puntoDestinoStyle: CSSProperties = {
+  width: 10,
+  height: 10,
+  borderRadius: "50%",
+  background: "var(--color-text)",
+  flexShrink: 0,
+};
+
+/** Resumen de una línea del par origen→destino, con la misma franja de ruta
+ * punteada del panel expandido pero en horizontal. Es lo que queda visible
+ * cuando el pasajero minimiza la tarjeta para ver el mapa completo. */
+function ResumenRuta({ origen, destino }: { origen: string; destino: string }) {
+  const textoStyle: CSSProperties = {
+    fontSize: "var(--font-size-sm)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    minWidth: 0,
+  };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "var(--space-1)", minWidth: 0 }}>
+      <span aria-hidden="true" style={puntoOrigenStyle} />
+      <span style={{ ...textoStyle, flex: "1 1 0" }}>{origen}</span>
+      <span
+        aria-hidden="true"
+        style={{ flexShrink: 0, width: 18, borderTop: "2px dashed var(--color-accent-deep)" }}
+      />
+      <span style={{ ...textoStyle, flex: "1 1 0", fontWeight: 600 }}>{destino}</span>
+      <span aria-hidden="true" style={puntoDestinoStyle} />
+    </div>
+  );
+}
 
 interface PanelSolicitarProps {
   origenLat: number | null;
@@ -354,6 +402,10 @@ interface PanelSolicitarProps {
   destinoLat: number | null;
   destinoDireccion: string;
   setDestinoDireccion: (v: string) => void;
+  // Segunda pasada de ajustes de usabilidad: buscar un lugar por nombre fija
+  // el destino igual que un toque en el mapa o en una favorita (mismo efecto
+  // final, otra forma de llegar a él).
+  onBuscarDestino: (lugar: { lat: number; lon: number; direccion: string }) => void;
   geocodificando: boolean;
   estimacion: { distanciaKm: number; duracionMin: number } | null;
   tarifaEstimadaCliente: number | null;
@@ -391,6 +443,7 @@ function PanelSolicitar({
   destinoLat,
   destinoDireccion,
   setDestinoDireccion,
+  onBuscarDestino,
   geocodificando,
   estimacion,
   tarifaEstimadaCliente,
@@ -411,7 +464,16 @@ function PanelSolicitar({
   const [etiquetaNueva, setEtiquetaNueva] = useState<DireccionFavorita["etiqueta"]>("Otro");
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-      <h1 style={{ fontSize: "var(--font-size-lg)", margin: 0 }}>¿A dónde vamos?</h1>
+      <h1
+        style={{
+          fontFamily: "var(--font-display)",
+          fontWeight: 700,
+          fontSize: "var(--font-size-xl)",
+          margin: 0,
+        }}
+      >
+        ¿A dónde vamos?
+      </h1>
       {origenLat !== null && origenLon !== null ? (
         <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)", margin: 0 }}>
           Origen: {origenLat.toFixed(5)}, {origenLon.toFixed(5)} — toca el mapa para elegir tu destino.
@@ -428,45 +490,83 @@ function PanelSolicitar({
           Reintentar ubicación
         </Button>
       )}
-      <TextField
-        label="Referencia de origen (opcional)"
-        value={origenDireccion}
-        onChange={(e) => setOrigenDireccion(e.target.value)}
-      />
-      {favoritas.length > 0 && (
-        <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
-          {favoritas.map((fav) => (
-            <button
-              key={fav.id}
-              type="button"
-              onClick={() => onSeleccionarFavorita(fav)}
-              title={fav.direccion}
-              style={{
-                border: "1px solid var(--color-border)",
-                background: "var(--color-surface)",
-                color: "var(--color-text)",
-                borderRadius: "999px",
-                padding: "4px 12px",
-                fontSize: "var(--font-size-sm)",
-                cursor: "pointer",
-              }}
-            >
-              {fav.etiqueta}
-            </button>
-          ))}
-        </div>
-      )}
-      <TextField
-        label="Destino"
-        value={geocodificando ? "Buscando dirección…" : destinoDireccion}
-        onChange={(e) => setDestinoDireccion(e.target.value)}
-        placeholder={destinoLat === null ? "Toca el mapa para elegir un destino" : undefined}
-      />
+      {/* Franja de ruta -- elemento "signature" del rediseño visual (ver
+          PLAN_REDISENO_VISUAL.md §4): conecta visualmente origen/destino,
+          mismo lenguaje que cualquier app de transporte ya usa (origen =
+          punto hueco, destino = punto sólido, línea punteada entre ambos).
+          Puramente decorativo (aria-hidden) -- no agrega campos ni pasos,
+          los 2 TextField y el bloque de favoritas son EXACTAMENTE los
+          mismos de antes, solo envueltos para anclar los marcadores. */}
+      <div style={{ position: "relative", display: "flex", flexDirection: "column", gap: "var(--space-2)", paddingLeft: 22 }}>
+        <span
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            left: 5,
+            top: 41,
+            bottom: 19,
+            width: 0,
+            borderLeft: "2px dashed var(--color-accent-deep)",
+          }}
+        />
+        <span aria-hidden="true" style={{ ...puntoOrigenStyle, position: "absolute", left: 0, top: 35 }} />
+        <span aria-hidden="true" style={{ ...puntoDestinoStyle, position: "absolute", left: 1, bottom: 13 }} />
+        <TextField
+          label="Referencia de origen (opcional)"
+          value={origenDireccion}
+          onChange={(e) => setOrigenDireccion(e.target.value)}
+        />
+        {favoritas.length > 0 && (
+          <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
+            {favoritas.map((fav) => (
+              <button
+                key={fav.id}
+                type="button"
+                onClick={() => onSeleccionarFavorita(fav)}
+                title={fav.direccion}
+                style={{
+                  border: "1px solid var(--color-border)",
+                  background: "var(--color-surface)",
+                  color: "var(--color-text)",
+                  borderRadius: "999px",
+                  padding: "4px 12px",
+                  fontSize: "var(--font-size-sm)",
+                  cursor: "pointer",
+                }}
+              >
+                {fav.etiqueta}
+              </button>
+            ))}
+          </div>
+        )}
+        {/* Punto 1 de la segunda ronda de ajustes de usabilidad: buscador
+            real de destino (antes este campo era texto libre sin efecto —
+            solo un toque en el mapa fijaba coordenadas). Escribir un lugar y
+            buscarlo hace exactamente lo mismo que tocar el mapa: fija
+            destinoLat/destinoLon, ver `seleccionarLugarBuscado` más abajo. */}
+        <BuscadorLugar
+          label="Destino"
+          value={geocodificando ? "Buscando dirección…" : destinoDireccion}
+          onChangeTexto={setDestinoDireccion}
+          onSeleccionar={onBuscarDestino}
+          disabled={geocodificando}
+          placeholder={destinoLat === null ? "Escribe un lugar y búscalo, o toca el mapa" : undefined}
+        />
+      </div>
       {destinoLat !== null && !geocodificando && (
         <div>
           {!mostrandoGuardar ? (
             <Button variant="secondary" onClick={() => setMostrandoGuardar(true)}>
-              ☆ Guardar como favorita
+              {/* v2: ícono real en vez del emoji "☆". */}
+              <span style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-1)" }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path
+                    d="M12 2.5l2.9 6.6 7.1.7-5.4 4.8 1.6 7-6.2-3.8-6.2 3.8 1.6-7-5.4-4.8 7.1-.7z"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+                Guardar como favorita
+              </span>
             </Button>
           ) : (
             <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "flex-end", flexWrap: "wrap" }}>
@@ -572,23 +672,38 @@ function PanelSolicitar({
 // motivo: con más razón es cancelable antes de disparar el despacho.
 const ESTADOS_CANCELABLES_PASAJERO: EstadoViaje[] = ["PROGRAMADO", "SOLICITADO", "OFERTADO"];
 
+// Revisión general de "Otro" (auditoría posterior a la Ronda 2 de flujo de
+// fallas): mismo sentinel/patrón ya usado por el selector de taller en
+// web-interno (Mantenimiento.tsx::TALLER_OTRO).
+const MOTIVO_OTRO = "__otro__";
+
 // Contenido del panel del viaje activo — igual que PanelSolicitar, flota
-// sobre el mapa persistente en vez de reemplazarlo. Además de lo que ya
-// mostraba ViajeActivoCard, agrega el contador de tiempo buscando conductor
-// (CU-O05) y un "Ver detalle" plegable para los datos del conductor asignado.
+// sobre el mapa persistente en vez de reemplazarlo. El estado del viaje y el
+// contador de tiempo buscando conductor (CU-O05) los muestra la franja de
+// resumen de la tarjeta (MapOverlayCard), visible también con la tarjeta
+// minimizada; acá queda el detalle: direcciones, datos del conductor
+// asignado, compartir y cancelar.
 function PanelViajeActivo({
   viaje,
   onCancelado,
-  elapsedSeconds,
   onReintentar,
 }: {
   viaje: Viaje;
   onCancelado: () => void;
-  elapsedSeconds: number;
   onReintentar: () => void;
 }) {
   const [cancelando, setCancelando] = useState(false);
   const [errorCancelar, setErrorCancelar] = useState<string | null>(null);
+  // Catálogos Ronda 1 (Ola 1.4): antes `viajes/service.py` hardcodeaba
+  // "Cancelado por el pasajero" server-side -- a diferencia del conductor
+  // (Ola 1.3), acá el backend sí necesitó cambio (schemas.py +
+  // service.py::cancelar_viaje_pasajero ahora reciben `motivo`).
+  const [mostrarCancelacion, setMostrarCancelacion] = useState(false);
+  const [motivosCancelacion, setMotivosCancelacion] = useState<{ id: string; nombre: string }[]>([]);
+  const [motivoSeleccionado, setMotivoSeleccionado] = useState("");
+  const [motivoLibre, setMotivoLibre] = useState("");
+  const motivoFinal = motivoSeleccionado === MOTIVO_OTRO ? motivoLibre.trim() : motivoSeleccionado;
+  const [cargandoMotivos, setCargandoMotivos] = useState(false);
   const [detalleAbierto, setDetalleAbierto] = useState(false);
   const [reintentando, setReintentando] = useState(false);
   const [errorReintentar, setErrorReintentar] = useState<string | null>(null);
@@ -634,18 +749,27 @@ function PanelViajeActivo({
     }
   };
 
-  const texto =
-    viaje.estado === "EN_CAMINO" && viaje.ts_llegada_origen
-      ? "El conductor te está esperando"
-      : ESTADO_TEXTO[viaje.estado];
-
-  const buscandoConductor = ESTADOS_BUSCANDO_CONDUCTOR.includes(viaje.estado);
+  const abrirCancelacion = async () => {
+    setErrorCancelar(null);
+    setMostrarCancelacion(true);
+    if (motivosCancelacion.length > 0) return;
+    setCargandoMotivos(true);
+    try {
+      const datos = await apiFetch<{ id: string; nombre: string }[]>("/catalogos/motivos?categoria=cancelacion");
+      setMotivosCancelacion(datos);
+    } catch (e) {
+      setErrorCancelar(e instanceof ApiError ? e.message : "No se pudieron cargar los motivos");
+    } finally {
+      setCargandoMotivos(false);
+    }
+  };
 
   const cancelar = async () => {
+    if (!motivoFinal) return;
     setErrorCancelar(null);
     setCancelando(true);
     try {
-      await apiFetch("/viajes/activo/cancelar", { method: "POST" });
+      await apiFetch("/viajes/activo/cancelar", { method: "POST", body: { motivo: motivoFinal } });
       onCancelado();
     } catch (e) {
       // Caso borde explícito (CU-O04 A4): el conductor se asignó justo
@@ -659,17 +783,21 @@ function PanelViajeActivo({
 
   return (
     <div>
-      <h1 style={{ fontSize: "var(--font-size-lg)", margin: 0, marginBottom: "var(--space-2)" }}>Tu viaje</h1>
-      <div style={{ marginBottom: "var(--space-2)", display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-        <Badge texto={texto} tono={ESTADO_TONO[viaje.estado]} />
-        {/* CU-O05: indicador de tiempo transcurrido buscando conductor,
-            sobre el propio mapa — no una pantalla aparte. */}
-        {buscandoConductor && (
-          <span style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
-            {elapsedSeconds}s buscando…
-          </span>
-        )}
-      </div>
+      <h1
+        style={{
+          fontFamily: "var(--font-display)",
+          fontWeight: 700,
+          fontSize: "var(--font-size-xl)",
+          margin: 0,
+          marginBottom: "var(--space-2)",
+        }}
+      >
+        Tu viaje
+      </h1>
+      {/* El estado del viaje (badge) y el contador de CU-O05 viven ahora en
+          la franja de resumen de la tarjeta flotante (MapOverlayCard), que se
+          ve tanto expandida como minimizada -- repetirlos acá mostraba el
+          mismo dato dos veces con la tarjeta abierta. */}
       {/* Sección 1.5 de ux_complementaria.md: mientras PROGRAMADO, la hora
           pedida es el dato más relevante del panel -- el auto-despacho
           todavía no arrancó. */}
@@ -683,7 +811,17 @@ function PanelViajeActivo({
         <p style={{ color: "var(--color-text-muted)", margin: "var(--space-1) 0" }}>Destino: {viaje.destino_direccion}</p>
       )}
       {viaje.estado === "FINALIZADO" && viaje.tarifa_final !== null ? (
-        <p style={{ margin: "var(--space-1) 0" }}>Tarifa final: ${viaje.tarifa_final.toFixed(2)}</p>
+        <>
+          <p style={{ margin: "var(--space-1) 0" }}>Tarifa final: ${viaje.tarifa_final.toFixed(2)}</p>
+          {viaje.desglose_tarifa && (
+            <DesgloseTarifa
+              desglose={viaje.desglose_tarifa}
+              tarifaFinal={viaje.tarifa_final}
+              kmRecorridos={viaje.km_recorridos}
+              minEspera={viaje.min_espera}
+            />
+          )}
+        </>
       ) : (
         viaje.tarifa_estimada !== null && (
           <p style={{ margin: "var(--space-1) 0" }}>Tarifa estimada: ${viaje.tarifa_estimada.toFixed(2)}</p>
@@ -698,16 +836,35 @@ function PanelViajeActivo({
               background: "none",
               border: "none",
               padding: 0,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "var(--space-1)",
               color: "var(--color-accent)",
               cursor: "pointer",
               fontSize: "var(--font-size-sm)",
             }}
           >
-            {detalleAbierto ? "Ocultar detalle del conductor ▲" : "Ver detalle del conductor ▼"}
+            <span>{detalleAbierto ? "Ocultar detalle del conductor" : "Ver detalle del conductor"}</span>
+            {/* v2: ícono real en vez de "▲"/"▼". */}
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              aria-hidden="true"
+              style={{ transform: detalleAbierto ? "rotate(180deg)" : "none" }}
+            >
+              <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
           </button>
           {detalleAbierto && (
             <div style={{ marginTop: "var(--space-1)" }}>
-              <p style={{ margin: 0 }}>Conductor: {viaje.conductor_nombre}</p>
+              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-1)" }}>
+                <Avatar fotoUrl={viaje.conductor_foto_url} nombre={viaje.conductor_nombre} tamano={40} />
+                <p style={{ margin: 0 }}>Conductor: {viaje.conductor_nombre}</p>
+              </div>
               {viaje.conductor_calificacion !== null && (
                 <p style={{ margin: 0 }}>Calificación: {viaje.conductor_calificacion.toFixed(1)}★</p>
               )}
@@ -748,9 +905,39 @@ function PanelViajeActivo({
           {errorCancelar && (
             <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)" }}>{errorCancelar}</p>
           )}
-          <Button variant="danger" onClick={cancelar} loading={cancelando}>
-            Cancelar solicitud
-          </Button>
+          {!mostrarCancelacion ? (
+            <Button variant="danger" onClick={abrirCancelacion}>
+              Cancelar solicitud
+            </Button>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+              <Select
+                label="Motivo de la cancelación"
+                value={motivoSeleccionado}
+                onChange={(e) => setMotivoSeleccionado(e.target.value)}
+                options={[
+                  { value: "", label: cargandoMotivos ? "Cargando…" : "Selecciona un motivo" },
+                  ...motivosCancelacion.map((m) => ({ value: m.nombre, label: m.nombre })),
+                  { value: MOTIVO_OTRO, label: "Otro (no está en la lista)…" },
+                ]}
+              />
+              {motivoSeleccionado === MOTIVO_OTRO && (
+                <TextField
+                  label="Describe el motivo"
+                  value={motivoLibre}
+                  onChange={(e) => setMotivoLibre(e.target.value)}
+                />
+              )}
+              <div style={{ display: "flex", gap: "var(--space-2)" }}>
+                <Button variant="danger" onClick={cancelar} loading={cancelando} disabled={!motivoFinal}>
+                  Confirmar cancelación
+                </Button>
+                <Button variant="secondary" onClick={() => setMostrarCancelacion(false)}>
+                  Volver
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       )}
       {/* CU-O05 A3: se agotaron todos los radios de despacho sin encontrar
@@ -809,6 +996,16 @@ function VistaViaje({ viaje, setViaje }: { viaje: Viaje | null; setViaje: (v: Vi
   // Sección 1.5 de ux_complementaria.md: "Ahora" vs. "Programar".
   const [modoSolicitud, setModoSolicitud] = useState<"ahora" | "programar">("ahora");
   const [tsProgramadoLocal, setTsProgramadoLocal] = useState("");
+  // Grupo A de la ronda de correcciones UX/UI: la tarjeta flotante se puede
+  // minimizar para despejar el mapa. Arranca expandida (es el flujo principal
+  // de la pantalla) y se re-expande sola cada vez que aparece o desaparece un
+  // viaje, para que un cambio de estado importante nunca quede escondido
+  // detrás de un plegado que el usuario hizo hace rato.
+  const [overlayColapsado, setOverlayColapsado] = useState(false);
+  const hayViaje = viaje !== null;
+  useEffect(() => {
+    setOverlayColapsado(false);
+  }, [hayViaje]);
 
   // Se reinicia a los valores por defecto cada vez que no hay un viaje en
   // curso (cubre los 4 puntos donde el viaje vuelve a null: cancelar,
@@ -839,7 +1036,7 @@ function VistaViaje({ viaje, setViaje }: { viaje: Viaje | null; setViaje: (v: Vi
   // crudo del navegador, para el caso en que el permiso se niegue.
   const solicitarUbicacion = () => {
     if (!("geolocation" in navigator)) {
-      setErrorUbicacion("Este navegador no soporta geolocalización. Ingresa tu ubicación manualmente no está disponible aún.");
+      setErrorUbicacion("Este navegador no soporta la ubicación automática. Por ahora no es posible ingresarla manualmente.");
       return;
     }
     setErrorUbicacion(null);
@@ -1024,6 +1221,17 @@ function VistaViaje({ viaje, setViaje }: { viaje: Viaje | null; setViaje: (v: Vi
     setDestinoDireccion(fav.direccion);
   };
 
+  // Punto 1 de la segunda ronda de ajustes de usabilidad: mismo efecto que
+  // `seleccionarFavorita` -- un lugar encontrado por el buscador fija el
+  // destino directo, sin geocodificación adicional (ya viene con lat/lon
+  // resueltos por `geocodificarLugar`).
+  const seleccionarLugarBuscado = (lugar: { lat: number; lon: number; direccion: string }) => {
+    if (viaje) return;
+    setDestinoLat(lugar.lat);
+    setDestinoLon(lugar.lon);
+    setDestinoDireccion(lugar.direccion);
+  };
+
   const [guardandoFavorita, setGuardandoFavorita] = useState(false);
 
   const guardarFavorita = async (etiqueta: DireccionFavorita["etiqueta"]) => {
@@ -1199,12 +1407,59 @@ function VistaViaje({ viaje, setViaje }: { viaje: Viaje | null; setViaje: (v: Vi
             {ubicando ? "Centrando el mapa en tu ubicación…" : "No se pudo centrar el mapa en tu ubicación."}
           </div>
         )}
-        <div style={overlayPanelStyle}>
+        <MapOverlayCard
+          colapsado={overlayColapsado}
+          onToggle={() => setOverlayColapsado((v) => !v)}
+          resumen={
+            viaje ? (
+              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", minWidth: 0 }}>
+                <Badge
+                  texto={
+                    viaje.estado === "EN_CAMINO" && viaje.ts_llegada_origen
+                      ? "El conductor te está esperando"
+                      : ESTADO_TEXTO[viaje.estado]
+                  }
+                  tono={ESTADO_TONO[viaje.estado]}
+                />
+                {/* CU-O05: contador de tiempo buscando conductor. Vive acá
+                    (y no en el cuerpo) para que siga a la vista con la
+                    tarjeta minimizada — es el dato que más se mira mientras
+                    se espera. */}
+                {ESTADOS_BUSCANDO_CONDUCTOR.includes(viaje.estado) ? (
+                  <span
+                    style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)", whiteSpace: "nowrap" }}
+                  >
+                    {elapsedSeconds}s buscando…
+                  </span>
+                ) : (
+                  viaje.destino_direccion && (
+                    <span
+                      style={{
+                        fontSize: "var(--font-size-sm)",
+                        color: "var(--color-text-muted)",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        minWidth: 0,
+                      }}
+                    >
+                      → {viaje.destino_direccion}
+                    </span>
+                  )
+                )}
+              </div>
+            ) : (
+              <ResumenRuta
+                origen={origenDireccion || (origenLat !== null ? "Mi ubicación" : "Sin origen")}
+                destino={geocodificando ? "Buscando dirección…" : destinoDireccion || "Elige tu destino"}
+              />
+            )
+          }
+        >
           {viaje ? (
             <PanelViajeActivo
               viaje={viaje}
               onCancelado={() => setViaje(null)}
-              elapsedSeconds={elapsedSeconds}
               onReintentar={() => reintentarBusqueda(viaje)}
             />
           ) : (
@@ -1219,6 +1474,7 @@ function VistaViaje({ viaje, setViaje }: { viaje: Viaje | null; setViaje: (v: Vi
               destinoLat={destinoLat}
               destinoDireccion={destinoDireccion}
               setDestinoDireccion={setDestinoDireccion}
+              onBuscarDestino={seleccionarLugarBuscado}
               geocodificando={geocodificando}
               estimacion={estimacion}
               tarifaEstimadaCliente={tarifaEstimadaCliente}
@@ -1236,11 +1492,21 @@ function VistaViaje({ viaje, setViaje }: { viaje: Viaje | null; setViaje: (v: Vi
               setTsProgramadoLocal={setTsProgramadoLocal}
             />
           )}
-        </div>
+          {/* Corrección de un ajuste anterior: esta tarjeta vivía FUERA de
+              MapOverlayCard, como una fila más debajo del mapa. Al compartir
+              el mismo contenedor flex (`flex:1` en el mapa) con un vecino de
+              alto variable, el mapa se achicaba para dejarle espacio y la
+              tarjeta quedaba centrada en vez de alineada con el resto del
+              overlay -- exactamente lo reportado. Ahora vive dentro del
+              mismo panel flotante que ya muestra "Tu viaje": mismo ancho,
+              mismo anclaje abajo-izquierda, y el propio scroll interno del
+              overlay (`max-height: 70vh`) absorbe el alto extra sin tocar el
+              tamaño del mapa. */}
+          {viaje && viaje.estado === "FINALIZADO" && !viaje.calificacion_pasajero_a_conductor && (
+            <CalificarConductorForm viajeId={viaje.id} onListo={() => setViaje(null)} />
+          )}
+        </MapOverlayCard>
       </div>
-      {viaje?.estado === "FINALIZADO" && !viaje.calificacion_pasajero_a_conductor && (
-        <CalificarConductorForm viajeId={viaje.id} onListo={() => setViaje(null)} />
-      )}
     </div>
   );
 }
@@ -1268,8 +1534,21 @@ function CalificarConductorForm({ viajeId, onListo }: { viajeId: string; onListo
   };
 
   return (
-    <Card>
-      <h1 style={{ fontSize: "var(--font-size-lg)", margin: 0, marginBottom: "var(--space-2)" }}>Califica al conductor</h1>
+    // Sin <Card> propio: vive dentro del cuerpo de MapOverlayCard, que ya
+    // aporta la superficie/borde/sombra -- anidar un plano adentro de la
+    // tarjeta flotante se vería como una caja dentro de otra caja.
+    <div style={{ marginTop: "var(--space-3)", paddingTop: "var(--space-3)", borderTop: "1px solid var(--color-border)" }}>
+      <h1
+        style={{
+          fontFamily: "var(--font-display)",
+          fontWeight: 700,
+          fontSize: "var(--font-size-xl)",
+          margin: 0,
+          marginBottom: "var(--space-2)",
+        }}
+      >
+        Califica al conductor
+      </h1>
       <div style={{ display: "flex", gap: "var(--space-2)", marginBottom: "var(--space-3)" }}>
         {[1, 2, 3, 4, 5].map((n) => (
           <button
@@ -1304,7 +1583,7 @@ function CalificarConductorForm({ viajeId, onListo }: { viajeId: string; onListo
           Omitir
         </Button>
       </div>
-    </Card>
+    </div>
   );
 }
 
@@ -1316,6 +1595,7 @@ interface HistorialItem {
   estado: EstadoViaje;
   tarifa_final: number | null;
   conductor_nombre: string | null;
+  conductor_foto_url: string | null;
   calificacion_pasajero_a_conductor: { puntaje: number } | null;
 }
 
@@ -1336,6 +1616,11 @@ interface ViajeDetalle {
   tarifa_estimada: number | null;
   conductor_nombre: string | null;
   conductor_calificacion: number | null;
+  conductor_foto_url: string | null;
+  // Traza GPS real del recorrido -- solo la trae el endpoint de detalle
+  // (`GET /viajes/{id}`), nunca la lista. `null` en viajes que nunca la
+  // acumularon (cancelados antes de arrancar, sembrados, etc.).
+  traza: [number, number][] | null;
 }
 
 // CU-O14 paso 2: filtrar por estado (finalizados / cancelados) — solo esos
@@ -1398,7 +1683,17 @@ function HistorialView({ onVolver }: { onVolver: () => void }) {
 
   return (
     <Card>
-      <h1 style={{ fontSize: "var(--font-size-lg)", margin: 0, marginBottom: "var(--space-4)" }}>Mis viajes</h1>
+      <h1
+        style={{
+          fontFamily: "var(--font-display)",
+          fontWeight: 700,
+          fontSize: "var(--font-size-xl)",
+          margin: 0,
+          marginBottom: "var(--space-4)",
+        }}
+      >
+        Mis viajes
+      </h1>
       <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-3)", marginBottom: "var(--space-3)" }}>
         <div style={{ minWidth: 160 }}>
           <Select
@@ -1445,7 +1740,18 @@ function HistorialView({ onVolver }: { onVolver: () => void }) {
           columns={[
             { header: "Fecha", render: (v) => new Date(v.ts_solicitud).toLocaleString() },
             { header: "Origen → Destino", render: (v) => `${v.origen_direccion} → ${v.destino_direccion ?? "—"}` },
-            { header: "Conductor", render: (v) => v.conductor_nombre ?? "—" },
+            {
+              header: "Conductor",
+              render: (v) =>
+                v.conductor_nombre ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                    <Avatar fotoUrl={v.conductor_foto_url} nombre={v.conductor_nombre} tamano={28} />
+                    {v.conductor_nombre}
+                  </div>
+                ) : (
+                  "—"
+                ),
+            },
             { header: "Tarifa", render: (v) => (v.tarifa_final !== null ? `$${v.tarifa_final.toFixed(2)}` : "—") },
             { header: "Estado", render: (v) => <Badge texto={ESTADO_TEXTO[v.estado]} tono={ESTADO_TONO[v.estado]} /> },
             {
@@ -1490,31 +1796,23 @@ function HistorialView({ onVolver }: { onVolver: () => void }) {
             <p style={{ color: "var(--color-text-muted)" }}>Cargando…</p>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-              {/* CU-O14 paso 3: mapa/ruta del viaje ya cerrado — mismo
-                  RideMap del viaje en curso, en modo solo-lectura (sin
-                  clics, sin control de geolocalización activo) y con la
-                  línea recta origen→destino como proxy de ruta, igual que
-                  el resto de la app (sin motor de ruteo en el stack). */}
-              <RideMap
+              {/* CU-O14 paso 3: mapa del viaje ya cerrado. Antes esto era un
+                  `RideMap` con una RECTA origen→destino pasada como `ruta` --
+                  se veía idéntica a una ruta real sin serlo. Ahora usa
+                  `MapaRutaViaje`, que dibuja únicamente la traza GPS real del
+                  viaje y, cuando no la hay, muestra solo los dos marcadores y
+                  lo declara en vez de inventar el trazo. */}
+              <MapaRutaViaje
+                viajeId={seleccionado.id}
                 origen={{ lat: seleccionado.origen_lat, lon: seleccionado.origen_lon }}
                 destino={
                   seleccionado.destino_lat !== null && seleccionado.destino_lon !== null
                     ? { lat: seleccionado.destino_lat, lon: seleccionado.destino_lon }
                     : null
                 }
-                ruta={
-                  seleccionado.destino_lat !== null && seleccionado.destino_lon !== null
-                    ? [
-                        [seleccionado.origen_lat, seleccionado.origen_lon],
-                        [seleccionado.destino_lat, seleccionado.destino_lon],
-                      ]
-                    : null
-                }
-                cercanos={[]}
-                onMapaClick={() => {}}
-                onUbicacionEncontrada={() => {}}
-                onUbicacionError={() => {}}
-                clicksHabilitados={false}
+                traza={seleccionado.traza}
+                origenDireccion={seleccionado.origen_direccion}
+                destinoDireccion={seleccionado.destino_direccion}
               />
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "var(--space-3)" }}>
                 <DetailField label="Origen" value={seleccionado.origen_direccion} />
@@ -1522,9 +1820,15 @@ function HistorialView({ onVolver }: { onVolver: () => void }) {
                 <DetailField
                   label="Conductor"
                   value={
-                    seleccionado.conductor_nombre
-                      ? `${seleccionado.conductor_nombre}${seleccionado.conductor_calificacion !== null ? ` (${seleccionado.conductor_calificacion.toFixed(1)}★)` : ""}`
-                      : "—"
+                    seleccionado.conductor_nombre ? (
+                      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                        <Avatar fotoUrl={seleccionado.conductor_foto_url} nombre={seleccionado.conductor_nombre} tamano={32} />
+                        {seleccionado.conductor_nombre}
+                        {seleccionado.conductor_calificacion !== null && ` (${seleccionado.conductor_calificacion.toFixed(1)}★)`}
+                      </div>
+                    ) : (
+                      "—"
+                    )
                   }
                 />
                 <DetailField
@@ -1577,7 +1881,7 @@ function GestionDireccionesFavoritas() {
     <Card>
       <h3 style={{ marginTop: 0, fontSize: "var(--font-size-md)" }}>Direcciones favoritas</h3>
       <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
-        Se agregan desde la pantalla de viaje, con el botón "☆ Guardar como favorita" junto al destino elegido.
+        Se agregan desde la pantalla de viaje, con el botón "Guardar como favorita" junto al destino elegido.
       </p>
       {error && <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)" }}>{error}</p>}
       {favoritas.length === 0 ? (
@@ -1616,12 +1920,33 @@ function GestionDireccionesFavoritas() {
   );
 }
 
-const NAV_ITEMS_PASAJERO: { id: "viaje" | "historial" | "perfil" | "ajustes" | "ayuda"; label: string }[] = [
-  { id: "viaje", label: "Viaje" },
-  { id: "historial", label: "Mis viajes" },
-  { id: "perfil", label: "Mi perfil" },
-  { id: "ajustes", label: "Ajustes" },
-  { id: "ayuda", label: "Ayuda" },
+// Grupo D de la ronda de correcciones UX/UI: lo que el pasajero hace (pedir
+// un viaje, revisar los anteriores) queda separado de lo que configura de su
+// cuenta. Mismo criterio "personal vs. funcional" que en los otros 2
+// portales, con los nombres de grupo propios de cada uno.
+type VistaPasajero = "viaje" | "historial" | "notificaciones" | "perfil" | "ajustes" | "ayuda";
+
+function navItemsPasajero(noLeidas: number): { id: VistaPasajero; label: string; group?: string; badge?: number }[] {
+  return [
+    { id: "viaje", label: "Viaje", group: "Viajar" },
+    { id: "historial", label: "Mis viajes", group: "Viajar" },
+    { id: "perfil", label: "Mi perfil", group: "Mi cuenta" },
+    { id: "notificaciones", label: "Notificaciones", group: "Mi cuenta", badge: noLeidas },
+    { id: "ajustes", label: "Ajustes", group: "Mi cuenta" },
+    { id: "ayuda", label: "Ayuda", group: "Mi cuenta" },
+  ];
+}
+
+// Tipos reales que un pasajero puede llegar a recibir (Fase 0 de esta
+// ronda): solo el ciclo de vida del viaje -- ningún tipo de captación,
+// mantenimiento o documentación llega acá, esos son del lado del conductor.
+const TIPOS_PASAJERO = [
+  "VIAJE_ASIGNADO",
+  "CONDUCTOR_EN_CAMINO",
+  "CONDUCTOR_LLEGO",
+  "VIAJE_INICIADO",
+  "VIAJE_CANCELADO_CONDUCTOR",
+  "VIAJE_FINALIZADO",
 ];
 
 const PREGUNTAS_FRECUENTES_PASAJERO: PreguntaFrecuente[] = [
@@ -1640,8 +1965,9 @@ const PREGUNTAS_FRECUENTES_PASAJERO: PreguntaFrecuente[] = [
 ];
 
 function InicioAutenticado() {
+  const { noLeidas } = useAuth();
   const [viaje, setViaje] = useState<Viaje | null | undefined>(undefined);
-  const [vista, setVista] = useState<"viaje" | "historial" | "perfil" | "ajustes" | "ayuda">("viaje");
+  const [vista, setVista] = useState<VistaPasajero>("viaje");
 
   useEffect(() => {
     let cancelado = false;
@@ -1701,21 +2027,27 @@ function InicioAutenticado() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viaje?.id, viaje?.estado]);
 
+  // Sección "Viaje" (mapa + overlay): llena todo el alto disponible de la
+  // pantalla en vez de una altura de contenido normal, para que el mapa
+  // aproveche el espacio real del viewport (ver VistaViaje/RideMap
+  // `llenarAltura`). El resto de secciones siguen con su alto natural.
+  const mapaALaPantalla = vista === "viaje" && viaje !== undefined;
+
   return (
-    <AppShell
-      navItems={NAV_ITEMS_PASAJERO}
+    <CalleShell
+      navItems={navItemsPasajero(noLeidas)}
       activeId={vista}
-      onNavigate={(id) => setVista(id as "viaje" | "historial" | "perfil" | "ajustes" | "ayuda")}
-      headerActions={<NotificacionesBell />}
+      onNavigate={(id) => setVista(id as VistaPasajero)}
+      // Lo de viajar vive en el riel; la cuenta, detrás de una parada. Es la
+      // separación que el andén hace con un divisor, dicha con el chasis.
+      principales={["viaje", "historial"]}
+      etiquetaResto="Cuenta"
+      contenidoLleno={mapaALaPantalla}
+      headerActions={<NotificacionesBell onVerTodas={() => setVista("notificaciones")} />}
     >
       <div
         style={
-          // Sección "Viaje" (mapa + overlay): llena todo el alto disponible
-          // de la pantalla en vez de una altura de contenido normal, para
-          // que el mapa aproveche el espacio real del viewport (ver
-          // VistaViaje/RideMap `llenarAltura`). El resto de secciones
-          // siguen con su alto natural de contenido.
-          vista === "viaje" && viaje !== undefined
+          mapaALaPantalla
             ? { width: "100%", display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }
             : { width: "100%" }
         }
@@ -1730,6 +2062,21 @@ function InicioAutenticado() {
             correoContacto="soporte@urbanfleet.example"
             telefonoContacto="+593900000000"
           />
+        ) : vista === "notificaciones" ? (
+          <SeccionNotificaciones
+            tiposRelevantes={TIPOS_PASAJERO}
+            resolverAccionRapida={(n) => {
+              // Un viaje ya finalizado/cancelado dejó de ser "el viaje
+              // activo" (GET /viajes/activo no lo devuelve más) -- llevarlo
+              // a "viaje" mostraría el panel de "¿A dónde vamos?", no el
+              // viaje real que la notificación menciona. Historial sí lo
+              // conserva.
+              if (n.tipo === "VIAJE_FINALIZADO" || n.tipo === "VIAJE_CANCELADO_CONDUCTOR") {
+                return { etiqueta: "Ver en Mis viajes", onClick: () => setVista("historial") };
+              }
+              return { etiqueta: "Ver mi viaje", onClick: () => setVista("viaje") };
+            }}
+          />
         ) : viaje === undefined ? (
           <Card>
             <p style={{ color: "var(--color-text-muted)" }}>Cargando…</p>
@@ -1740,7 +2087,7 @@ function InicioAutenticado() {
           <VistaViaje viaje={viaje} setViaje={setViaje} />
         )}
       </div>
-    </AppShell>
+    </CalleShell>
   );
 }
 
@@ -1800,7 +2147,15 @@ function VistaCompartida({ token }: { token: string }) {
     >
       <div style={{ width: "min(480px, 100%)" }}>
         <Card>
-          <h1 style={{ fontSize: "var(--font-size-lg)", margin: 0, marginBottom: "var(--space-3)" }}>
+          <h1
+            style={{
+              fontFamily: "var(--font-display)",
+              fontWeight: 700,
+              fontSize: "var(--font-size-xl)",
+              margin: 0,
+              marginBottom: "var(--space-3)",
+            }}
+          >
             Viaje en curso
           </h1>
           {cargando && <p style={{ color: "var(--color-text-muted)" }}>Cargando…</p>}
@@ -1810,19 +2165,13 @@ function VistaCompartida({ token }: { token: string }) {
               <div style={{ marginBottom: "var(--space-2)" }}>
                 <Badge texto={ESTADO_TEXTO[datos.estado]} tono={ESTADO_TONO[datos.estado]} />
               </div>
-              {datos.conductor_foto_url && (
-                <img
-                  src={datos.conductor_foto_url}
-                  alt="Foto del conductor"
-                  style={{
-                    width: 64,
-                    height: 64,
-                    borderRadius: "50%",
-                    objectFit: "cover",
-                    marginBottom: "var(--space-2)",
-                  }}
-                />
-              )}
+              <div style={{ marginBottom: "var(--space-2)" }}>
+                {/* Página pública, sin sesión -- `Avatar` arma un <img src>
+                    directo al archivo (contexto `foto_perfil`, lectura
+                    pública a propósito, ver `archivos/service.py`), nunca
+                    necesita el vaivén de blob autenticado. */}
+                <Avatar fotoUrl={datos.conductor_foto_url} nombre={datos.conductor_nombre} tamano={64} />
+              </div>
               {datos.conductor_nombre && <p style={{ margin: 0 }}>Conductor: {datos.conductor_nombre}</p>}
               {datos.conductor_calificacion !== null && (
                 <p style={{ margin: 0 }}>Calificación: {datos.conductor_calificacion.toFixed(1)}★</p>
@@ -1831,8 +2180,15 @@ function VistaCompartida({ token }: { token: string }) {
                 <p style={{ margin: 0, marginBottom: "var(--space-3)" }}>Placa: {datos.vehiculo_placa}</p>
               )}
               {datos.posicion ? (
+                // Punto 5 de la ronda de auditoría de pantallas: `origen`
+                // solo centra el mapa acá (sin sesión no hay un "punto de
+                // recogida" propio que mostrar) -- `conductor` + `ocultarPinOrigen`
+                // pintan la misma flecha de vehículo que el resto del sistema,
+                // en vez del pin genérico de Leaflet que quedaba antes.
                 <RideMap
                   origen={datos.posicion}
+                  conductor={datos.posicion}
+                  ocultarPinOrigen
                   destino={null}
                   ruta={null}
                   cercanos={[]}
@@ -1856,9 +2212,32 @@ function VistaCompartida({ token }: { token: string }) {
 
 export default function App() {
   const { actor } = useAuth();
+  // Bitácora de revisión (segunda pasada, punto 4): la landing pública real
+  // es la puerta de entrada por defecto -- "Iniciar sesión"/"Regístrate" lo
+  // que la llevan al formulario real, con el modo correcto ya elegido.
+  const [vista, setVista] = useState<"landing" | "auth">("landing");
+  const [modoAuth, setModoAuth] = useState<"login" | "registro">("login");
   const compartidoMatch = window.location.pathname.match(/^\/compartido\/(.+)$/);
   if (compartidoMatch) return <VistaCompartida token={compartidoMatch[1]} />;
   if (actor) return <InicioAutenticado />;
+
+  if (vista === "landing") {
+    return (
+      <LandingPage
+        variante="pasajero"
+        registrarLabel="Regístrate"
+        onIniciarSesion={() => {
+          setModoAuth("login");
+          setVista("auth");
+        }}
+        onRegistrar={() => {
+          setModoAuth("registro");
+          setVista("auth");
+        }}
+      />
+    );
+  }
+
   return (
     <div
       style={{
@@ -1867,13 +2246,35 @@ export default function App() {
         alignItems: "center",
         justifyContent: "center",
         padding: "var(--space-4)",
+        // v2: lavado suave de ámbar de marca (PLAN_REDISENO_V2.md §2) --
+        // pantalla de menor frecuencia de uso y mayor impacto de marca del
+        // sistema, mismo criterio ya usado para la franja de ruta signature.
+        // El texto vive dentro de la tarjeta blanca, no sobre el lavado, así
+        // que no compromete contraste.
+        background: "radial-gradient(ellipse at top, color-mix(in srgb, var(--color-accent) 10%, var(--color-bg)) 0%, var(--color-bg) 60%)",
       }}
     >
       <div style={{ width: "min(400px, 100%)" }}>
         <div style={{ display: "flex", justifyContent: "center", marginBottom: "var(--space-4)" }}>
-          <img src={logoUrbanFleetFull} alt="UrbanFleet" style={{ width: 160, maxWidth: "100%", height: "auto" }} />
+          <LoginLogo />
         </div>
-        <LoginCard />
+        <LoginCard modoInicial={modoAuth} />
+        <button
+          type="button"
+          onClick={() => setVista("landing")}
+          style={{
+            display: "block",
+            margin: "var(--space-3) auto 0",
+            background: "none",
+            border: "none",
+            color: "var(--color-text-muted)",
+            fontSize: "var(--font-size-sm)",
+            textDecoration: "underline",
+            cursor: "pointer",
+          }}
+        >
+          ← Volver a la página principal
+        </button>
       </div>
     </div>
   );

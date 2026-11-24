@@ -8,7 +8,9 @@ import {
   DataTable,
   DetailField,
   DetailPanel,
+  EvidenciaImagen,
   invalidateSwrPrefix,
+  nombreTipoDocumento,
   Pagination,
   Select,
   TextArea,
@@ -19,11 +21,33 @@ import { useMemo, useState } from "react";
 
 const RECURSO_EVENTOS_AUDITORIA = "/auditoria/eventos";
 const RECURSO_RENOVACIONES = "/cumplimiento/documentos/renovaciones-pendientes";
+const RECURSO_DOCUMENTOS_POR_VENCER = "/cumplimiento/panel-tactico/documentos-por-vencer";
 
 interface ResultadoControl {
   revisados: number;
   por_vencer_notificados: number;
   vencidos_nuevos: number;
+}
+
+/** Punto 6 de la ronda de correcciones (agosto 2026): antes, "Ejecutar
+ * control de vigencia" solo mostraba contadores -- para ver QUÉ documentos
+ * específicos quedaron vencidos/por vencer había que ir a buscarlos a mano
+ * en el panel táctico de Documentación. Reusa el MISMO endpoint que ya
+ * alimenta ese panel (`documentos-por-vencer`, ya gateado a
+ * supervisor_cumplimiento) en vez de construir una fuente nueva -- la
+ * bandeja "renovaciones pendientes" de abajo es un concepto distinto
+ * (solicitudes de renovación que sube el conductor, campo
+ * `renovacion_pendiente`) y no sirve para esto. */
+interface DocumentoPorVencer {
+  documento_id: string;
+  tipo: string;
+  propietario_tipo: string;
+  propietario_id: string;
+  propietario_nombre: string | null;
+  fecha_vencimiento: string | null;
+  estado_verificacion: string;
+  dias_restantes: number | null;
+  archivo_id: string | null;
 }
 
 interface RenovacionPendiente {
@@ -34,6 +58,8 @@ interface RenovacionPendiente {
   propietario_nombre: string | null;
   fecha_vencimiento_actual: string | null;
   fecha_vencimiento_propuesta: string;
+  archivo_id: string | null;
+  archivo_id_propuesto: string | null;
 }
 
 interface EventoAuditoria {
@@ -171,8 +197,101 @@ function SeccionBitacoraAuditoria() {
             ),
           },
         ]}
+        ocultarContador
       />
       <Pagination page={pagina} pageSize={tamanioPagina} total={total} onPageChange={setPagina} />
+    </Card>
+  );
+}
+
+function SeccionDocumentosPorVencer({ refreshSignal }: { refreshSignal: number }) {
+  const [filtroEstado, setFiltroEstado] = useState<"" | "VENCIDO" | "POR_VENCER">("");
+  const [filtroTexto, setFiltroTexto] = useState("");
+
+  // Mismo truco de key que `SeccionRenovaciones`: `refreshSignal` fuerza un
+  // fetch fresco justo después de correr el control, sin perder el caché
+  // stale-while-revalidate en una visita normal.
+  const claveConsulta = `${RECURSO_DOCUMENTOS_POR_VENCER}?refresh=${refreshSignal}`;
+  const { data: documentos = [], error: errorCarga } = useSwr<DocumentoPorVencer[]>(claveConsulta, () =>
+    apiFetch<DocumentoPorVencer[]>(RECURSO_DOCUMENTOS_POR_VENCER),
+  );
+  const error = errorCarga
+    ? errorCarga instanceof ApiError
+      ? errorCarga.message
+      : "No se pudieron cargar los documentos vencidos/por vencer"
+    : null;
+
+  const filtrados = useMemo(() => {
+    const texto = filtroTexto.trim().toLowerCase();
+    return documentos.filter((d) => {
+      const esVencido = (d.dias_restantes ?? 0) < 0;
+      if (filtroEstado === "VENCIDO" && !esVencido) return false;
+      if (filtroEstado === "POR_VENCER" && esVencido) return false;
+      if (!texto) return true;
+      return (d.propietario_nombre ?? "").toLowerCase().includes(texto) || d.propietario_id.toLowerCase().includes(texto);
+    });
+  }, [documentos, filtroEstado, filtroTexto]);
+
+  const vencidos = documentos.filter((d) => (d.dias_restantes ?? 0) < 0).length;
+  const porVencer = documentos.length - vencidos;
+
+  return (
+    <Card>
+      <h2 style={{ marginTop: 0, fontSize: "var(--font-size-lg)" }}>Documentos vencidos y por vencer</h2>
+      <p style={{ color: "var(--color-text-muted)" }}>
+        {vencidos} vencido(s), {porVencer} por vencer en los próximos 30 días — se actualiza solo después de correr
+        el control de vigencia de arriba.
+      </p>
+      {error && <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)" }}>{error}</p>}
+      <div style={{ display: "flex", gap: "var(--space-3)", flexWrap: "wrap", marginBottom: "var(--space-3)" }}>
+        <div style={{ minWidth: 180 }}>
+          <Select
+            label="Estado"
+            value={filtroEstado}
+            onChange={(e) => setFiltroEstado(e.target.value as typeof filtroEstado)}
+            options={[
+              { value: "", label: "Todos" },
+              { value: "VENCIDO", label: "Vencidos" },
+              { value: "POR_VENCER", label: "Por vencer" },
+            ]}
+          />
+        </div>
+        <div style={{ minWidth: 220 }}>
+          <TextField
+            label="Buscar por nombre o id"
+            value={filtroTexto}
+            onChange={(e) => setFiltroTexto(e.target.value)}
+          />
+        </div>
+      </div>
+      <DataTable
+        rows={filtrados}
+        keyField={(d) => d.documento_id}
+        vacio="Ningún documento vencido ni por vencer con este filtro."
+        altoMaximo={420}
+        columns={[
+          {
+            header: "Evidencia",
+            render: (d) => (d.archivo_id ? <EvidenciaImagen archivoId={d.archivo_id} tamano={48} alt={`Documento ${nombreTipoDocumento(d.tipo)}`} /> : "—"),
+          },
+          { header: "Tipo", render: (d) => nombreTipoDocumento(d.tipo) },
+          { header: "Propietario", render: (d) => d.propietario_nombre ?? d.propietario_id.slice(0, 8) + "…" },
+          {
+            header: "Vencimiento",
+            render: (d) => (d.fecha_vencimiento ? new Date(d.fecha_vencimiento).toLocaleDateString() : "—"),
+          },
+          {
+            header: "Estado",
+            render: (d) => (
+              <Badge
+                texto={(d.dias_restantes ?? 0) < 0 ? "VENCIDO" : "POR VENCER"}
+                tono={(d.dias_restantes ?? 0) < 0 ? "peligro" : "advertencia"}
+              />
+            ),
+          },
+          { header: "Días restantes", render: (d) => (d.dias_restantes ?? "—") },
+        ]}
+      />
     </Card>
   );
 }
@@ -288,24 +407,18 @@ function SeccionRenovaciones({ refreshSignal }: { refreshSignal: number }) {
                 setFiltroTipo(e.target.value);
                 setPage(0);
               }}
-              options={[{ value: "", label: "Todos" }, ...tiposDisponibles.map((t) => ({ value: t, label: t }))]}
+              options={[{ value: "", label: "Todos" }, ...tiposDisponibles.map((t) => ({ value: t, label: nombreTipoDocumento(t) }))]}
             />
           </div>
         </div>
       </Card>
 
+      {/* "Nuevo"/"Eliminar" quitados (segunda pasada, punto 1): las
+          renovaciones las suben los propios conductores/propietarios, y no
+          se eliminan, solo se aprueban u observan -- ningún rol que llega a
+          este workpanel tiene un uso real para ninguno de los dos. */}
       <ActionBar
-        nuevo={{
-          onClick: () => {},
-          disabled: true,
-          title: "No aplica: las renovaciones las suben los propios conductores/propietarios, no el personal interno.",
-        }}
         actualizar={{ onClick: () => refetchPendientes() }}
-        eliminar={{
-          onClick: () => {},
-          disabled: true,
-          title: "No aplica: las renovaciones no se eliminan, solo se aprueban u observan.",
-        }}
         buscar={{ onClick: buscar }}
         salir={{ onClick: limpiarBusqueda }}
       />
@@ -317,7 +430,7 @@ function SeccionRenovaciones({ refreshSignal }: { refreshSignal: number }) {
           keyField={(p) => p.documento_id}
           vacio="No hay renovaciones pendientes con este filtro."
           columns={[
-            { header: "Tipo", render: (p) => p.tipo },
+            { header: "Tipo", render: (p) => nombreTipoDocumento(p.tipo) },
             {
               header: "Propietario",
               render: (p) =>
@@ -325,8 +438,11 @@ function SeccionRenovaciones({ refreshSignal }: { refreshSignal: number }) {
                   p.propietario_nombre ?? `sin datos (${p.propietario_id.slice(0, 8)}…)`
                 }`,
             },
-            { header: "Vence hoy", render: (p) => p.fecha_vencimiento_actual ?? "—" },
-            { header: "Nueva fecha", render: (p) => p.fecha_vencimiento_propuesta },
+            {
+              header: "Vence hoy",
+              render: (p) => (p.fecha_vencimiento_actual ? new Date(p.fecha_vencimiento_actual).toLocaleDateString() : "—"),
+            },
+            { header: "Nueva fecha", render: (p) => new Date(p.fecha_vencimiento_propuesta).toLocaleDateString() },
             {
               header: "Detalle",
               render: (p) => (
@@ -336,6 +452,7 @@ function SeccionRenovaciones({ refreshSignal }: { refreshSignal: number }) {
               ),
             },
           ]}
+          ocultarContador
         />
         <Pagination
           page={page}
@@ -362,15 +479,40 @@ function SeccionRenovaciones({ refreshSignal }: { refreshSignal: number }) {
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
             {error && <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)" }}>{error}</p>}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "var(--space-3)" }}>
-              <DetailField label="Tipo de documento" value={seleccionada.tipo} />
+              <DetailField label="Tipo de documento" value={nombreTipoDocumento(seleccionada.tipo)} />
               <DetailField
                 label="Propietario"
                 value={`${seleccionada.propietario_tipo === "CONDUCTOR" ? "Conductor" : "Vehículo"} · ${
                   seleccionada.propietario_nombre ?? `sin datos (${seleccionada.propietario_id})`
                 }`}
               />
-              <DetailField label="Vence hoy" value={seleccionada.fecha_vencimiento_actual ?? "—"} />
-              <DetailField label="Nueva fecha propuesta" value={seleccionada.fecha_vencimiento_propuesta} />
+              <DetailField
+                label="Vence hoy"
+                value={seleccionada.fecha_vencimiento_actual ? new Date(seleccionada.fecha_vencimiento_actual).toLocaleDateString() : "—"}
+              />
+              <DetailField label="Nueva fecha propuesta" value={new Date(seleccionada.fecha_vencimiento_propuesta).toLocaleDateString()} />
+            </div>
+            <div style={{ display: "flex", gap: "var(--space-4)", flexWrap: "wrap" }}>
+              <div>
+                <p style={{ fontSize: "var(--font-size-sm)", color: "var(--color-text-muted)", marginBottom: "var(--space-2)" }}>
+                  Documento vigente
+                </p>
+                {seleccionada.archivo_id ? (
+                  <EvidenciaImagen archivoId={seleccionada.archivo_id} tamano={160} alt="Documento vigente" />
+                ) : (
+                  <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>Sin archivo registrado.</p>
+                )}
+              </div>
+              <div>
+                <p style={{ fontSize: "var(--font-size-sm)", color: "var(--color-text-muted)", marginBottom: "var(--space-2)" }}>
+                  Renovación propuesta
+                </p>
+                {seleccionada.archivo_id_propuesto ? (
+                  <EvidenciaImagen archivoId={seleccionada.archivo_id_propuesto} tamano={160} alt="Renovación propuesta" />
+                ) : (
+                  <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>Sin archivo registrado.</p>
+                )}
+              </div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)", borderTop: "1px solid var(--color-border)", paddingTop: "var(--space-3)" }}>
               <Select
@@ -418,6 +560,18 @@ export function SeccionCumplimiento() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+      {/* Encabezado breve del workpanel completo (3 funciones abajo: control
+          de vigencia, renovaciones pendientes, bitácora) -- propósito para
+          quien lo usa, no mecánica interna. Mismo criterio ya aplicado al
+          corregir Notificaciones. */}
+      <div>
+        <h2 style={{ margin: 0, fontSize: "var(--font-size-lg)" }}>Cumplimiento</h2>
+        <p style={{ margin: "var(--space-1) 0 0", color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
+          Controla que los socios y sus vehículos tengan la documentación al día, y revisa las renovaciones que
+          suben los conductores.
+        </p>
+      </div>
+
       <Card>
         <h2 style={{ marginTop: 0, fontSize: "var(--font-size-lg)" }}>Control de vigencia documental</h2>
         <p style={{ color: "var(--color-text-muted)" }}>
@@ -434,6 +588,8 @@ export function SeccionCumplimiento() {
           </p>
         )}
       </Card>
+
+      <SeccionDocumentosPorVencer refreshSignal={refreshSignal} />
 
       <SeccionRenovaciones refreshSignal={refreshSignal} />
 

@@ -11,6 +11,7 @@ import "leaflet/dist/leaflet.css";
 import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
 import markerIcon from "leaflet/dist/images/marker-icon.png";
 import markerShadow from "leaflet/dist/images/marker-shadow.png";
+import { MarcadorVehiculo } from "@urbanflet/shared-ui";
 import { useEffect } from "react";
 import { MapContainer, Marker, Polyline, TileLayer, useMap } from "react-leaflet";
 
@@ -22,20 +23,6 @@ L.Icon.Default.mergeOptions({
   iconRetinaUrl: markerIcon2x,
   iconUrl: markerIcon,
   shadowUrl: markerShadow,
-});
-
-// Marcador de la posición propia del conductor — mismo icono de taxi
-// anónimo que ve el pasajero, pero aquí sí es "el mío" (sin ambigüedad
-// posible: es el único de este tipo en este mapa).
-// Tamaño triplicado (26px -> 78px): corregido tras hallazgo en pruebas
-// reales — sin un font-size explícito el emoji heredaba el tamaño de fuente
-// por defecto de Leaflet (mucho más chico que el iconSize), quedando casi
-// invisible sobre el mapa.
-const propiaIcon = L.divIcon({
-  html: '<div style="font-size:66px;line-height:78px;text-align:center;filter:drop-shadow(0 0 2px rgba(0,0,0,.5))">🚕</div>',
-  className: "conductor-propia-icon",
-  iconSize: [78, 78],
-  iconAnchor: [39, 39],
 });
 
 const recogidaIcon = new L.Icon({
@@ -56,6 +43,21 @@ const destinoIcon = new L.Icon({
   className: "destino-marker",
 });
 
+// Punto 1 de la segunda ronda de ajustes de usabilidad: marcador del lugar
+// que el conductor buscó (ver `BuscadorLugar`), distinto de recogida/destino
+// -- un `divIcon` en vez de un tercer PNG (mismo criterio ya usado por
+// MapaRutaViaje.tsx para no depender de más assets del bundler), coloreado
+// con los tokens de marca para que se lea como "referencia buscada", no como
+// un punto real del viaje.
+const busquedaIcon = L.divIcon({
+  className: "",
+  html:
+    '<div style="width:18px;height:18px;border-radius:50%;background:var(--color-accent);' +
+    'border:2px solid var(--color-accent-deep);box-shadow:0 0 0 2px rgba(255,255,255,0.85)"></div>',
+  iconSize: [18, 18],
+  iconAnchor: [9, 9],
+});
+
 interface LatLon {
   lat: number;
   lon: number;
@@ -67,6 +69,22 @@ function Recentrar({ lat, lon }: LatLon) {
     map.setView([lat, lon]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lat, lon]);
+  return null;
+}
+
+// Centra el mapa sobre un lugar recién buscado -- efecto independiente del
+// `Recentrar` de arriba (que sigue la posición propia), disparado solo
+// cuando `punto` cambia (una búsqueda nueva). El próximo reporte de posición
+// (cada 15s, ver PantallaTurno) va a recentrar de vuelta al conductor -- es
+// el mismo comportamiento que ya tiene el mapa siempre, no algo que este
+// punto deba evitar: el mapa está anclado al conductor por diseño, buscar un
+// lugar solo da un vistazo temporal.
+function RecentrarBusqueda({ punto }: { punto: LatLon | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (punto) map.setView([punto.lat, punto.lon], 15);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [punto?.lat, punto?.lon]);
   return null;
 }
 
@@ -144,6 +162,10 @@ export interface DriverMapProps {
   // Cuando es true, el mapa llena el 100% de la altura de su contenedor en
   // vez de la altura fija ALTO_MAPA -- ver RideMap.tsx (mismo patrón).
   llenarAltura?: boolean;
+  // Punto 1 de la segunda ronda de ajustes de usabilidad: lugar encontrado
+  // con el buscador (ver PantallaTurno) -- puramente de referencia, no forma
+  // parte de los datos del viaje.
+  lugarBuscado?: LatLon | null;
 }
 
 // Mismo valor que RideMap.tsx (ALTO_MAPA) para consistencia visual entre las
@@ -164,19 +186,32 @@ export function DriverMap({
   onUbicacionEncontrada,
   onUbicacionError,
   llenarAltura = false,
+  lugarBuscado = null,
 }: DriverMapProps) {
   return (
-    <div style={{ height: llenarAltura ? "100%" : ALTO_MAPA, borderRadius: "var(--radius-md)", overflow: "hidden" }}>
+    // `llenarAltura` por `inset:0` sobre el contenedor `position:relative`
+    // de la pantalla de turno, no por `height:100%` — mismo motivo que en
+    // RideMap.tsx (el padre es un flex item y su alto no cuenta como
+    // definido para resolver un porcentaje; el mapa colapsaba a 0px).
+    <div
+      style={
+        llenarAltura
+          ? { position: "absolute", inset: 0, borderRadius: "var(--radius-md)", overflow: "hidden" }
+          : { height: ALTO_MAPA, borderRadius: "var(--radius-md)", overflow: "hidden" }
+      }
+    >
       <MapContainer center={[propia.lat, propia.lon]} zoom={15} style={{ height: "100%", width: "100%" }}>
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
         <Recentrar lat={propia.lat} lon={propia.lon} />
+        <RecentrarBusqueda punto={lugarBuscado} />
         <ControlDeUbicacion onEncontrada={onUbicacionEncontrada} onError={onUbicacionError} />
-        <Marker position={[propia.lat, propia.lon]} icon={propiaIcon} interactive={false} />
+        <MarcadorVehiculo lat={propia.lat} lon={propia.lon} destacado interactive={false} tamano={34} />
         {recogida && <Marker position={[recogida.lat, recogida.lon]} icon={recogidaIcon} />}
         {destino && <Marker position={[destino.lat, destino.lon]} icon={destinoIcon} />}
+        {lugarBuscado && <Marker position={[lugarBuscado.lat, lugarBuscado.lon]} icon={busquedaIcon} />}
         {ruta && ruta.length > 1 && <Polyline positions={ruta} pathOptions={{ color: "#1f6feb", weight: 4 }} />}
       </MapContainer>
     </div>

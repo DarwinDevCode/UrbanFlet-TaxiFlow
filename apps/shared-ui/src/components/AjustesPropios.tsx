@@ -1,14 +1,234 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { apiFetch, ApiError } from "../api/client";
+import { apiFetch, ApiError, subirArchivo } from "../api/client";
+import { useAuth } from "../auth/AuthProvider";
 import { aplicarDensidad } from "../densidad";
+import { aplicarSidebarTono } from "../sidebarTono";
+import { aplicarTamanoTexto } from "../tamanoTexto";
 import { aplicarTema } from "../theme";
+import { Avatar } from "./Avatar";
+import { Button } from "./Button";
+import { FileField } from "./FileField";
 import { Card } from "./Card";
 import { Select } from "./Select";
 import { TextField } from "./TextField";
 
+const TIPOS_FOTO_ACEPTADOS = "image/jpeg,image/png,image/webp";
+
+interface PerfilFotoOut {
+  foto_url: string | null;
+}
+
+/** Ronda de foto de perfil: sección de "Ajustes" para ver/cambiar/quitar la
+ * foto propia -- deliberadamente separada de "Mi cuenta" (`PerfilPropio`),
+ * que exige contraseña actual para cualquier cambio (decisión D1, pensada
+ * para contacto -- teléfono/correo -- no para una foto). Lee/actualiza
+ * `useAuth().fotoUrl` en vez de mantener su propio estado: así el header de
+ * `AppShell` (un componente hermano, no un padre/hijo de este) refleja el
+ * cambio de inmediato, sin recargar la página. */
+function SeccionFotoPerfil() {
+  const { fotoUrl, actualizarFoto } = useAuth();
+  const [error, setError] = useState<unknown>(null);
+  const [subiendo, setSubiendo] = useState(false);
+
+  const cambiarFoto = async (file: File) => {
+    setError(null);
+    setSubiendo(true);
+    try {
+      const archivo = await subirArchivo(file, "foto_perfil");
+      await apiFetch<PerfilFotoOut>("/perfil/foto", { method: "PATCH", body: { archivo_id: archivo.id } });
+      actualizarFoto(archivo.id);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setSubiendo(false);
+    }
+  };
+
+  const quitarFoto = async () => {
+    setError(null);
+    setSubiendo(true);
+    try {
+      await apiFetch<PerfilFotoOut>("/perfil/foto", { method: "PATCH", body: { archivo_id: null } });
+      actualizarFoto(null);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setSubiendo(false);
+    }
+  };
+
+  const mensaje = error instanceof ApiError ? error.message : error ? "No se pudo actualizar la foto" : null;
+
+  return (
+    <Card>
+      <h3 style={{ marginTop: 0, fontSize: "var(--font-size-md)" }}>Foto de perfil</h3>
+      <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
+        Se muestra junto a tu nombre en el sistema. Formatos aceptados: JPG, PNG o WEBP, hasta 5 MB.
+      </p>
+      {mensaje && <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)" }}>{mensaje}</p>}
+      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+        <Avatar fotoUrl={fotoUrl} tamano={64} />
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)", alignItems: "flex-start" }}>
+          {/* Mismo componente compartido que el resto de campos de archivo del
+              sistema. `mostrarNombre` apagado: el avatar de al lado ya se
+              actualiza al instante, el nombre del archivo sobraría. */}
+          <FileField
+            textoBoton="Cambiar foto"
+            accept={TIPOS_FOTO_ACEPTADOS}
+            disabled={subiendo}
+            mostrarNombre={false}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) cambiarFoto(file);
+            }}
+          />
+          {subiendo && (
+            <span style={{ fontSize: "var(--font-size-sm)", color: "var(--color-text-muted)" }}>Subiendo…</span>
+          )}
+          {fotoUrl && !subiendo && (
+            <Button variant="danger" onClick={quitarFoto}>
+              Quitar foto
+            </Button>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/** Autoservicio de baja de cuenta con periodo de gracia de 30 días.
+ *
+ * NO es la anonimización de datos personales (CU-O17 A2): esa la ejecuta un
+ * administrador desde Gobernanza de Datos escribiendo "ANONIMIZAR", es
+ * irreversible y borra datos personales por obligación legal. Esto es un
+ * cierre voluntario de la propia cuenta, con 30 días para arrepentirse. Los
+ * dos mecanismos conviven por separado a propósito.
+ */
+function SeccionBajaCuenta() {
+  const { diasRestantesBaja, actualizarBajaCuenta } = useAuth();
+  const [confirmando, setConfirmando] = useState(false);
+  const [motivo, setMotivo] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  // Caso borde 2: placas que saldrán de la flota al vencer el plazo. Las
+  // devuelve el backend al confirmar (advertencia, nunca un bloqueo).
+  const [vehiculosARetirar, setVehiculosARetirar] = useState<string[]>([]);
+
+  const solicitar = async () => {
+    setError(null);
+    setEnviando(true);
+    try {
+      const p = await apiFetch<{ dias_restantes_baja: number | null; vehiculos_a_retirar?: string[] }>(
+        "/perfil/baja-cuenta",
+        { method: "POST", body: { motivo: motivo.trim() || null } },
+      );
+      actualizarBajaCuenta(p.dias_restantes_baja ?? null);
+      setVehiculosARetirar(p.vehiculos_a_retirar ?? []);
+      setConfirmando(false);
+      setMotivo("");
+    } catch (e) {
+      setError(e);
+    } finally {
+      setEnviando(false);
+    }
+  };
+
+  const cancelar = async () => {
+    setError(null);
+    setEnviando(true);
+    try {
+      await apiFetch("/perfil/baja-cuenta", { method: "DELETE" });
+      actualizarBajaCuenta(null);
+      setVehiculosARetirar([]);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setEnviando(false);
+    }
+  };
+
+  const mensaje = error instanceof ApiError ? error.message : error ? "No se pudo completar la operación" : null;
+
+  return (
+    <Card>
+      <h3 style={{ marginTop: 0, fontSize: "var(--font-size-md)" }}>Cerrar mi cuenta</h3>
+      {mensaje && <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)" }}>{mensaje}</p>}
+
+      {diasRestantesBaja !== null ? (
+        <>
+          <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
+            Tu cuenta se cerrará{" "}
+            <strong>
+              {diasRestantesBaja === 0
+                ? "hoy"
+                : `en ${diasRestantesBaja} ${diasRestantesBaja === 1 ? "día" : "días"}`}
+            </strong>
+            . Hasta entonces puedes seguir usando el sistema con normalidad. Si cambiaste de opinión, cancela
+            la baja con un solo clic.
+          </p>
+          {vehiculosARetirar.length > 0 && (
+            <p style={{ color: "var(--color-accent-deep)", fontSize: "var(--font-size-sm)" }}>
+              Al cerrarse tu cuenta, {vehiculosARetirar.length === 1 ? "el vehículo" : "los vehículos"}{" "}
+              <strong>{vehiculosARetirar.join(", ")}</strong>{" "}
+              {vehiculosARetirar.length === 1 ? "saldrá" : "saldrán"} de la flota operativa.
+            </p>
+          )}
+          <div style={{ maxWidth: 220 }}>
+            <Button onClick={cancelar} loading={enviando}>
+              Cancelar la baja
+            </Button>
+          </div>
+        </>
+      ) : confirmando ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+          <p style={{ color: "var(--color-accent-deep)", fontSize: "var(--font-size-sm)", margin: 0 }}>
+            Tu cuenta seguirá funcionando con normalidad durante <strong>30 días</strong>. Pasado ese plazo, no
+            podrás volver a iniciar sesión. Tu historial se conserva y puedes cancelar en cualquier momento
+            desde esta misma pantalla. Esto <strong>no borra tus datos personales</strong>: si además quieres
+            solicitar su eliminación, comunícate con la cooperativa.
+          </p>
+          <TextField
+            label="Motivo (opcional)"
+            value={motivo}
+            onChange={(e) => setMotivo(e.target.value)}
+          />
+          <div style={{ display: "flex", gap: "var(--space-2)" }}>
+            <div style={{ minWidth: 200 }}>
+              <Button variant="danger" onClick={solicitar} loading={enviando}>
+                Confirmar cierre de cuenta
+              </Button>
+            </div>
+            <div style={{ minWidth: 110 }}>
+              <Button variant="secondary" onClick={() => setConfirmando(false)}>
+                Cancelar
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <>
+          <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
+            Puedes solicitar el cierre de tu cuenta. Tendrás 30 días para arrepentirte antes de que se haga
+            efectivo.
+          </p>
+          <div style={{ maxWidth: 220 }}>
+            <Button variant="secondary" onClick={() => setConfirmando(true)}>
+              Solicitar cierre de cuenta
+            </Button>
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
 interface PreferenciasOut {
   tema: "claro" | "oscuro";
   densidad_tablas: "comoda" | "compacta";
+  tamano_texto: "normal" | "grande" | "muy_grande";
+  sidebar_tono: "claro" | "ambar" | "oscuro" | "grafito";
+  secciones_favoritas: string[];
   notificaciones_push: Record<string, boolean>;
   sonido_oferta: boolean;
   vibracion_oferta: boolean;
@@ -49,6 +269,8 @@ export function AjustesPropios({
       .then((datos) => {
         setPrefs(datos);
         aplicarTema(datos.tema);
+        aplicarTamanoTexto(datos.tamano_texto);
+        aplicarSidebarTono(datos.sidebar_tono);
         if (mostrarDensidad) aplicarDensidad(datos.densidad_tablas);
       })
       .catch(setError);
@@ -65,7 +287,9 @@ export function AjustesPropios({
       const datos = await apiFetch<PreferenciasOut>("/preferencias", { method: "PATCH", body: { [campo]: valor } });
       setPrefs(datos);
       if (campo === "tema") aplicarTema(datos.tema);
+      if (campo === "tamano_texto") aplicarTamanoTexto(datos.tamano_texto);
       if (campo === "densidad_tablas") aplicarDensidad(datos.densidad_tablas);
+      if (campo === "sidebar_tono") aplicarSidebarTono(datos.sidebar_tono);
     } catch (e) {
       setError(e);
     } finally {
@@ -106,6 +330,29 @@ export function AjustesPropios({
               { value: "oscuro", label: "Oscuro" },
             ]}
           />
+          <Select
+            label="Tamaño de texto"
+            value={prefs.tamano_texto}
+            onChange={(e) => guardar("tamano_texto", e.target.value)}
+            disabled={guardandoCampo === "tamano_texto"}
+            options={[
+              { value: "normal", label: "Normal" },
+              { value: "grande", label: "Grande" },
+              { value: "muy_grande", label: "Muy grande" },
+            ]}
+          />
+          <Select
+            label="Color del sidebar"
+            value={prefs.sidebar_tono}
+            onChange={(e) => guardar("sidebar_tono", e.target.value)}
+            disabled={guardandoCampo === "sidebar_tono"}
+            options={[
+              { value: "claro", label: "Claro" },
+              { value: "ambar", label: "Ámbar" },
+              { value: "oscuro", label: "Oscuro" },
+              { value: "grafito", label: "Grafito" },
+            ]}
+          />
           {mostrarDensidad && (
             <Select
               label="Densidad de tablas"
@@ -120,6 +367,8 @@ export function AjustesPropios({
           )}
         </div>
       </Card>
+
+      <SeccionFotoPerfil />
 
       {categorias.length > 0 && (
         <Card>
@@ -188,6 +437,8 @@ export function AjustesPropios({
       )}
 
       {extra}
+
+      <SeccionBajaCuenta />
 
       <Card>
         <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)", margin: 0 }}>

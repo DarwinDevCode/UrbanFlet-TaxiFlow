@@ -1,0 +1,121 @@
+/* EL RIEL — componente firma del Sistema Riel (ver Riel.tsx).
+   Vive en CSS y no en estilos inline porque necesita pseudo-estados y
+   selectores de atributo (`[data-adverso]`) que no se pueden expresar
+   inline, y porque es el componente que más se repite en el sistema. */
+
+.uf-riel-bloque {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
+
+.uf-riel {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+}
+
+.uf-riel--mini {
+  max-width: 148px;
+}
+
+/* ── Nodos ───────────────────────────────────────────────────────────── */
+.uf-riel-nodo {
+  flex-shrink: 0;
+  width: var(--riel-nodo);
+  height: var(--riel-nodo);
+  border-radius: 50%;
+  background: var(--riel-recorrido);
+}
+
+.uf-riel-nodo--pendiente {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--riel-pendiente);
+}
+
+/* Relleno ámbar vivo + contorno que garantiza el contraste sobre fondo
+   claro (ver `--riel-actual-contorno` en tokens.css) + halo exterior. */
+.uf-riel-nodo--actual {
+  width: var(--riel-nodo-actual);
+  height: var(--riel-nodo-actual);
+  background: var(--riel-actual);
+  box-shadow:
+    0 0 0 1.5px var(--riel-actual-contorno),
+    0 0 0 5px var(--riel-halo);
+}
+
+/* Parada de salida no deseada: cancelado, rechazado, vencido, esperando
+   repuesto. El recorrido termina ahí y se marca con el tono de peligro --
+   se distingue de un vistazo sin leer la etiqueta. */
+.uf-riel-nodo--actual[data-adverso] {
+  background: var(--color-danger);
+  box-shadow: 0 0 0 4px var(--color-danger-bg);
+}
+
+/* ── Tramos ──────────────────────────────────────────────────────────── */
+.uf-riel-tramo {
+  flex: 1 1 auto;
+  min-width: 12px;
+  height: var(--riel-grosor);
+  background: var(--riel-recorrido);
+}
+
+/* El tramo pendiente es punteado, no solo más claro: la diferencia se
+   sostiene sin depender del color (y por lo tanto también para quien no
+   distingue el ámbar del gris). */
+.uf-riel-tramo--pendiente {
+  height: 0;
+  background: transparent;
+  border-top: var(--riel-grosor) dotted var(--riel-pendiente);
+}
+
+.uf-riel--mini .uf-riel-nodo {
+  width: 7px;
+  height: 7px;
+}
+.uf-riel--mini .uf-riel-nodo--actual {
+  width: 10px;
+  height: 10px;
+  box-shadow:
+    0 0 0 1.5px var(--riel-actual-contorno),
+    0 0 0 4px var(--riel-halo);
+}
+.uf-riel--mini .uf-riel-nodo--actual[data-adverso] {
+  box-shadow: 0 0 0 3px var(--color-danger-bg);
+}
+.uf-riel--mini .uf-riel-tramo {
+  min-width: 8px;
+}
+
+/* ── Pie: los nombres de las paradas ─────────────────────────────────── */
+.uf-riel-pie {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.uf-riel-extremo {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.uf-riel-actual-nombre {
+  font-size: var(--rotulo-size);
+  font-weight: 700;
+  letter-spacing: var(--rotulo-tracking);
+  text-transform: uppercase;
+  color: var(--color-accent-deep);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.uf-riel-actual-nombre--adverso {
+  color: var(--color-danger);
+}

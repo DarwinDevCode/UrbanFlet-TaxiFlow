@@ -45,7 +45,7 @@ function InformeCard({ informe }: { informe: Informe }) {
       {informe.retrasado && informe.datos_al && (
         <p
           style={{
-            background: "var(--color-danger-bg, #4a1f1f)",
+            background: "var(--color-danger-bg)",
             color: "var(--color-danger)",
             padding: "var(--space-2) var(--space-3)",
             borderRadius: "var(--radius-md)",
@@ -60,8 +60,8 @@ function InformeCard({ informe }: { informe: Informe }) {
 
       {informe.retrasado && !informe.datos_al && (
         <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
-          Este informe todavía no tiene ningún snapshot publicado (el dominio nunca corrió OK/WARN, o el DAG
-          de publicación aún no se ha ejecutado).
+          Este informe todavía no tiene ningún corte publicado (el dominio nunca completó una carga válida, o el
+          proceso de publicación aún no se ha ejecutado).
         </p>
       )}
 
@@ -72,6 +72,10 @@ function InformeCard({ informe }: { informe: Informe }) {
         columns={columnas.map((c) => ({
           header: etiquetaColumna(c),
           render: (fila: Record<string, unknown>) => formatearValor(fila[c]),
+          // Bitácora de revisión (hallazgo #8): alinea a la derecha cuando la
+          // columna real trae un número -- ninguna tabla de informes lo
+          // hacía todavía, pese a que `DataTable` ya lo soporta.
+          numerica: typeof informe.filas[0]?.[c] === "number",
         }))}
       />
     </Card>
@@ -107,9 +111,9 @@ export function SeccionIndicadores() {
       {error && <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)" }}>{error}</p>}
 
       <Card>
-        <h2 style={{ marginTop: 0, fontSize: "var(--font-size-lg)" }}>Catálogo de informes (CU-O16)</h2>
+        <h2 style={{ marginTop: 0, fontSize: "var(--font-size-lg)" }}>Catálogo de informes</h2>
         <p style={{ color: "var(--color-text-muted)" }}>
-          Publicados por el pipeline Medallion (Airflow) tras cada carga Gold confirmada. Cada informe muestra
+          Publicados automáticamente por el proceso de carga de datos (Airflow) tras cada actualización confirmada. Cada informe muestra
           su fecha de datos y, si la corrida del dominio de hoy falló, sigue sirviendo la última versión buena
           con aviso de retraso — nunca un informe parcial.
         </p>

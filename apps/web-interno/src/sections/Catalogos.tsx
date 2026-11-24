@@ -8,22 +8,25 @@ import {
   DataTable,
   DetailPanel,
   Select,
+  TabButton,
   TextField,
   useSwr,
   type ModoPanel,
 } from "@urbanflet/shared-ui";
 import { useState } from "react";
 
-const RECURSO_ZONAS = "/parametros/zonas";
-const RECURSO_TIPOS_DOCUMENTO = "/catalogos/tipos-documento";
-const RECURSO_MOTIVOS = "/catalogos/motivos";
-const RECURSO_TALLERES = "/catalogos/talleres";
-
-interface Zona {
-  id: string;
-  nombre: string;
-  geometria: Record<string, unknown>;
-}
+// Ronda de personalización/QA: los endpoints de catálogo ahora devuelven
+// SOLO los activos por defecto (para que un selector que se olvide del
+// filtro no siga ofreciendo una entrada desactivada). Esta pantalla es la
+// única que necesita verlos todos -- para poder reactivar uno -- así que es
+// la única que pasa `incluir_inactivos=true`, de forma explícita.
+const TODOS = "?incluir_inactivos=true";
+const RECURSO_TIPOS_DOCUMENTO = `/catalogos/tipos-documento${TODOS}`;
+const RECURSO_MOTIVOS = `/catalogos/motivos${TODOS}`;
+const RECURSO_TALLERES = `/catalogos/talleres${TODOS}`;
+const RECURSO_MARCAS_VEHICULO = `/catalogos/marcas-vehiculo${TODOS}`;
+const RECURSO_COLORES_VEHICULO = `/catalogos/colores-vehiculo${TODOS}`;
+const RECURSO_REPUESTOS = `/catalogos/repuestos${TODOS}`;
 
 interface TipoDocumento {
   id: string;
@@ -46,139 +49,32 @@ interface Taller {
   nombre: string;
   direccion: string;
   telefono: string;
+  url_maps: string | null;
   activo: boolean;
 }
 
-type Pestana = "zonas" | "tipos" | "motivos" | "talleres";
-
-function TabButton({ activa, onClick, children }: { activa: boolean; onClick: () => void; children: string }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        padding: "var(--space-2) var(--space-4)",
-        borderRadius: "var(--radius-md)",
-        border: "1px solid var(--color-border)",
-        background: activa ? "var(--color-accent)" : "var(--color-surface)",
-        color: activa ? "#fff" : "var(--color-text)",
-        fontWeight: 600,
-        cursor: "pointer",
-      }}
-    >
-      {children}
-    </button>
-  );
+interface RepuestoCatalogo {
+  id: string;
+  nombre: string;
+  categoria: string;
+  precio_referencial: number;
+  unidad: string;
+  activo: boolean;
 }
 
-function SeccionZonas() {
-  const [seleccionada, setSeleccionada] = useState<Zona | null>(null);
-  const [modo, setModo] = useState<ModoPanel>("consulta");
-  const [nombre, setNombre] = useState("");
-  const [errorAccion, setError] = useState<string | null>(null);
-  const [cargando, setCargando] = useState(false);
+const CATEGORIAS_REPUESTO = ["Motor", "Frenos", "Eléctrico", "Suspensión", "Neumáticos", "Otro"];
+const UNIDADES_REPUESTO = ["unidad", "litro", "juego"];
 
-  const { data: zonas = [], error: errorCarga, refetch } = useSwr<Zona[]>(RECURSO_ZONAS, () =>
-    apiFetch<Zona[]>(RECURSO_ZONAS, { auth: false }),
-  );
-  const error =
-    errorAccion ?? (errorCarga ? (errorCarga instanceof ApiError ? errorCarga.message : "No se pudieron cargar las zonas") : null);
+type Pestana = "tipos" | "motivos" | "talleres" | "marcas" | "colores" | "repuestos";
 
-  const abrirNuevo = () => {
-    setSeleccionada(null);
-    setModo("nuevo");
-    setNombre("");
-    setError(null);
-  };
-
-  const abrirDetalle = (z: Zona) => {
-    setSeleccionada(z);
-    setModo("edicion");
-    setNombre(z.nombre);
-    setError(null);
-  };
-
-  const guardar = async () => {
-    setError(null);
-    setCargando(true);
-    try {
-      if (modo === "nuevo") {
-        await apiFetch("/parametros/zonas", { method: "POST", body: { nombre, geometria: {} } });
-      } else if (seleccionada) {
-        await apiFetch(`/parametros/zonas/${seleccionada.id}`, { method: "PATCH", body: { nombre, geometria: seleccionada.geometria } });
-      }
-      setSeleccionada(null);
-      setModo("consulta");
-      await refetch();
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "No se pudo guardar la zona");
-    } finally {
-      setCargando(false);
-    }
-  };
-
-  const eliminar = async () => {
-    if (!seleccionada) return;
-    setError(null);
-    setCargando(true);
-    try {
-      await apiFetch(`/parametros/zonas/${seleccionada.id}`, { method: "DELETE" });
-      setSeleccionada(null);
-      await refetch();
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : "No se pudo eliminar la zona");
-    } finally {
-      setCargando(false);
-    }
-  };
-
-  return (
-    <Card>
-      <ActionBar
-        nuevo={{ onClick: abrirNuevo }}
-        actualizar={{ onClick: () => refetch() }}
-        eliminar={{ onClick: () => {}, disabled: true, title: "Elige una zona en la tabla y usa 'Eliminar' dentro de su detalle." }}
-        buscar={{ onClick: () => {}, disabled: true, title: "No aplica: la lista de zonas no pagina." }}
-        salir={{ onClick: () => setSeleccionada(null) }}
-      />
-      {error && !seleccionada && modo !== "nuevo" && <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)", marginTop: "var(--space-3)" }}>{error}</p>}
-      <div style={{ marginTop: "var(--space-3)" }}>
-        <DataTable
-          rows={zonas}
-          keyField={(z) => z.id}
-          vacio="No hay zonas creadas todavía."
-          columns={[
-            { header: "Nombre", render: (z) => z.nombre },
-            { header: "Detalle", render: (z) => <Button variant="secondary" onClick={() => abrirDetalle(z)}>Ver</Button> },
-          ]}
-        />
-      </div>
-
-      {(modo === "nuevo" || (seleccionada && modo === "edicion")) && (
-        <DetailPanel
-          titulo={modo === "nuevo" ? "Nueva zona" : `Zona — ${seleccionada?.nombre}`}
-          modo={modo}
-          onSalir={() => { setSeleccionada(null); setModo("consulta"); }}
-          onAceptar={guardar}
-          aceptarLabel="Guardar"
-          aceptarDisabled={!nombre}
-          aceptarLoading={cargando}
-          accionesExtra={
-            modo === "edicion" ? (
-              <div style={{ minWidth: 140 }}>
-                <Button variant="danger" onClick={eliminar} loading={cargando}>Eliminar</Button>
-              </div>
-            ) : undefined
-          }
-        >
-          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-            {error && <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)" }}>{error}</p>}
-            <TextField label="Nombre" value={nombre} onChange={(e) => setNombre(e.target.value)} />
-          </div>
-        </DetailPanel>
-      )}
-    </Card>
-  );
+// Catálogos Ronda 1 (Ola 1.5): marca/color de vehículo son el catálogo más
+// simple del módulo (solo nombre + activo, sin campos propios como taller o
+// tipos_documento) -- de ahí un componente genérico en vez de duplicar el
+// mismo CRUD dos veces.
+interface ItemCatalogoSimple {
+  id: string;
+  nombre: string;
+  activo: boolean;
 }
 
 function SeccionTiposDocumento() {
@@ -239,11 +135,11 @@ function SeccionTiposDocumento() {
 
   return (
     <Card>
+      {/* "Eliminar"/"Buscar" quitados (segunda pasada, punto 1): un tipo de
+          documento se desactiva (no se elimina) y la lista no pagina. */}
       <ActionBar
         nuevo={{ onClick: abrirNuevo }}
         actualizar={{ onClick: () => refetch() }}
-        eliminar={{ onClick: () => {}, disabled: true, title: "No aplica: un tipo de documento se desactiva, no se elimina." }}
-        buscar={{ onClick: () => {}, disabled: true, title: "No aplica: la lista no pagina." }}
         salir={{ onClick: () => setSeleccionado(null) }}
       />
       {error && !seleccionado && modo !== "nuevo" && <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)", marginTop: "var(--space-3)" }}>{error}</p>}
@@ -353,11 +249,10 @@ function SeccionMotivos() {
 
   return (
     <Card>
+      {/* "Eliminar"/"Buscar" quitados (segunda pasada, punto 1): un motivo se desactiva, no se elimina. y la lista no pagina. */}
       <ActionBar
         nuevo={{ onClick: abrirNuevo }}
         actualizar={{ onClick: () => refetch() }}
-        eliminar={{ onClick: () => {}, disabled: true, title: "No aplica: un motivo se desactiva, no se elimina." }}
-        buscar={{ onClick: () => {}, disabled: true, title: "No aplica: la lista no pagina." }}
         salir={{ onClick: () => setSeleccionado(null) }}
       />
       {error && !seleccionado && modo !== "nuevo" && <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)", marginTop: "var(--space-3)" }}>{error}</p>}
@@ -415,6 +310,10 @@ function SeccionTalleres() {
   const [nombre, setNombre] = useState("");
   const [direccion, setDireccion] = useState("");
   const [telefono, setTelefono] = useState("");
+  // Catálogos Ronda 1 (Ola 1.2): enlace a Google Maps, texto validado como
+  // URL en el backend -- sin lat/lon ni mapa en esta ronda (web-interno no
+  // monta ningún mapa hoy, ver PROPUESTA_CATALOGOS_Y_ADMINISTRACION.md §3.1).
+  const [urlMaps, setUrlMaps] = useState("");
   const [activo, setActivo] = useState(true);
   const [errorAccion, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
@@ -431,6 +330,7 @@ function SeccionTalleres() {
     setNombre("");
     setDireccion("");
     setTelefono("");
+    setUrlMaps("");
     setActivo(true);
     setError(null);
   };
@@ -441,6 +341,7 @@ function SeccionTalleres() {
     setNombre(t.nombre);
     setDireccion(t.direccion);
     setTelefono(t.telefono);
+    setUrlMaps(t.url_maps ?? "");
     setActivo(t.activo);
     setError(null);
   };
@@ -449,10 +350,11 @@ function SeccionTalleres() {
     setError(null);
     setCargando(true);
     try {
+      const body = { nombre, direccion, telefono, url_maps: urlMaps.trim() || null, activo };
       if (modo === "nuevo") {
-        await apiFetch("/catalogos/talleres", { method: "POST", body: { nombre, direccion, telefono, activo } });
+        await apiFetch("/catalogos/talleres", { method: "POST", body });
       } else if (seleccionado) {
-        await apiFetch(`/catalogos/talleres/${seleccionado.id}`, { method: "PATCH", body: { nombre, direccion, telefono, activo } });
+        await apiFetch(`/catalogos/talleres/${seleccionado.id}`, { method: "PATCH", body });
       }
       setSeleccionado(null);
       setModo("consulta");
@@ -466,11 +368,10 @@ function SeccionTalleres() {
 
   return (
     <Card>
+      {/* "Eliminar"/"Buscar" quitados (segunda pasada, punto 1): un taller se desactiva, no se elimina. y la lista no pagina. */}
       <ActionBar
         nuevo={{ onClick: abrirNuevo }}
         actualizar={{ onClick: () => refetch() }}
-        eliminar={{ onClick: () => {}, disabled: true, title: "No aplica: un taller se desactiva, no se elimina." }}
-        buscar={{ onClick: () => {}, disabled: true, title: "No aplica: la lista no pagina." }}
         salir={{ onClick: () => setSeleccionado(null) }}
       />
       {error && !seleccionado && modo !== "nuevo" && <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)", marginTop: "var(--space-3)" }}>{error}</p>}
@@ -483,6 +384,17 @@ function SeccionTalleres() {
             { header: "Nombre", render: (t) => t.nombre },
             { header: "Dirección", render: (t) => t.direccion || "—" },
             { header: "Teléfono", render: (t) => t.telefono || "—" },
+            {
+              header: "Maps",
+              render: (t) =>
+                t.url_maps ? (
+                  <a href={t.url_maps} target="_blank" rel="noreferrer">
+                    Ver en el mapa
+                  </a>
+                ) : (
+                  "—"
+                ),
+            },
             { header: "Estado", render: (t) => <Badge texto={t.activo ? "ACTIVO" : "INACTIVO"} tono={t.activo ? "exito" : "neutral"} /> },
             { header: "Detalle", render: (t) => <Button variant="secondary" onClick={() => abrirDetalle(t)}>Ver</Button> },
           ]}
@@ -504,6 +416,261 @@ function SeccionTalleres() {
             <TextField label="Nombre" value={nombre} onChange={(e) => setNombre(e.target.value)} />
             <TextField label="Dirección" value={direccion} onChange={(e) => setDireccion(e.target.value)} />
             <TextField label="Teléfono" value={telefono} onChange={(e) => setTelefono(e.target.value)} />
+            <TextField
+              label="Enlace de Google Maps (opcional)"
+              type="url"
+              placeholder="https://maps.google.com/…"
+              value={urlMaps}
+              onChange={(e) => setUrlMaps(e.target.value)}
+            />
+            <label style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+              <input type="checkbox" checked={activo} onChange={(e) => setActivo(e.target.checked)} />
+              Activo
+            </label>
+          </div>
+        </DetailPanel>
+      )}
+    </Card>
+  );
+}
+
+// Ola 3 de PROPUESTA_CATALOGOS_Y_ADMINISTRACION.md (§3.2): catálogo de
+// repuestos, antes aplazado por falta de evidencia, decisión ya tomada de
+// avanzar igual. Mismo patrón CRUD que SeccionTalleres, con categoría/
+// precio de referencia/unidad en vez de dirección/teléfono/maps.
+function SeccionRepuestos() {
+  const [seleccionado, setSeleccionado] = useState<RepuestoCatalogo | null>(null);
+  const [modo, setModo] = useState<ModoPanel>("consulta");
+  const [nombre, setNombre] = useState("");
+  const [categoria, setCategoria] = useState(CATEGORIAS_REPUESTO[0]);
+  const [precioReferencial, setPrecioReferencial] = useState("");
+  const [unidad, setUnidad] = useState(UNIDADES_REPUESTO[0]);
+  const [activo, setActivo] = useState(true);
+  const [errorAccion, setError] = useState<string | null>(null);
+  const [cargando, setCargando] = useState(false);
+
+  const { data: repuestos = [], error: errorCarga, refetch } = useSwr<RepuestoCatalogo[]>(RECURSO_REPUESTOS, () =>
+    apiFetch<RepuestoCatalogo[]>(RECURSO_REPUESTOS),
+  );
+  const error =
+    errorAccion ??
+    (errorCarga ? (errorCarga instanceof ApiError ? errorCarga.message : "No se pudieron cargar los repuestos") : null);
+
+  const abrirNuevo = () => {
+    setSeleccionado(null);
+    setModo("nuevo");
+    setNombre("");
+    setCategoria(CATEGORIAS_REPUESTO[0]);
+    setPrecioReferencial("");
+    setUnidad(UNIDADES_REPUESTO[0]);
+    setActivo(true);
+    setError(null);
+  };
+
+  const abrirDetalle = (r: RepuestoCatalogo) => {
+    setSeleccionado(r);
+    setModo("edicion");
+    setNombre(r.nombre);
+    setCategoria(r.categoria);
+    setPrecioReferencial(String(r.precio_referencial));
+    setUnidad(r.unidad);
+    setActivo(r.activo);
+    setError(null);
+  };
+
+  const guardar = async () => {
+    setError(null);
+    setCargando(true);
+    try {
+      const body = {
+        nombre,
+        categoria,
+        precio_referencial: Number(precioReferencial),
+        unidad,
+        activo,
+      };
+      if (modo === "nuevo") {
+        await apiFetch("/catalogos/repuestos", { method: "POST", body });
+      } else if (seleccionado) {
+        await apiFetch(`/catalogos/repuestos/${seleccionado.id}`, { method: "PATCH", body });
+      }
+      setSeleccionado(null);
+      setModo("consulta");
+      await refetch();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "No se pudo guardar el repuesto");
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  return (
+    <Card>
+      {/* "Eliminar"/"Buscar" quitados (segunda pasada, punto 1): un repuesto se desactiva, no se elimina. y la lista no pagina. */}
+      <ActionBar
+        nuevo={{ onClick: abrirNuevo }}
+        actualizar={{ onClick: () => refetch() }}
+        salir={{ onClick: () => setSeleccionado(null) }}
+      />
+      {error && !seleccionado && modo !== "nuevo" && (
+        <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)", marginTop: "var(--space-3)" }}>{error}</p>
+      )}
+      <div style={{ marginTop: "var(--space-3)" }}>
+        <DataTable
+          rows={repuestos}
+          keyField={(r) => r.id}
+          vacio="No hay repuestos creados todavía."
+          columns={[
+            { header: "Nombre", render: (r) => r.nombre },
+            { header: "Categoría", render: (r) => r.categoria },
+            { header: "Precio referencial", render: (r) => `$${r.precio_referencial.toFixed(2)}` },
+            { header: "Unidad", render: (r) => r.unidad },
+            { header: "Estado", render: (r) => <Badge texto={r.activo ? "ACTIVO" : "INACTIVO"} tono={r.activo ? "exito" : "neutral"} /> },
+            { header: "Detalle", render: (r) => <Button variant="secondary" onClick={() => abrirDetalle(r)}>Ver</Button> },
+          ]}
+        />
+      </div>
+
+      {(modo === "nuevo" || (seleccionado && modo === "edicion")) && (
+        <DetailPanel
+          titulo={modo === "nuevo" ? "Nuevo repuesto" : `Repuesto — ${seleccionado?.nombre}`}
+          modo={modo}
+          onSalir={() => { setSeleccionado(null); setModo("consulta"); }}
+          onAceptar={guardar}
+          aceptarLabel="Guardar"
+          aceptarDisabled={!nombre || !precioReferencial}
+          aceptarLoading={cargando}
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+            {error && <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)" }}>{error}</p>}
+            <TextField label="Nombre" value={nombre} onChange={(e) => setNombre(e.target.value)} />
+            <Select
+              label="Categoría"
+              value={categoria}
+              onChange={(e) => setCategoria(e.target.value)}
+              options={CATEGORIAS_REPUESTO.map((c) => ({ value: c, label: c }))}
+            />
+            <TextField
+              label="Precio referencial"
+              type="number"
+              min={0}
+              step={0.01}
+              bloquearNegativo
+              value={precioReferencial}
+              onChange={(e) => setPrecioReferencial(e.target.value)}
+            />
+            <Select
+              label="Unidad"
+              value={unidad}
+              onChange={(e) => setUnidad(e.target.value)}
+              options={UNIDADES_REPUESTO.map((u) => ({ value: u, label: u }))}
+            />
+            <label style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+              <input type="checkbox" checked={activo} onChange={(e) => setActivo(e.target.checked)} />
+              Activo
+            </label>
+          </div>
+        </DetailPanel>
+      )}
+    </Card>
+  );
+}
+
+function SeccionCatalogoSimple({
+  recurso,
+  articuloNombre,
+  vacioTexto,
+}: {
+  recurso: string;
+  articuloNombre: string;
+  vacioTexto: string;
+}) {
+  const [seleccionado, setSeleccionado] = useState<ItemCatalogoSimple | null>(null);
+  const [modo, setModo] = useState<ModoPanel>("consulta");
+  const [nombre, setNombre] = useState("");
+  const [activo, setActivo] = useState(true);
+  const [errorAccion, setError] = useState<string | null>(null);
+  const [cargando, setCargando] = useState(false);
+
+  const { data: items = [], error: errorCarga, refetch } = useSwr<ItemCatalogoSimple[]>(recurso, () =>
+    apiFetch<ItemCatalogoSimple[]>(recurso),
+  );
+  const error =
+    errorAccion ??
+    (errorCarga ? (errorCarga instanceof ApiError ? errorCarga.message : `No se pudo cargar ${articuloNombre}`) : null);
+
+  const abrirNuevo = () => {
+    setSeleccionado(null);
+    setModo("nuevo");
+    setNombre("");
+    setActivo(true);
+    setError(null);
+  };
+
+  const abrirDetalle = (item: ItemCatalogoSimple) => {
+    setSeleccionado(item);
+    setModo("edicion");
+    setNombre(item.nombre);
+    setActivo(item.activo);
+    setError(null);
+  };
+
+  const guardar = async () => {
+    setError(null);
+    setCargando(true);
+    try {
+      if (modo === "nuevo") {
+        await apiFetch(recurso, { method: "POST", body: { nombre, activo } });
+      } else if (seleccionado) {
+        await apiFetch(`${recurso}/${seleccionado.id}`, { method: "PATCH", body: { nombre, activo } });
+      }
+      setSeleccionado(null);
+      setModo("consulta");
+      await refetch();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : `No se pudo guardar ${articuloNombre}`);
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  return (
+    <Card>
+      {/* "Eliminar"/"Buscar" quitados (segunda pasada, punto 1): ${articuloNombre} se desactiva, no se elimina. y la lista no pagina. */}
+      <ActionBar
+        nuevo={{ onClick: abrirNuevo }}
+        actualizar={{ onClick: () => refetch() }}
+        salir={{ onClick: () => setSeleccionado(null) }}
+      />
+      {error && !seleccionado && modo !== "nuevo" && (
+        <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)", marginTop: "var(--space-3)" }}>{error}</p>
+      )}
+      <div style={{ marginTop: "var(--space-3)" }}>
+        <DataTable
+          rows={items}
+          keyField={(i) => i.id}
+          vacio={vacioTexto}
+          columns={[
+            { header: "Nombre", render: (i) => i.nombre },
+            { header: "Estado", render: (i) => <Badge texto={i.activo ? "ACTIVO" : "INACTIVO"} tono={i.activo ? "exito" : "neutral"} /> },
+            { header: "Detalle", render: (i) => <Button variant="secondary" onClick={() => abrirDetalle(i)}>Ver</Button> },
+          ]}
+        />
+      </div>
+
+      {(modo === "nuevo" || (seleccionado && modo === "edicion")) && (
+        <DetailPanel
+          titulo={modo === "nuevo" ? `Nuevo — ${articuloNombre}` : `${articuloNombre} — ${seleccionado?.nombre}`}
+          modo={modo}
+          onSalir={() => { setSeleccionado(null); setModo("consulta"); }}
+          onAceptar={guardar}
+          aceptarLabel="Guardar"
+          aceptarDisabled={!nombre}
+          aceptarLoading={cargando}
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+            {error && <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)" }}>{error}</p>}
+            <TextField label="Nombre" value={nombre} onChange={(e) => setNombre(e.target.value)} />
             <label style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
               <input type="checkbox" checked={activo} onChange={(e) => setActivo(e.target.checked)} />
               Activo
@@ -516,29 +683,45 @@ function SeccionTalleres() {
 }
 
 export function SeccionCatalogos() {
-  const [pestana, setPestana] = useState<Pestana>("zonas");
+  const [pestana, setPestana] = useState<Pestana>("tipos");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
       <Card>
         <h2 style={{ marginTop: 0, fontSize: "var(--font-size-lg)" }}>Catálogos y tablas maestras</h2>
         <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
-          Zonas de despacho, tipos de documento exigidos a conductores/vehículos, motivos de cancelación/incidencia y
-          talleres asociados — datos de referencia que hoy vivían fijos en código o como texto libre sin catálogo.
+          Tipos de documento exigidos a conductores/vehículos, motivos de cancelación/incidencia y talleres
+          asociados — datos de referencia que hoy vivían fijos en código o como texto libre sin catálogo.
         </p>
       </Card>
 
       <div style={{ display: "flex", gap: "var(--space-2)" }}>
-        <TabButton activa={pestana === "zonas"} onClick={() => setPestana("zonas")}>Zonas</TabButton>
         <TabButton activa={pestana === "tipos"} onClick={() => setPestana("tipos")}>Tipos de documento</TabButton>
         <TabButton activa={pestana === "motivos"} onClick={() => setPestana("motivos")}>Motivos</TabButton>
         <TabButton activa={pestana === "talleres"} onClick={() => setPestana("talleres")}>Talleres</TabButton>
+        <TabButton activa={pestana === "marcas"} onClick={() => setPestana("marcas")}>Marcas de vehículo</TabButton>
+        <TabButton activa={pestana === "colores"} onClick={() => setPestana("colores")}>Colores de vehículo</TabButton>
+        <TabButton activa={pestana === "repuestos"} onClick={() => setPestana("repuestos")}>Repuestos</TabButton>
       </div>
 
-      {pestana === "zonas" && <SeccionZonas />}
       {pestana === "tipos" && <SeccionTiposDocumento />}
       {pestana === "motivos" && <SeccionMotivos />}
       {pestana === "talleres" && <SeccionTalleres />}
+      {pestana === "marcas" && (
+        <SeccionCatalogoSimple
+          recurso={RECURSO_MARCAS_VEHICULO}
+          articuloNombre="la marca"
+          vacioTexto="No hay marcas creadas todavía."
+        />
+      )}
+      {pestana === "colores" && (
+        <SeccionCatalogoSimple
+          recurso={RECURSO_COLORES_VEHICULO}
+          articuloNombre="el color"
+          vacioTexto="No hay colores creados todavía."
+        />
+      )}
+      {pestana === "repuestos" && <SeccionRepuestos />}
     </div>
   );
 }

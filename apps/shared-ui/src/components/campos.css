@@ -1,0 +1,130 @@
+/* EL CAMPO — hoja compartida por TextField, PasswordField, Select y
+   TextArea (Fase 1 del Sistema Riel).
+
+   El campo anterior era una caja: borde en los 4 lados, radio, fondo
+   propio. Apilados en un formulario producían una pila de recuadros, que
+   es exactamente la textura de cualquier panel administrativo.
+
+   El campo del Sistema Riel se apoya en UNA línea inferior que se enciende
+   al enfocarse -- el mismo gesto del riel, donde la línea es lo que
+   conduce. Un formulario pasa a leerse como una serie de renglones de
+   plano, no como una pila de cajas. El label sube a rótulo (versalitas
+   espaciadas), el mismo tratamiento que la cabecera de un registro y la
+   etiqueta de un instrumento: una sola gramática para toda etiqueta de
+   dato del sistema. */
+
+.uf-campo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+  min-width: 0;
+}
+
+.uf-campo-label {
+  color: var(--color-text-muted);
+}
+
+/* Contenedor relativo: lo necesita el botón de revelar del campo de
+   contraseña, que se ancla al extremo derecho de la línea. */
+.uf-campo-caja {
+  position: relative;
+  width: 100%;
+}
+
+.uf-campo-control {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid var(--color-border);
+  border-radius: 0;
+  color: var(--color-text);
+  font-family: inherit;
+  font-size: var(--font-size-lg);
+  height: var(--control-height);
+  padding: 0 0 var(--space-1);
+  transition: border-color 0.14s ease;
+}
+
+.uf-campo-control::placeholder {
+  color: var(--color-text-muted);
+  opacity: 0.75;
+}
+
+/* Foco: la línea se enciende. Usa el ámbar PROFUNDO y no el de marca --
+   sobre fondo claro el ámbar brillante da 2.08:1 contra la superficie, por
+   debajo del mínimo para un indicador de foco perceptible; la variante
+   honda da 6.79:1 y sigue siendo ámbar, así que el gesto no cambia. */
+.uf-campo-control:focus {
+  outline: none;
+  border-bottom-color: var(--color-accent-deep);
+}
+
+.uf-campo-control:disabled {
+  color: var(--color-text-muted);
+  border-bottom-style: dotted;
+  cursor: not-allowed;
+}
+
+.uf-campo-control--error {
+  border-bottom-color: var(--color-danger);
+}
+
+/* El select conserva su flecha nativa, así que necesita aire a la derecha
+   y el fondo de la superficie (un select transparente muestra el menú
+   desplegable con el fondo del sistema operativo en algunos navegadores). */
+.uf-campo-control--select {
+  background: var(--color-surface);
+  padding: 0 var(--space-2) var(--space-1) 0;
+}
+
+.uf-campo-control--area {
+  height: auto;
+  min-height: calc(var(--control-height) * 2);
+  padding: var(--space-2) 0;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+/* Sitio para el botón de revelar contraseña. */
+.uf-campo-control--con-accion {
+  padding-right: 40px;
+}
+
+.uf-campo-accion {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.uf-campo-accion:hover {
+  color: var(--color-text);
+}
+
+.uf-campo-ayuda {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.uf-campo-error {
+  font-size: var(--font-size-sm);
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
+.uf-campo-ok {
+  font-size: var(--font-size-sm);
+  color: var(--color-success);
+  font-weight: 600;
+}

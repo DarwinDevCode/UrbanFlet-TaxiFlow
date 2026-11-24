@@ -8,6 +8,7 @@ import {
   DataTable,
   DetailField,
   DetailPanel,
+  TabButton,
   TextField,
   useSwr,
   type ModoPanel,
@@ -40,26 +41,6 @@ const NOMBRE_SERVICIO: Record<ServicioExterno["nombre"], string> = {
 };
 
 type Pestana = "credenciales" | "servicios";
-
-function TabButton({ activa, onClick, children }: { activa: boolean; onClick: () => void; children: string }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        padding: "var(--space-2) var(--space-4)",
-        borderRadius: "var(--radius-md)",
-        border: "1px solid var(--color-border)",
-        background: activa ? "var(--color-accent)" : "var(--color-surface)",
-        color: activa ? "#fff" : "var(--color-text)",
-        fontWeight: 600,
-        cursor: "pointer",
-      }}
-    >
-      {children}
-    </button>
-  );
-}
 
 function SeccionCredenciales() {
   const [seleccionada, setSeleccionada] = useState<Credencial | null>(null);
@@ -128,11 +109,12 @@ function SeccionCredenciales() {
 
   return (
     <Card>
+      {/* "Eliminar"/"Buscar" quitados (segunda pasada, punto 1): una
+          credencial se revoca (no se elimina) y la lista no pagina --
+          ningún rol tiene un uso real para ninguno de los dos acá. */}
       <ActionBar
         nuevo={{ onClick: abrirNuevo }}
         actualizar={{ onClick: () => refetch() }}
-        eliminar={{ onClick: () => {}, disabled: true, title: "No aplica: una credencial se revoca, no se elimina." }}
-        buscar={{ onClick: () => {}, disabled: true, title: "No aplica: la lista no pagina." }}
         salir={{ onClick: () => setSeleccionada(null) }}
       />
       {error && !seleccionada && modo !== "nuevo" && (
@@ -257,7 +239,7 @@ function SeccionServiciosExternos() {
       setRotando(false);
       await refetch();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "No se pudo rotar la key");
+      setError(e instanceof ApiError ? e.message : "No se pudo rotar la clave");
     } finally {
       setCargando(false);
     }
@@ -265,11 +247,11 @@ function SeccionServiciosExternos() {
 
   return (
     <Card>
+      {/* "Nuevo"/"Eliminar"/"Buscar" quitados (segunda pasada, punto 1): los
+          3 servicios externos son fijos y la lista no pagina -- ningún rol
+          tiene un uso real para ninguno de los tres acá. */}
       <ActionBar
-        nuevo={{ onClick: () => {}, disabled: true, title: "No aplica: los servicios externos son fijos, no se crean." }}
         actualizar={{ onClick: () => refetch() }}
-        eliminar={{ onClick: () => {}, disabled: true, title: "No aplica." }}
-        buscar={{ onClick: () => {}, disabled: true, title: "No aplica: la lista no pagina." }}
         salir={{ onClick: () => setRotando(false) }}
       />
       {error && !rotando && (
@@ -285,12 +267,12 @@ function SeccionServiciosExternos() {
           columns={[
             { header: "Servicio", render: (s) => NOMBRE_SERVICIO[s.nombre] },
             { header: "Estado", render: (s) => <Badge texto={s.estado === "activo" ? "ACTIVO" : "NO CONFIGURADO"} tono={s.estado === "activo" ? "exito" : "neutral"} /> },
-            { header: "Key", render: (s) => s.key_enmascarada ?? "—" },
+            { header: "Clave", render: (s) => s.key_enmascarada ?? "—" },
             {
               header: "Acción",
               render: (s) =>
                 s.nombre === "google_maps" ? (
-                  <Button variant="secondary" onClick={abrirRotar}>Rotar key</Button>
+                  <Button variant="secondary" onClick={abrirRotar}>Rotar clave</Button>
                 ) : (
                   "—"
                 ),
@@ -305,7 +287,7 @@ function SeccionServiciosExternos() {
 
       {rotando && (
         <DetailPanel
-          titulo="Rotar key de Google Maps"
+          titulo="Rotar clave de Google Maps"
           modo="edicion"
           onSalir={() => setRotando(false)}
           onAceptar={rotar}
@@ -316,9 +298,9 @@ function SeccionServiciosExternos() {
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
             {error && <p style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)" }}>{error}</p>}
             <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
-              La nueva key entra en vigor de inmediato para Directions/Geocoding, sin reiniciar el backend.
+              La nueva clave entra en vigor de inmediato para Directions/Geocoding, sin reiniciar el sistema.
             </p>
-            <TextField label="Nueva API key" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+            <TextField label="Nueva clave de API" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
           </div>
         </DetailPanel>
       )}

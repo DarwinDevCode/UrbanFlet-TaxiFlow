@@ -1,0 +1,92 @@
+/* LA ACCIÓN — ver Button.tsx. La esquina cortada es la firma; todo lo
+   demás está al servicio de que siga comportándose como un botón normal. */
+
+.uf-accion {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 100%;
+  height: var(--control-height);
+  padding: 0 var(--space-4);
+  border: none;
+  font-family: inherit;
+  font-size: var(--font-size-md);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  /* El corte diagonal en la esquina inferior izquierda: geometría de
+     señalética vial en vez de la píldora redondeada. */
+  clip-path: polygon(0 0, 100% 0, 100% 100%, var(--corte) 100%, 0 calc(100% - var(--corte)));
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+.uf-accion:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* El clip-path recorta también el outline del navegador, así que el foco
+   se dibuja como anillo interior. Contraste alto contra las 3 variantes. */
+.uf-accion:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--color-surface), inset 0 0 0 4px var(--color-text);
+}
+
+/* ── Variantes ───────────────────────────────────────────────────────── */
+.uf-accion--primary {
+  background: var(--color-accent);
+  color: var(--color-accent-contrast);
+}
+.uf-accion--primary:hover:not(:disabled) {
+  background: #ffb733;
+}
+
+.uf-accion--secondary {
+  background: transparent;
+  color: var(--color-text);
+  box-shadow: inset 0 0 0 1px var(--color-border);
+  font-weight: 600;
+}
+.uf-accion--secondary:hover:not(:disabled) {
+  background: var(--color-surface-muted);
+}
+.uf-accion--secondary:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-accent-deep);
+}
+
+.uf-accion--danger {
+  background: var(--color-danger);
+  color: var(--color-danger-contrast);
+}
+.uf-accion--danger:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+
+/* ── Estado de carga ─────────────────────────────────────────────────── */
+/* Un nodo del riel que late: el mismo vocabulario visual del sistema en
+   vez de un spinner genérico. */
+.uf-accion-cargando {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: uf-latido 0.9s ease-in-out infinite;
+}
+
+@keyframes uf-latido {
+  0%, 100% { opacity: 0.35; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+.uf-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

@@ -1,0 +1,93 @@
+/* Tarjeta flotante sobre el mapa — compartida por web-pasajero y
+   web-conductor. Antes cada app repetía el mismo bloque de estilo inline con
+   su propio z-index suelto (500 en pasajero, 1001 en conductor); ahora hay un
+   solo mecanismo y un solo valor, tomado de la escala de capas de tokens.css.
+
+   Se ancla abajo-izquierda para no tapar los controles propios de Leaflet
+   (zoom arriba-izquierda, "ir a mi ubicación" arriba-derecha). */
+
+.map-overlay-card {
+  position: absolute;
+  left: var(--space-3);
+  bottom: var(--space-3);
+  width: min(340px, calc(100% - 2 * var(--space-3)));
+  max-height: calc(100% - 2 * var(--space-3));
+  z-index: var(--z-map-overlay);
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+/* Franja siempre visible: resumen esencial + botón de plegado. En estado
+   colapsado es lo único que se ve de la tarjeta. */
+.map-overlay-resumen {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  min-height: 44px;
+  flex-shrink: 0;
+}
+
+.map-overlay-resumen-contenido {
+  flex: 1;
+  min-width: 0;
+}
+
+.map-overlay-toggle {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  transition: transform 220ms ease;
+}
+
+.map-overlay-card[data-colapsado="true"] .map-overlay-toggle {
+  transform: rotate(180deg);
+}
+
+/* Cuerpo expandido. El colapso anima `max-height` (no `display:none`) para
+   que la transición sea continua; con max-height 0 el contenido queda
+   recortado sin barra de scroll, así que no hace falta alternar overflow. */
+.map-overlay-cuerpo {
+  overflow-y: auto;
+  max-height: 70vh;
+  opacity: 1;
+  padding: 0 var(--space-3) var(--space-3);
+  transition:
+    max-height 220ms ease,
+    opacity 160ms ease,
+    padding-bottom 220ms ease;
+}
+
+.map-overlay-card[data-colapsado="true"] .map-overlay-cuerpo {
+  max-height: 0;
+  opacity: 0;
+  padding-bottom: 0;
+}
+
+/* Sin resumen propio (p.ej. una oferta entrante, que nunca se pliega) la
+   tarjeta es solo el cuerpo — sin la franja ni el padding superior de más. */
+.map-overlay-card[data-plegable="false"] .map-overlay-cuerpo {
+  padding-top: var(--space-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-overlay-cuerpo,
+  .map-overlay-toggle {
+    transition: none;
+  }
+}

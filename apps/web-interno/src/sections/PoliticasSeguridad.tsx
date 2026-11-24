@@ -116,7 +116,7 @@ export function SeccionPoliticasSeguridad() {
           <TextField label="Ventana (minutos)" type="number" min={1} max={180} disabled={!editando} value={refreshVentana} onChange={(e) => setRefreshVentana(Number(e.target.value))} error={fieldError(error, "refresh_ventana_minutos")} />
         </div>
 
-        <h3 style={{ fontSize: "var(--font-size-md)", marginTop: "var(--space-4)" }}>Suspensión por denegaciones de permisos (CU-O18 A4)</h3>
+        <h3 style={{ fontSize: "var(--font-size-md)", marginTop: "var(--space-4)" }}>Suspensión por denegaciones de permisos</h3>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "var(--space-3)" }}>
           <TextField label="Umbral de denegaciones" type="number" min={3} max={20} disabled={!editando} value={rbacUmbral} onChange={(e) => setRbacUmbral(Number(e.target.value))} error={fieldError(error, "rbac_umbral_denegaciones")} />
           <TextField label="Ventana (minutos)" type="number" min={1} max={180} disabled={!editando} value={rbacVentana} onChange={(e) => setRbacVentana(Number(e.target.value))} error={fieldError(error, "rbac_ventana_minutos")} />

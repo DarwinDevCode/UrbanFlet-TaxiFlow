@@ -191,7 +191,7 @@ export function SeccionMonitoreo() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
       <Card>
-        <h2 style={{ marginTop: 0, fontSize: "var(--font-size-lg)" }}>Monitoreo y observabilidad</h2>
+        <h2 style={{ marginTop: 0, fontSize: "var(--font-size-lg)" }}>Monitoreo del sistema</h2>
         <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
           Estado de infraestructura (backend, las 3 bases de datos y Airflow) evaluado bajo demanda — no hay
           vigilancia continua ni alerta push automática en este entorno; los umbrales de abajo solo colorean la
@@ -228,6 +228,7 @@ export function SeccionMonitoreo() {
             <KpiCard
               key={c.componente}
               etiqueta={NOMBRE_COMPONENTE[c.componente]}
+              descripcion="Tiempo de respuesta al último chequeo — más alto es peor."
               valor={c.disponible && c.latencia_ms !== null ? `${c.latencia_ms} ms` : "No disponible"}
               tono={TONO_KPI[c.estado]}
             />
@@ -244,26 +245,32 @@ export function SeccionMonitoreo() {
         <KpiRow>
           <KpiCard
             etiqueta="Mongo — conexiones activas"
+            descripcion="Conexiones abiertas a la base de datos operativa ahora mismo."
             valor={indicadores?.mongo.disponible ? String(indicadores.mongo.conexiones_activas ?? "—") : "No disponible"}
           />
           <KpiCard
             etiqueta="Mongo — tamaño de datos"
+            descripcion="Espacio ocupado por los datos almacenados."
             valor={indicadores?.mongo.disponible ? `${indicadores.mongo.tamano_datos_mb ?? "—"} MB` : "No disponible"}
           />
           <KpiCard
             etiqueta="Redis — memoria usada"
+            descripcion="Memoria RAM que usa el caché (posiciones, sesiones, colas) ahora mismo."
             valor={indicadores?.redis.disponible ? `${indicadores.redis.memoria_usada_mb ?? "—"} MB` : "No disponible"}
           />
           <KpiCard
-            etiqueta="Redis — hit rate"
+            etiqueta="Redis — % de aciertos de caché"
+            descripcion="% de lecturas del caché que encontraron el dato ahí, sin ir a la base de datos."
             valor={indicadores?.redis.disponible ? `${indicadores.redis.hit_rate_pct ?? "—"}%` : "No disponible"}
           />
           <KpiCard
             etiqueta="ClickHouse — consultas activas"
+            descripcion="Consultas analíticas en ejecución ahora mismo."
             valor={indicadores?.clickhouse.disponible ? String(indicadores.clickhouse.consultas_activas ?? "—") : "No disponible"}
           />
           <KpiCard
             etiqueta="ClickHouse — memoria usada"
+            descripcion="Memoria RAM que usa el motor analítico ahora mismo."
             valor={indicadores?.clickhouse.disponible ? `${indicadores.clickhouse.memoria_usada_mb ?? "—"} MB` : "No disponible"}
           />
         </KpiRow>
@@ -284,13 +291,10 @@ export function SeccionMonitoreo() {
       </Card>
 
       <Card>
-        <ActionBar
-          nuevo={{ onClick: () => {}, disabled: true, title: "No aplica: los 5 componentes monitoreados son fijos." }}
-          actualizar={{ onClick: () => cargar() }}
-          eliminar={{ onClick: () => {}, disabled: true, title: "No aplica." }}
-          buscar={{ onClick: () => {}, disabled: true, title: "No aplica: la lista no pagina." }}
-          salir={{ onClick: () => setSeleccionado(null) }}
-        />
+        {/* "Nuevo"/"Eliminar"/"Buscar" quitados (segunda pasada, punto 1):
+            los 5 componentes monitoreados son fijos y la lista no pagina --
+            ningún rol tiene un uso real para ninguno de los tres acá. */}
+        <ActionBar actualizar={{ onClick: () => cargar() }} salir={{ onClick: () => setSeleccionado(null) }} />
         <div style={{ marginTop: "var(--space-3)" }}>
           <DataTable
             rows={umbrales}

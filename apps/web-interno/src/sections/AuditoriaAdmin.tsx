@@ -70,7 +70,7 @@ export function SeccionAuditoriaAdmin() {
         <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
           Vista filtrada de la misma bitácora de CU-O17 (Auditoría e Integraciones, panel táctico) — no es un
           segundo registro, solo enfoca las acciones que ocurren dentro de los módulos de Administración del
-          Sistema (cuentas, roles, políticas, parámetros globales, feature flags), sin mezclarlas con miles de
+          Sistema (cuentas, roles, políticas, parámetros globales, funcionalidades activables), sin mezclarlas con miles de
           eventos operativos del día a día.
         </p>
       </Card>
@@ -112,12 +112,13 @@ export function SeccionAuditoriaAdmin() {
           columns={[
             { header: "Hora", render: (e) => new Date(e.ts).toLocaleString() },
             { header: "Actor", render: (e) => e.actor_id ?? "—" },
-            { header: "Rol", width: "160px", render: (e) => e.rol ?? "—" },
+            { header: "Rol", width: "160px", prioridad: "media", render: (e) => e.rol ?? "—" },
             { header: "Acción", render: (e) => e.accion },
-            { header: "Entidad", render: (e) => `${e.entidad}${e.entidad_id ? ` (${e.entidad_id})` : ""}` },
-            { header: "Resultado", render: (e) => <Badge texto={e.resultado} tono={e.resultado === "DENEGADO" ? "peligro" : "exito"} /> },
+            { header: "Entidad", prioridad: "baja", render: (e) => `${e.entidad}${e.entidad_id ? ` (${e.entidad_id})` : ""}` },
+            { header: "Resultado", sinTruncar: true, render: (e) => <Badge texto={e.resultado} tono={e.resultado === "DENEGADO" ? "peligro" : "exito"} /> },
             {
               header: "Cambio",
+              sinTruncar: true,
               render: (e) =>
                 e.datos_previos || e.datos_posteriores ? (
                   <button

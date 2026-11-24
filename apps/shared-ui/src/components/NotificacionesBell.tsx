@@ -1,59 +1,28 @@
 import { useEffect, useRef, useState } from "react";
+import { useAuth } from "../auth/AuthProvider";
 import { apiFetch } from "../api/client";
+import { etiquetaNotificacion, type NotificacionOut } from "../notificacionesCatalogo";
 import { Button } from "./Button";
+import { CountBadge } from "./CountBadge";
 
-interface NotificacionOut {
-  id: string;
-  tipo: string;
-  categoria: string;
-  payload: Record<string, unknown>;
-  ts: string;
-  leida: boolean;
+interface NotificacionesBellProps {
+  /** Navega a la sección completa "Notificaciones" -- cada app resuelve
+   * cómo (cambio de `vista`, o `irASeccion` en web-interno). Sin esta prop,
+   * "Ver todas" no se pinta -- útil para un consumidor aislado en test. */
+  onVerTodas?: () => void;
 }
-
-const ETIQUETA_POR_TIPO: Record<string, string> = {
-  NUEVA_SOLICITUD: "Nueva solicitud de conductor",
-  SOLICITUD_DECISION: "Tu solicitud tuvo una decisión",
-  RENOVACION_DOCUMENTO_DECISION: "Renovación de documento resuelta",
-  ORDEN_MANTENIMIENTO_REGISTRADA: "Nueva orden de mantenimiento",
-  ORDEN_MANTENIMIENTO_CERRADA: "Orden de mantenimiento cerrada",
-  ALERTA_SEGURIDAD: "Alerta de seguridad",
-  VIAJE_ASIGNADO: "Se asignó un conductor a tu viaje",
-  CONDUCTOR_EN_CAMINO: "El conductor va en camino",
-  CONDUCTOR_LLEGO: "El conductor llegó",
-  VIAJE_INICIADO: "El viaje comenzó",
-  VIAJE_FINALIZADO: "El viaje finalizó",
-  VIAJE_CANCELADO_CONDUCTOR: "El conductor canceló el viaje",
-};
-
-// Refresco del contador de no leídas -- mismo intervalo que otros paneles
-// de "estado casi en vivo" del proyecto (ej. Monitoreo, 20s), sin abrir un
-// WebSocket nuevo solo para esto (los eventos en vivo ya tienen su propio
-// canal; esta bandeja es la red de seguridad para cuando no se estaba
-// conectado en el momento).
-const INTERVALO_REFRESCO_MS = 20_000;
 
 /** Campana de notificaciones — Sección 4.2 de `specs/specs-administrativas/
  * ux_complementaria.md`. Reutilizada en el header de las 3 apps vía
- * `AppShell.headerActions`. */
-export function NotificacionesBell() {
-  const [noLeidas, setNoLeidas] = useState(0);
+ * `AppShell.headerActions`. El contador de no leídas vive en `AuthProvider`
+ * (compartido con la entrada de sidebar "Notificaciones", que necesita el
+ * mismo número sin desincronizarse). */
+export function NotificacionesBell({ onVerTodas }: NotificacionesBellProps) {
+  const { noLeidas, actualizarNoLeidas, refrescarNoLeidas } = useAuth();
   const [abierto, setAbierto] = useState(false);
   const [items, setItems] = useState<NotificacionOut[]>([]);
   const [cargando, setCargando] = useState(false);
   const contenedorRef = useRef<HTMLDivElement>(null);
-
-  const refrescarContador = () => {
-    apiFetch<{ items: NotificacionOut[]; total: number; no_leidas: number }>("/notificaciones/mias?limite=1")
-      .then((r) => setNoLeidas(r.no_leidas))
-      .catch(() => {});
-  };
-
-  useEffect(() => {
-    refrescarContador();
-    const id = setInterval(refrescarContador, INTERVALO_REFRESCO_MS);
-    return () => clearInterval(id);
-  }, []);
 
   useEffect(() => {
     if (!abierto) return;
@@ -71,7 +40,7 @@ export function NotificacionesBell() {
       apiFetch<{ items: NotificacionOut[]; total: number; no_leidas: number }>("/notificaciones/mias?limite=20")
         .then((r) => {
           setItems(r.items);
-          setNoLeidas(r.no_leidas);
+          actualizarNoLeidas(r.no_leidas);
         })
         .catch(() => {})
         .finally(() => setCargando(false));
@@ -82,7 +51,7 @@ export function NotificacionesBell() {
     try {
       await apiFetch(`/notificaciones/mias/${id}/leida`, { method: "PATCH" });
       setItems((prev) => prev.map((n) => (n.id === id ? { ...n, leida: true } : n)));
-      setNoLeidas((n) => Math.max(0, n - 1));
+      refrescarNoLeidas();
     } catch {
       /* silencioso -- no bloquea la lectura del resto */
     }
@@ -96,36 +65,28 @@ export function NotificacionesBell() {
         aria-label="Bandeja de notificaciones"
         style={{
           position: "relative",
+          display: "inline-flex",
+          alignItems: "center",
           border: "1px solid var(--color-border)",
           background: "var(--color-surface)",
           color: "var(--color-text)",
           borderRadius: "var(--radius-sm)",
           padding: "6px 10px",
           cursor: "pointer",
-          fontSize: "var(--font-size-md)",
         }}
       >
-        🔔
+        {/* Mismo tratamiento que el resto de los íconos hechos a mano del
+            sistema (ej. la flecha de plegado de `MapOverlayCard`): SVG
+            inline con `stroke="currentColor"`, sin librería nueva -- el
+            proyecto no tiene ninguna instalada (confirmado antes de tocar
+            esto, ver resumen de la ronda). */}
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M13.73 21a2 2 0 0 1-3.46 0" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
         {noLeidas > 0 && (
-          <span
-            style={{
-              position: "absolute",
-              top: -4,
-              right: -4,
-              background: "var(--color-danger)",
-              color: "#fff",
-              borderRadius: "999px",
-              fontSize: "0.65rem",
-              fontWeight: 700,
-              minWidth: 16,
-              height: 16,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: "0 3px",
-            }}
-          >
-            {noLeidas > 9 ? "9+" : noLeidas}
+          <span style={{ position: "absolute", top: -4, right: -4 }}>
+            <CountBadge valor={noLeidas} />
           </span>
         )}
       </button>
@@ -143,7 +104,7 @@ export function NotificacionesBell() {
             border: "1px solid var(--color-border)",
             borderRadius: "var(--radius-md)",
             boxShadow: "var(--shadow-md)",
-            zIndex: 50,
+            zIndex: "var(--z-dropdown)",
           }}
         >
           <div style={{ padding: "var(--space-3)", borderBottom: "1px solid var(--color-border)", fontWeight: 700 }}>
@@ -169,7 +130,7 @@ export function NotificacionesBell() {
               >
                 <div>
                   <p style={{ margin: 0, fontSize: "var(--font-size-sm)", fontWeight: n.leida ? 400 : 700 }}>
-                    {ETIQUETA_POR_TIPO[n.tipo] ?? n.tipo}
+                    {etiquetaNotificacion(n)}
                   </p>
                   <p style={{ margin: 0, marginTop: 2, fontSize: "var(--font-size-sm)", color: "var(--color-text-muted)" }}>
                     {new Date(n.ts).toLocaleString()}
@@ -184,6 +145,29 @@ export function NotificacionesBell() {
                 )}
               </div>
             ))
+          )}
+          {onVerTodas && (
+            <button
+              type="button"
+              onClick={() => {
+                setAbierto(false);
+                onVerTodas();
+              }}
+              style={{
+                display: "block",
+                width: "100%",
+                padding: "var(--space-2) var(--space-3)",
+                border: "none",
+                background: "transparent",
+                color: "var(--color-accent)",
+                fontWeight: 600,
+                fontSize: "var(--font-size-sm)",
+                textAlign: "center",
+                cursor: "pointer",
+              }}
+            >
+              Ver todas
+            </button>
           )}
         </div>
       )}

@@ -1,8 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { apiFetch, ApiError, fieldError } from "../api/client";
+import { nombreRol } from "../roles";
+import { Avatar } from "./Avatar";
 import { Badge } from "./Badge";
 import { Button } from "./Button";
 import { Card } from "./Card";
+import { PasswordField } from "./PasswordField";
 import { ReadOnlyActions, useReadOnlyGate } from "./ReadOnlyGate";
 import { TextField } from "./TextField";
 
@@ -28,17 +31,17 @@ interface SesionOut {
  * reutilizado por las 3 apps (pasajero/conductor/interno): edita contacto
  * propio (nunca roles), exige contraseña actual en vez de OTP (decisión D1
  * del plan — sin OTP disponible en el sistema), muestra sesiones activas
- * con cierre remoto. `mostrarFoto` agrega el campo de foto de perfil
- * (Sección 2.2, exclusivo conductor — el pasajero la ve al ser asignado,
- * CU-O05 P5). `extra` es un slot para contenido adicional específico de
+ * con cierre remoto. Siempre muestra la foto de perfil propia (de solo
+ * lectura acá — cambiarla es autoservicio de bajo riesgo, vive en "Ajustes"
+ * vía `AjustesPropios`, no exige contraseña como el resto de este
+ * formulario). `extra` es un slot para contenido adicional específico de
  * cada app sin bifurcar el componente. */
-export function PerfilPropio({ mostrarFoto, extra }: { mostrarFoto?: boolean; extra?: ReactNode }) {
+export function PerfilPropio({ extra }: { extra?: ReactNode }) {
   const [perfil, setPerfil] = useState<PerfilOut | null>(null);
   const [sesiones, setSesiones] = useState<SesionOut[]>([]);
   const [nombre, setNombre] = useState("");
   const [telefono, setTelefono] = useState("");
   const [email, setEmail] = useState("");
-  const [fotoUrl, setFotoUrl] = useState("");
   const [passwordActual, setPasswordActual] = useState("");
   const [error, setError] = useState<unknown>(null);
   const [ok, setOk] = useState<string | null>(null);
@@ -50,7 +53,6 @@ export function PerfilPropio({ mostrarFoto, extra }: { mostrarFoto?: boolean; ex
     setNombre(datos.nombre);
     setTelefono(datos.telefono ?? "");
     setEmail(datos.email ?? "");
-    setFotoUrl(datos.foto_url ?? "");
   };
 
   const cargar = async () => {
@@ -85,7 +87,6 @@ export function PerfilPropio({ mostrarFoto, extra }: { mostrarFoto?: boolean; ex
           nombre,
           telefono: telefono || undefined,
           email: email || undefined,
-          foto_url: mostrarFoto ? fotoUrl || undefined : undefined,
           password_actual: passwordActual,
         },
       });
@@ -130,16 +131,10 @@ export function PerfilPropio({ mostrarFoto, extra }: { mostrarFoto?: boolean; ex
           puedes cambiar tu propio rol desde aquí.
         </p>
         <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", marginTop: "var(--space-2)" }}>
-          {mostrarFoto && perfil.foto_url && (
-            <img
-              src={perfil.foto_url}
-              alt="Foto de perfil"
-              style={{ width: 48, height: 48, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
-            />
-          )}
+          <Avatar fotoUrl={perfil.foto_url} nombre={perfil.nombre} tamano={48} />
           <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-2)" }}>
             {perfil.roles.map((r) => (
-              <Badge key={r} texto={r} tono="neutral" />
+              <Badge key={r} texto={nombreRol(r)} tono="neutral" />
             ))}
           </div>
         </div>
@@ -170,19 +165,9 @@ export function PerfilPropio({ mostrarFoto, extra }: { mostrarFoto?: boolean; ex
             onChange={(e) => setEmail(e.target.value)}
             error={fieldError(error, "email")}
           />
-          {mostrarFoto && (
-            <TextField
-              label="URL de foto de perfil (la ve el pasajero al asignarte un viaje)"
-              disabled={!editando}
-              value={fotoUrl}
-              onChange={(e) => setFotoUrl(e.target.value)}
-              error={fieldError(error, "foto_url")}
-            />
-          )}
           {editando && (
-            <TextField
+            <PasswordField
               label="Contraseña actual (para confirmar el cambio)"
-              type="password"
               value={passwordActual}
               onChange={(e) => setPasswordActual(e.target.value)}
               error={fieldError(error, "password_actual")}

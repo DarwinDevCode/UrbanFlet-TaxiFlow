@@ -1,8 +1,8 @@
 @import "@urbanflet/shared-ui/src/tokens.css";
 
-:root {
-  --color-accent: #14161a;
-}
+/* Sistema de diseño (agosto 2026, ver CLAUDE.md): las 3 apps comparten el
+   mismo acento ámbar/dorado -- este override propio ya no existe, antes
+   rompía la "misma familia visual" entre pasajero/conductor/interno. */
 
 #root {
   min-height: 100dvh;

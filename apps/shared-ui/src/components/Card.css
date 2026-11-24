@@ -1,0 +1,51 @@
+/* EL PLANO — ver Card.tsx. Sin radio, sin sombra: lo que lo define es la
+   barra superior, más gruesa que cualquier otra línea del sistema. */
+
+.uf-plano {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-top: 2px solid var(--color-border);
+  border-radius: var(--radius-lg); /* 0 en este sistema; queda tokenizado */
+}
+
+.uf-plano--acento {
+  border-top-color: var(--color-accent);
+}
+
+.uf-plano-encabezado {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border-soft);
+}
+
+.uf-plano-titulo {
+  font-family: var(--font-display);
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  line-height: 1;
+  margin: 0;
+  color: var(--color-text);
+}
+
+.uf-plano-rotulo {
+  white-space: nowrap;
+}
+
+.uf-plano-acciones {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.uf-plano-cuerpo {
+  padding: var(--space-4);
+}
+
+.uf-plano-cuerpo--pleno {
+  padding: 0;
+}

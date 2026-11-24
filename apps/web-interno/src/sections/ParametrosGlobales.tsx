@@ -115,7 +115,7 @@ export function SeccionParametrosGlobales() {
             : "Nunca se publicó una configuración — rigen los valores por defecto del sistema."}
         </p>
         <p style={{ color: "var(--color-text-muted)", fontSize: "var(--font-size-sm)" }}>
-          Los radios de despacho gobiernan el auto-despacho de viajes (CU-O05): el primer valor es el radio inicial
+          Los radios de despacho gobiernan el auto-despacho de viajes: el primer valor es el radio inicial
           de búsqueda de conductor, los siguientes son las ampliaciones sucesivas si no aparece candidato. Cambiar
           esto afecta viajes nuevos de inmediato — no hay ventana de gracia. Los campos quedan bloqueados hasta
           pulsar "Editar", para evitar un cambio accidental en configuración crítica.

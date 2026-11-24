@@ -38,11 +38,23 @@ interface SolicitudFixture {
   usuario_id: string;
   usuario_nombre: string | null;
   cedula: string;
+  licencia_numero: string;
+  vehiculo: { placa: string; marca: string; modelo: string; anio: number; color: string; capacidad: number };
   estado: string;
   fecha_envio: string | null;
   fecha_decision: string | null;
   revision_reforzada: boolean;
   motivo_rechazo: string | null;
+  // Gestión documental en la postulación: `SolicitudOut.documentos` siempre
+  // viaja (lista vacía si la solicitud es anterior a esa ronda) -- el mock lo
+  // refleja para que el test ejercite el render real del bloque de revisión.
+  documentos: {
+    tipo: string;
+    propietario_tipo: string;
+    archivo_id: string;
+    fecha_emision: string | null;
+    fecha_vencimiento: string | null;
+  }[];
 }
 
 function crearSolicitud(overrides: Partial<SolicitudFixture> = {}): SolicitudFixture {
@@ -51,11 +63,22 @@ function crearSolicitud(overrides: Partial<SolicitudFixture> = {}): SolicitudFix
     usuario_id: "user-1",
     usuario_nombre: "Juan Pérez",
     cedula: "1712345678",
+    licencia_numero: "LIC-0001",
+    vehiculo: { placa: "PBA-1234", marca: "Chevrolet", modelo: "Sail", anio: 2020, color: "Blanco", capacidad: 4 },
     estado: "EN_VERIFICACION",
     fecha_envio: "2026-07-20T10:00:00Z",
     fecha_decision: null,
     revision_reforzada: false,
     motivo_rechazo: null,
+    documentos: [
+      {
+        tipo: "LICENCIA_CONDUCIR",
+        propietario_tipo: "CONDUCTOR",
+        archivo_id: "arch-lic-1",
+        fecha_emision: null,
+        fecha_vencimiento: "2030-01-31",
+      },
+    ],
     ...overrides,
   };
 }
@@ -90,6 +113,20 @@ function mockFetch(handlers: Ruta[]) {
     // fondo en cada test, sin relación con el foco de la mayoría de ellos.
     if (method === "GET" && path.startsWith("/notificaciones/mias")) {
       return responder(200, { items: [], total: 0, no_leidas: 0 });
+    }
+    // Ronda de foto de perfil: AuthProvider lee /perfil una vez al iniciar
+    // sesión para poblar el avatar del header -- fetch de fondo en cada
+    // test, sin relación con el foco de la mayoría de ellos. Coincidencia
+    // EXACTA (no startsWith) para no tragarse /perfil/sesiones.
+    if (method === "GET" && path === "/perfil") {
+      return responder(200, { foto_url: null });
+    }
+    // Ronda de personalización: `Panel()` lee las secciones favoritas del
+    // sidebar una vez al montar -- otro fetch de fondo global, sin relación
+    // con el foco de la mayoría de los tests. Sin favoritos por defecto: el
+    // sidebar queda exactamente como antes de esta ronda.
+    if (method === "GET" && path === "/preferencias") {
+      return responder(200, { secciones_favoritas: [] });
     }
     throw new Error(`Llamada a fetch no esperada en este test: ${method} ${path}`);
   }) as unknown as typeof fetch;
@@ -165,6 +202,19 @@ describe("web-interno — aprobar/rechazar solicitud de conductor (CU-O01)", () 
 
     renderApp();
     await user.click(await screen.findByRole("button", { name: "Ver" }));
+
+    // Gestión documental en la postulación (Fase 2): quien decide ve los
+    // documentos enviados y su caducidad ANTES de aprobar -- antes de esa
+    // ronda esta pantalla no mostraba ninguno.
+    expect(await screen.findByText("Documentos enviados")).toBeInTheDocument();
+    // Bitácora de revisión (hallazgo #4): el tipo se muestra con su nombre
+    // legible, no el enum crudo -- y la fecha con el mismo formato local que
+    // el resto del sistema (se compara contra el resultado real de
+    // `toLocaleDateString()`, no un string fijo, para no depender del
+    // locale del entorno donde corra el test).
+    expect(screen.getByText("Licencia de conducir")).toBeInTheDocument();
+    expect(screen.getByText(`Caduca: ${new Date("2030-01-31").toLocaleDateString()}`)).toBeInTheDocument();
+    expect(screen.getByText("Vigente")).toBeInTheDocument();
 
     const botonAceptar = await screen.findByRole("button", { name: "Aceptar decisión" });
     expect(botonAceptar).toBeEnabled(); // "Aprobar" es la decisión por defecto, no pide motivo.
@@ -291,8 +341,12 @@ describe("web-interno — Administración → Usuarios (Módulo 1 de admin_siste
     await user.click(await screen.findByRole("button", { name: "Nuevo" }));
     await user.type(await screen.findByLabelText("Nombre"), "Nueva Coordinadora");
     await user.type(screen.getByLabelText("Teléfono"), "+593900000002");
+    // Por defecto la contraseña se genera sola -- se desmarca para probar
+    // el camino de contraseña manual con confirmación.
+    await user.click(screen.getByLabelText("Generar contraseña automáticamente (recomendado)"));
     await user.type(screen.getByLabelText("Contraseña inicial"), "clave-larga-123");
-    await user.click(screen.getByLabelText("coordinador_flota"));
+    await user.type(screen.getByLabelText("Confirmar contraseña"), "clave-larga-123");
+    await user.click(screen.getByLabelText("Coordinador de Flota"));
 
     await user.click(screen.getByRole("button", { name: "Crear cuenta" }));
 
@@ -306,6 +360,57 @@ describe("web-interno — Administración → Usuarios (Módulo 1 de admin_siste
         roles: ["coordinador_flota"],
       });
     });
+  });
+
+  it("genera la contraseña automáticamente por defecto y la muestra una sola vez", async () => {
+    mockFetch([
+      { method: "GET", path: "/usuarios", body: { items: [], total: 0 } },
+      {
+        method: "POST",
+        path: "/usuarios",
+        body: { ...crearUsuario({ roles: ["coordinador_flota"] }), password_generada: "Ab3cD4eF5gH6" },
+      },
+      { method: "GET", path: "/usuarios", body: { items: [crearUsuario({ roles: ["coordinador_flota"] })], total: 1 } },
+    ]);
+    const user = userEvent.setup();
+
+    render(
+      <AuthProvider>
+        <App />
+      </AuthProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Nuevo" }));
+    await user.type(await screen.findByLabelText("Nombre"), "Otra Coordinadora");
+    await user.type(screen.getByLabelText("Teléfono"), "+593900000003");
+    // El checkbox queda marcado por defecto -- no hace falta tocarlo.
+    await user.click(screen.getByLabelText("Coordinador de Flota"));
+    await user.click(screen.getByRole("button", { name: "Crear cuenta" }));
+
+    expect(await screen.findByLabelText("Contraseña generada")).toHaveValue("Ab3cD4eF5gH6");
+    expect(screen.getByText(/se muestra una sola vez/)).toBeInTheDocument();
+  });
+
+  it("restablece la contraseña de una cuenta existente y la muestra una sola vez", async () => {
+    const staff = crearUsuario();
+    mockFetch([
+      { method: "GET", path: "/usuarios", body: { items: [staff], total: 1 } },
+      { method: "GET", path: "/usuarios/user-staff-1/accesos", body: [] },
+      { method: "GET", path: "/usuarios/user-staff-1/sesiones", body: [] },
+      { method: "POST", path: "/usuarios/user-staff-1/restablecer-password", body: { password_generada: "Zx9yW8vU7t" } },
+    ]);
+    const user = userEvent.setup();
+
+    render(
+      <AuthProvider>
+        <App />
+      </AuthProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Ver" }));
+    await user.click(await screen.findByRole("button", { name: "Restablecer contraseña" }));
+
+    expect(await screen.findByLabelText("Contraseña nueva")).toHaveValue("Zx9yW8vU7t");
   });
 
   it("permite filtrar y gestionar una cuenta de conductor, pero no editar sus roles (punto #7)", async () => {
@@ -336,7 +441,7 @@ describe("web-interno — Administración → Usuarios (Módulo 1 de admin_siste
     const notaNoEditable = await screen.findByTitle(/No editable: pasajero\/conductor/);
     expect(notaNoEditable).toHaveTextContent("conductor");
     expect(screen.queryByText("Guardar roles")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("admin_sistema")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Administrador del Sistema")).not.toBeInTheDocument();
 
     // Sí se puede suspender, igual que una cuenta de personal interno.
     await user.click(screen.getByRole("button", { name: "Suspender" }));
@@ -465,7 +570,6 @@ describe("web-interno — Administración → Catálogos (Módulo 3 de admin_sis
   it("crea un tipo de documento nuevo desde la pestaña Tipos de documento", async () => {
     const { llamadas } = mockFetch([
       { method: "GET", path: "/usuarios", body: { items: [], total: 0 } },
-      { method: "GET", path: "/parametros/zonas", body: [] },
       { method: "GET", path: "/catalogos/tipos-documento", body: [] },
       {
         method: "POST",
@@ -624,7 +728,7 @@ describe("web-interno — Administración → Políticas de seguridad (Módulo 6
   });
 });
 
-describe("web-interno — Administración → Notificaciones (Módulo 6.3 de admin_sistema)", () => {
+describe("web-interno — Administración → Configuración de alertas (Módulo 6.3 de admin_sistema)", () => {
   beforeEach(() => {
     localStorage.clear();
     loginComoAdminSistema();
@@ -651,8 +755,8 @@ describe("web-interno — Administración → Notificaciones (Módulo 6.3 de adm
       </AuthProvider>,
     );
 
-    await user.click(await screen.findByRole("button", { name: "Notificaciones" }));
-    expect(await screen.findByText("Posible GPS spoofing")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Configuración de alertas" }));
+    expect(await screen.findByText("Posible falsificación de ubicación GPS")).toBeInTheDocument();
 
     const filas = await screen.findAllByRole("button", { name: "Ver" });
     await user.click(filas[1]); // gps_spoofing es la segunda fila
@@ -741,8 +845,8 @@ describe("web-interno — Administración → Integraciones (Módulo 4 de admin_
 
     await user.click(await screen.findByRole("button", { name: "Integraciones" }));
     await user.click(await screen.findByRole("button", { name: "Servicios externos" }));
-    await user.click(await screen.findByRole("button", { name: "Rotar key" }));
-    await user.type(await screen.findByLabelText("Nueva API key"), "AIzaClaveDePrueba123");
+    await user.click(await screen.findByRole("button", { name: "Rotar clave" }));
+    await user.type(await screen.findByLabelText("Nueva clave de API"), "AIzaClaveDePrueba123");
     await user.click(screen.getByRole("button", { name: "Rotar" }));
 
     expect(await screen.findByText("••••e123")).toBeInTheDocument();
@@ -1050,6 +1154,11 @@ describe("web-interno — Mi cuenta (Sección 3.1 de ux_complementaria.md)", () 
     };
     const { llamadas } = mockFetch([
       { method: "GET", path: "/mantenimiento/ordenes", body: { items: [], total: 0 } },
+      // 2 handlers para el mismo GET /perfil: uno lo consume el fetch
+      // proactivo de AuthProvider al iniciar sesión (ronda de foto de
+      // perfil, puebla el avatar del header), el otro lo consume
+      // PerfilPropio al montar su propia tarjeta.
+      { method: "GET", path: "/perfil", body: perfil },
       { method: "GET", path: "/perfil", body: perfil },
       { method: "GET", path: "/perfil/sesiones", body: [] },
       { method: "PATCH", path: "/perfil", body: { ...perfil, nombre: "Jefe Actualizado" } },
@@ -1063,7 +1172,7 @@ describe("web-interno — Mi cuenta (Sección 3.1 de ux_complementaria.md)", () 
     );
     await user.click(await screen.findByRole("button", { name: "Mi cuenta" }));
 
-    expect(await screen.findByText("jefe_mantenimiento")).toBeInTheDocument();
+    expect(await screen.findByText("Jefe de Mantenimiento")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Editar" }));
     const nombre = screen.getByLabelText("Nombre");
     await user.clear(nombre);
@@ -1127,7 +1236,11 @@ describe("web-interno — Historial de viajes (Sección 3.3 de ux_complementaria
       pasajero_id: "p-1",
       conductor_id: "c-1",
       estado: "FINALIZADO",
+      origen_lat: -0.18,
+      origen_lon: -78.48,
       origen_direccion: "Av. Amazonas",
+      destino_lat: -0.22,
+      destino_lon: -78.51,
       destino_direccion: "Terminal Terrestre",
       franja: "DIURNA",
       ts_solicitud: "2026-08-01T10:00:00Z",

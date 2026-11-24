@@ -1,20 +1,25 @@
 import {
   AjustesPropios,
   ApiError,
+  apiFetch,
   AppShell,
   Button,
   Card,
   CentroAyuda,
-  logoUrbanFleetFull,
+  LoginLogo,
   NotificacionesBell,
+  PasswordField,
   PerfilPropio,
+  SeccionNotificaciones,
+  type NotificacionOut,
   TextField,
   useAuth,
   type PreguntaFrecuente,
 } from "@urbanflet/shared-ui";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { SeccionAuditoriaAdmin } from "./sections/AuditoriaAdmin";
 import { SeccionCatalogos } from "./sections/Catalogos";
+import { SeccionComision } from "./sections/Comision";
 import { SeccionConfiguracionAlertas } from "./sections/ConfiguracionAlertas";
 import { SeccionCumplimiento } from "./sections/Cumplimiento";
 import { SeccionFeatureFlags } from "./sections/FeatureFlags";
@@ -37,6 +42,7 @@ import { PanelAuditoria } from "./sections/tactico/PanelAuditoria";
 import { PanelCaptacion } from "./sections/tactico/PanelCaptacion";
 import { PanelConciliacion } from "./sections/tactico/PanelConciliacion";
 import { PanelDespacho } from "./sections/tactico/PanelDespacho";
+import { PanelRendimientoConductores } from "./sections/tactico/PanelRendimientoConductores";
 import { PanelDocumentacion } from "./sections/tactico/PanelDocumentacion";
 import { PanelLiquidacion } from "./sections/tactico/PanelLiquidacion";
 import { PanelPlataforma } from "./sections/tactico/PanelPlataforma";
@@ -46,12 +52,13 @@ import { PanelCapacidades } from "./sections/estrategico/PanelCapacidades";
 import { PanelConfiabilidad } from "./sections/estrategico/PanelConfiabilidad";
 import { PanelCrecimiento } from "./sections/estrategico/PanelCrecimiento";
 import { PanelCumplimientoNormativo } from "./sections/estrategico/PanelCumplimientoNormativo";
+import { PanelDesempenoConductores } from "./sections/estrategico/PanelDesempenoConductores";
 import { PanelEstadoCostoFlota } from "./sections/estrategico/PanelEstadoCostoFlota";
 import { PanelGobernanza } from "./sections/estrategico/PanelGobernanza";
 import { PanelIntegridadFinanciera } from "./sections/estrategico/PanelIntegridadFinanciera";
 import { PanelRentabilidad } from "./sections/estrategico/PanelRentabilidad";
 import { TableroEjecutivo } from "./sections/estrategico/TableroEjecutivo";
-import { NavegacionSeccionProvider } from "./navegacion";
+import { NavegacionSeccionProvider, useIrASeccion } from "./navegacion";
 
 function LoginCard() {
   const { login } = useAuth();
@@ -73,10 +80,21 @@ function LoginCard() {
   };
 
   return (
-    <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", padding: "var(--space-4)" }}>
+    <div
+      style={{
+        minHeight: "100dvh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "var(--space-4)",
+        // v2: lavado suave de ámbar de marca (PLAN_REDISENO_V2.md §2), mismo
+        // criterio que los otros 2 portales.
+        background: "radial-gradient(ellipse at top, color-mix(in srgb, var(--color-accent) 10%, var(--color-bg)) 0%, var(--color-bg) 60%)",
+      }}
+    >
       <div style={{ width: "min(420px, 100%)" }}>
         <div style={{ display: "flex", justifyContent: "center", marginBottom: "var(--space-4)" }}>
-          <img src={logoUrbanFleetFull} alt="UrbanFleet" style={{ width: 160, maxWidth: "100%", height: "auto" }} />
+          <LoginLogo />
         </div>
         <Card>
           <h1 style={{ fontSize: "var(--font-size-lg)", margin: 0, marginBottom: "var(--space-2)" }}>
@@ -91,9 +109,8 @@ function LoginCard() {
               value={identificador}
               onChange={(e) => setIdentificador(e.target.value)}
             />
-            <TextField
+            <PasswordField
               label="Contraseña"
-              type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
@@ -137,77 +154,155 @@ const PREGUNTAS_FRECUENTES_INTERNO: PreguntaFrecuente[] = [
   },
 ];
 
+// Grupo D de la ronda de correcciones UX/UI. Dos cambios en esta lista, sin
+// reordenar NI UN elemento (el orden decide la sección por defecto de cada
+// rol, `seccionesVisibles[0]` -- ver los comentarios de "Mi cuenta" e
+// "Historial de viajes" más abajo):
+//
+//  1. Las pantallas operativas, que estaban sueltas sin encabezado, ahora
+//     tienen su propio grupo "Operación". Eso permitió quitar el sufijo
+//     "(táctico)" de las 10 etiquetas del Panel Táctico -- existía solo para
+//     distinguir "Flota" operativa de "Flota" táctica cuando la primera no
+//     tenía encabezado; el nivel estratégico nunca lo necesitó (sus
+//     etiquetas siempre fueron limpias) porque su encabezado ya lo dice.
+//     La jerarquía visual de 3 niveles del sidebar no cambia: sigue siendo
+//     sin marcador (operativo) → marcador chico (táctico) → marcador grande
+//     (estratégico), ver NIVEL_GRUPO en AppShell.
+//  2. Las 3 opciones de cuenta personal (Mi cuenta / Ajustes / Ayuda), antes
+//     también sueltas, quedan agrupadas bajo "Mi cuenta" -- la zona personal
+//     que AppShell separa con un divisor del resto de la navegación.
+// Mapa real de "a dónde lleva cada tipo de notificación" en este portal,
+// confirmado contra el código (Fase 0 de esta ronda, no adivinado):
+// - NUEVA_SOLICITUD -> admin_captacion recibe esto, Solicitudes es la
+//   pantalla donde vive esa solicitud.
+// - ALERTA_SEGURIDAD conflacia 5 orígenes reales (`payload.tipo_alerta`,
+//   ver notificacionesCatalogo.ts) con destinatario y pantalla propios:
+//   denegaciones_rbac/gps_spoofing -> ambos quedan en la MISMA bitácora de
+//   Auditoría (CU-O17); pipeline_fallido -> Plataforma (corridas); 
+//   reporte_falla -> Mantenimiento (bandeja de reportes); 
+//   incidencia_operativa -> Despacho (viajes activos).
+// El resto de los 13 tipos reales (SOLICITUD_DECISION, DOCUMENTO_*,
+// RENOVACION_*, ORDEN_MANTENIMIENTO_*, VIAJE_*) los recibe siempre un
+// conductor/pasajero, nunca un rol de `web-interno` -- no aparecen acá a
+// propósito, `resolverAccionRapida` devuelve `null` para ellos (solo
+// informativo, ningún destino real que ofrecer en este portal).
+const DESTINO_TIPO_ALERTA: Record<string, string> = {
+  denegaciones_rbac: "tactico-auditoria",
+  gps_spoofing: "tactico-auditoria",
+  pipeline_fallido: "tactico-plataforma",
+  // La bandeja de reportes de falla vive en el WorkPanel OPERATIVO de
+  // Mantenimiento (id "mantenimiento", pestaña "Reportes de falla" -- Fase
+  // D de la ronda de fallas del vehículo), no en el dashboard táctico.
+  reporte_falla: "mantenimiento",
+  incidencia_operativa: "tactico-despacho",
+};
+
+function SeccionNotificacionesInterno() {
+  const irASeccion = useIrASeccion();
+  return (
+    <SeccionNotificaciones
+      resolverAccionRapida={(n: NotificacionOut) => {
+        if (n.tipo === "NUEVA_SOLICITUD") {
+          return { etiqueta: "Ver solicitud", onClick: () => irASeccion("solicitudes") };
+        }
+        if (n.tipo === "ALERTA_SEGURIDAD") {
+          const tipoAlerta = typeof n.payload.tipo_alerta === "string" ? n.payload.tipo_alerta : undefined;
+          const destino = tipoAlerta ? DESTINO_TIPO_ALERTA[tipoAlerta] : undefined;
+          if (destino) {
+            const etiquetas: Record<string, string> = {
+              "tactico-auditoria": "Ver en Auditoría",
+              "tactico-plataforma": "Ver en Plataforma",
+              "mantenimiento": "Ver en Mantenimiento",
+              "tactico-despacho": "Ver en Despacho",
+            };
+            return { etiqueta: etiquetas[destino] ?? "Ver detalle", onClick: () => irASeccion(destino) };
+          }
+        }
+        return null;
+      }}
+    />
+  );
+}
+
 const SECCIONES: Seccion[] = [
-  { id: "solicitudes", etiqueta: "Solicitudes", roles: ["admin_captacion"], render: () => <SeccionSolicitudes /> },
-  { id: "mantenimiento", etiqueta: "Mantenimiento", roles: ["jefe_mantenimiento"], render: () => <SeccionMantenimiento /> },
-  { id: "cumplimiento", etiqueta: "Cumplimiento", roles: ["supervisor_cumplimiento"], render: () => <SeccionCumplimiento /> },
-  { id: "flota", etiqueta: "Flota", roles: ["coordinador_flota", "admin_plataforma"], render: () => <SeccionFlota /> },
-  { id: "finanzas", etiqueta: "Finanzas", roles: ["admin_financiero"], render: () => <SeccionFinanzas /> },
+  { id: "solicitudes", etiqueta: "Solicitudes", roles: ["admin_captacion"], grupo: "Operación", render: () => <SeccionSolicitudes /> },
+  { id: "mantenimiento", etiqueta: "Mantenimiento", roles: ["jefe_mantenimiento"], grupo: "Operación", render: () => <SeccionMantenimiento /> },
+  { id: "cumplimiento", etiqueta: "Cumplimiento", roles: ["supervisor_cumplimiento"], grupo: "Operación", render: () => <SeccionCumplimiento /> },
+  { id: "flota", etiqueta: "Flota", roles: ["coordinador_flota", "admin_plataforma"], grupo: "Operación", render: () => <SeccionFlota /> },
+  { id: "finanzas", etiqueta: "Finanzas", roles: ["admin_financiero"], grupo: "Operación", render: () => <SeccionFinanzas /> },
   {
     id: "indicadores",
     etiqueta: "Indicadores",
     roles: ["gerencia", "responsable_plataforma", "admin_plataforma"],
+    grupo: "Operación",
     render: () => <SeccionIndicadores />,
   },
   {
     id: "tactico-flota",
-    etiqueta: "Flota (táctico)",
+    etiqueta: "Flota",
     roles: ["coordinador_flota", "admin_plataforma"],
     grupo: "Panel Táctico",
     render: () => <PanelFlota />,
   },
   {
     id: "tactico-mantenimiento",
-    etiqueta: "Mantenimiento (táctico)",
+    etiqueta: "Mantenimiento",
     roles: ["jefe_mantenimiento"],
     grupo: "Panel Táctico",
     render: () => <PanelMantenimiento />,
   },
   {
     id: "tactico-documentacion",
-    etiqueta: "Vigencia Documental (táctico)",
+    etiqueta: "Vigencia Documental",
     roles: ["supervisor_cumplimiento"],
     grupo: "Panel Táctico",
     render: () => <PanelDocumentacion />,
   },
   {
     id: "tactico-captacion",
-    etiqueta: "Captación (táctico)",
+    etiqueta: "Captación",
     roles: ["admin_captacion"],
     grupo: "Panel Táctico",
     render: () => <PanelCaptacion />,
   },
   {
     id: "tactico-despacho",
-    etiqueta: "Despacho (táctico)",
+    etiqueta: "Despacho",
     roles: ["coordinador_operaciones"],
     grupo: "Panel Táctico",
     render: () => <PanelDespacho />,
   },
   {
+    id: "tactico-rendimiento-conductores",
+    etiqueta: "Rendimiento de Conductores",
+    roles: ["coordinador_operaciones"],
+    grupo: "Panel Táctico",
+    render: () => <PanelRendimientoConductores />,
+  },
+  {
     id: "tactico-conciliacion",
-    etiqueta: "Conciliación (táctico)",
+    etiqueta: "Conciliación",
     roles: ["admin_financiero"],
     grupo: "Panel Táctico",
     render: () => <PanelConciliacion />,
   },
   {
     id: "tactico-liquidacion",
-    etiqueta: "Liquidación (táctico)",
+    etiqueta: "Liquidación",
     roles: ["admin_financiero"],
     grupo: "Panel Táctico",
     render: () => <PanelLiquidacion />,
   },
   {
     id: "tactico-auditoria",
-    etiqueta: "Auditoría (táctico)",
+    etiqueta: "Auditoría",
     roles: ["supervisor_cumplimiento", "admin_plataforma", "gerencia"],
     grupo: "Panel Táctico",
     render: () => <PanelAuditoria />,
   },
   {
     id: "tactico-plataforma",
-    etiqueta: "Plataforma (táctico)",
+    etiqueta: "Plataforma",
     roles: ["gerencia", "responsable_plataforma", "admin_plataforma"],
     grupo: "Panel Táctico",
     render: () => <PanelPlataforma />,
@@ -290,6 +385,18 @@ const SECCIONES: Seccion[] = [
     grupo: "Panel Estratégico",
     render: () => <PanelGobernanza />,
   },
+  // N6 rediseñado (Tier 1 de la auditoría, punto 7) -- agregado al FINAL del
+  // grupo "Panel Estratégico" (mismo cuidado documentado arriba: no debe
+  // desplazar la sección por defecto de `coordinador_operaciones`, que ya
+  // tiene "Despacho" táctico más arriba en la lista). Roles idénticos al
+  // gate del endpoint (`viajes/router_trips.py::_desempeno_conductores_estrategico`).
+  {
+    id: "estrategico-desempeno-conductores",
+    etiqueta: "Desempeño de conductores",
+    roles: ["gerencia", "coordinador_operaciones"],
+    grupo: "Panel Estratégico",
+    render: () => <PanelDesempenoConductores />,
+  },
   {
     id: "admin-usuarios",
     etiqueta: "Usuarios",
@@ -347,8 +454,14 @@ const SECCIONES: Seccion[] = [
     render: () => <SeccionPoliticasSeguridad />,
   },
   {
+    // Renombrado en la ronda del Centro de notificaciones (sección completa
+    // personal, más abajo): esta pantalla es la CONFIGURACIÓN de quién
+    // recibe cada alerta (Módulo 6.3), no la bandeja donde un usuario la
+    // recibe -- compartir la misma etiqueta "Notificaciones" con la nueva
+    // sección personal habría dejado 2 ítems iguales en el sidebar de
+    // `admin_sistema` (el único rol que ve ambos).
     id: "admin-notificaciones",
-    etiqueta: "Notificaciones",
+    etiqueta: "Configuración de alertas",
     roles: ["admin_sistema"],
     grupo: "Administración",
     render: () => <SeccionConfiguracionAlertas />,
@@ -397,6 +510,26 @@ const SECCIONES: Seccion[] = [
     grupo: "Historial",
     render: () => <SeccionHistorialGlobal />,
   },
+  {
+    // Investigación de la comisión de la cooperativa (CU-O10): el endpoint
+    // `POST /parametros/comisiones` ya existía, versionado y auditado, pero
+    // sin ninguna pantalla -- la única forma de cambiarlo era una llamada
+    // directa a la API. Gateado EXACTAMENTE a los mismos 2 roles que el
+    // propio endpoint (`admin_plataforma`/`gerencia`, ver el comentario de
+    // `parametros/router.py` sobre "reglas de dinero y estado") -- no entra
+    // en "Administración" (grupo de `admin_sistema`, que a propósito NO
+    // puede tocar esto) ni en "Parámetros globales" (Módulo 2, un dominio de
+    // configuración de sistema completamente distinto). Mismo motivo que
+    // "Historial de viajes" arriba para la posición: después de todos los
+    // grupos con roles únicos, para no convertirse en la sección por
+    // defecto de `admin_plataforma` (hoy "Flota") ni de `gerencia` (hoy
+    // "Indicadores").
+    id: "comision",
+    etiqueta: "Comisión de la cooperativa",
+    roles: ["admin_plataforma", "gerencia"],
+    grupo: "Comisión",
+    render: () => <SeccionComision />,
+  },
   // Sección 3.1 de la spec ux_complementaria.md: visible para los 13 roles
   // de `web-interno`, no filtrada por rol como el resto de la lista --
   // `ROL_CUALQUIERA` es un sentinel que `Panel()` reconoce más abajo, en vez
@@ -407,18 +540,32 @@ const SECCIONES: Seccion[] = [
     id: "mi-cuenta",
     etiqueta: "Mi cuenta",
     roles: [ROL_CUALQUIERA],
+    grupo: "Mi cuenta",
     render: () => <PerfilPropio />,
+  },
+  {
+    // Punto 2 de esta ronda: sección propia además de la campana, mismo
+    // sentinel ROL_CUALQUIERA que "Mi cuenta" -- cualquier rol recibe
+    // notificaciones propias. El indicador de no leídas se agrega en
+    // `Panel()` (necesita `useAuth()`, no disponible en un array estático).
+    id: "notificaciones",
+    etiqueta: "Notificaciones",
+    roles: [ROL_CUALQUIERA],
+    grupo: "Mi cuenta",
+    render: () => <SeccionNotificacionesInterno />,
   },
   {
     id: "ajustes",
     etiqueta: "Ajustes",
     roles: [ROL_CUALQUIERA],
+    grupo: "Mi cuenta",
     render: () => <AjustesPropios version="0.1.0" mostrarDensidad />,
   },
   {
     id: "ayuda",
     etiqueta: "Ayuda",
     roles: [ROL_CUALQUIERA],
+    grupo: "Mi cuenta",
     render: () => (
       <CentroAyuda
         preguntas={PREGUNTAS_FRECUENTES_INTERNO}
@@ -430,7 +577,7 @@ const SECCIONES: Seccion[] = [
 ];
 
 function Panel() {
-  const { actor } = useAuth();
+  const { actor, noLeidas } = useAuth();
   const rolesActor = actor?.roles ?? [];
   // Misma lógica de filtrado por rol que antes tenía la nav horizontal — solo
   // cambia dónde se renderiza (sidebar del AppShell en vez de una fila de
@@ -444,10 +591,38 @@ function Panel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [rolesActor.join(",")],
   );
+  // OJO: la sección por defecto sigue saliendo de `seccionesVisibles[0]`, que
+  // depende del ORDEN de `SECCIONES` -- los favoritos de abajo solo cambian
+  // cómo se pinta el sidebar, nunca este cálculo. Es la trampa que ya se pisó
+  // dos veces (ver comentarios de "Mi cuenta" e "Historial de viajes").
   const [seccionActiva, setSeccionActiva] = useState(seccionesVisibles[0]?.id);
 
+  // Ronda de personalización: accesos rápidos del sidebar por cuenta. Se leen
+  // una sola vez al montar y se guardan con el mismo `PATCH /preferencias`
+  // que usa Ajustes -- sin endpoint nuevo. Si la lectura falla, la lista
+  // queda vacía y el sidebar se comporta como siempre.
+  const [favoritos, setFavoritos] = useState<string[]>([]);
+  useEffect(() => {
+    apiFetch<{ secciones_favoritas: string[] }>("/preferencias")
+      .then((p) => setFavoritos(p.secciones_favoritas ?? []))
+      .catch(() => undefined);
+  }, []);
+
+  const alternarFavorito = (id: string) => {
+    const siguiente = favoritos.includes(id) ? favoritos.filter((f) => f !== id) : [...favoritos, id];
+    setFavoritos(siguiente); // optimista: el sidebar responde al instante
+    apiFetch("/preferencias", { method: "PATCH", body: { secciones_favoritas: siguiente } }).catch(() =>
+      setFavoritos(favoritos),
+    );
+  };
+
   const seccion = seccionesVisibles.find((s) => s.id === seccionActiva);
-  const navItems = seccionesVisibles.map((s) => ({ id: s.id, label: s.etiqueta, group: s.grupo }));
+  const navItems = seccionesVisibles.map((s) => ({
+    id: s.id,
+    label: s.etiqueta,
+    group: s.grupo,
+    badge: s.id === "notificaciones" ? noLeidas : undefined,
+  }));
 
   // Hallazgo H4 de AUDITORIA_NIVEL_ESTRATEGICO.md: hasta ahora `setSeccionActiva`
   // solo llegaba al sidebar. El contexto publica la MISMA función (más los ids
@@ -465,7 +640,9 @@ function Panel() {
         activeId={seccionActiva}
         onNavigate={setSeccionActiva}
         title={seccion?.etiqueta ?? "Portal interno"}
-        headerActions={<NotificacionesBell />}
+        headerActions={<NotificacionesBell onVerTodas={() => setSeccionActiva("notificaciones")} />}
+        favoritos={favoritos}
+        onToggleFavorito={alternarFavorito}
       >
         {seccionesVisibles.length === 0 ? (
           <Card>
@@ -489,6 +666,7 @@ function CambiarPasswordCard() {
   const { cambiarPassword, logout } = useAuth();
   const [actual, setActual] = useState("");
   const [nueva, setNueva] = useState("");
+  const [confirmarNueva, setConfirmarNueva] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
 
@@ -516,10 +694,16 @@ function CambiarPasswordCard() {
             expiró. Debes definir una nueva contraseña antes de continuar.
           </p>
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-            <TextField label="Contraseña actual" type="password" value={actual} onChange={(e) => setActual(e.target.value)} />
-            <TextField label="Contraseña nueva" type="password" value={nueva} onChange={(e) => setNueva(e.target.value)} />
+            <PasswordField label="Contraseña actual" value={actual} onChange={(e) => setActual(e.target.value)} />
+            <PasswordField label="Contraseña nueva" value={nueva} onChange={(e) => setNueva(e.target.value)} />
+            <PasswordField
+              label="Confirmar contraseña nueva"
+              value={confirmarNueva}
+              onChange={(e) => setConfirmarNueva(e.target.value)}
+              confirmarContra={nueva}
+            />
             {error && <span style={{ color: "var(--color-danger)", fontSize: "var(--font-size-sm)" }}>{error}</span>}
-            <Button onClick={confirmar} loading={cargando} disabled={!actual || !nueva}>
+            <Button onClick={confirmar} loading={cargando} disabled={!actual || !nueva || nueva !== confirmarNueva}>
               Cambiar contraseña
             </Button>
             <Button variant="secondary" onClick={logout}>
@@ -534,6 +718,12 @@ function CambiarPasswordCard() {
 
 export default function App() {
   const { actor, debeCambiarPassword } = useAuth();
+  // Bitácora de revisión (hallazgo #1): `web-pasajero`/`web-conductor` ganaron
+  // una página "¿Qué es UrbanFleet?" accesible desde el login. Deliberadamente
+  // NO se agrega acá: este portal es de uso exclusivo de personal interno ya
+  // capacitado (staff de la cooperativa con cuenta creada por un
+  // `admin_sistema`, nunca autorregistro) -- no es una puerta de entrada para
+  // público general que necesite entender qué es el sistema antes de usarlo.
   if (!actor) return <LoginCard />;
   if (debeCambiarPassword) return <CambiarPasswordCard />;
   return <Panel />;

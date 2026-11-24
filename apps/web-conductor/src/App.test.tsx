@@ -71,7 +71,10 @@ function mockFetch(handlers: Ruta[]) {
     const url = typeof input === "string" ? input : input.toString();
     const path = url.replace(/^https?:\/\/[^/]+/, "");
     const method = init?.method ?? "GET";
-    llamadas.push({ method, path, body: init?.body ? JSON.parse(init.body as string) : undefined });
+    // `subirArchivo` (ronda de foto de perfil / reporte de falla) manda
+    // FormData, no JSON -- JSON.parse reventaría sobre eso.
+    const bodyEsJson = typeof init?.body === "string";
+    llamadas.push({ method, path, body: bodyEsJson ? JSON.parse(init!.body as string) : undefined });
 
     const idx = restantes.findIndex((r) => r.method === method && path.startsWith(r.path));
     if (idx !== -1) {
@@ -87,10 +90,32 @@ function mockFetch(handlers: Ruta[]) {
     if (method === "GET" && path.startsWith("/viajes/oferta-actual")) {
       return responder(200, null);
     }
+    // Ruta óptima (CU-O05/O06/O07 paso 4, ver rutas.ts) — fetch de fondo
+    // disparado por el useEffect de PantallaTurno en cuanto hay posición
+    // propia + un tramo activo (recogida u oferta). Respuesta mínima
+    // realista (mismo shape que EstimacionRutaOut del backend).
+    if (method === "GET" && path.startsWith("/viajes/estimacion-ruta")) {
+      return responder(200, {
+        ruta: [
+          [-0.18, -78.46],
+          [-0.2, -78.5],
+        ],
+        distancia_km: 3.1,
+        duracion_min: 8,
+        origen_directions: true,
+      });
+    }
     // Campana de notificaciones (Sección 4.2), montada globalmente en el
     // header de AppShell -- fetch de fondo en cada test.
     if (method === "GET" && path.startsWith("/notificaciones/mias")) {
       return responder(200, { items: [], total: 0, no_leidas: 0 });
+    }
+    // Ronda de foto de perfil: AuthProvider lee /perfil una vez al iniciar
+    // sesión para poblar el avatar del header -- fetch de fondo en cada
+    // test, sin relación con el foco de la mayoría de ellos. Coincidencia
+    // EXACTA (no startsWith) para no tragarse /perfil/sesiones.
+    if (method === "GET" && path === "/perfil") {
+      return responder(200, { foto_url: null });
     }
     throw new Error(`Llamada a fetch no esperada en este test: ${method} ${path}`);
   }) as unknown as typeof fetch;
@@ -189,6 +214,42 @@ describe("web-conductor — aceptar/rechazar oferta (CU-O06)", () => {
     expect(respuesta?.body).toEqual({ aceptar: true });
   });
 
+  it("al cancelar un viaje asignado, exige elegir un motivo antes de confirmar (CU-O07 A3)", async () => {
+    const user = await iniciarTurnoConOferta();
+    await screen.findByText(/Nuevo viaje/);
+
+    mockFetch([
+      { method: "POST", path: "/viajes/oferta/responder", body: { estado: "ASIGNADO" } },
+      { method: "GET", path: "/viajes/conductor/activo", body: VIAJE_ASIGNADO_FIXTURE },
+    ]);
+    await user.click(screen.getByRole("button", { name: "Aceptar" }));
+    await screen.findByText("Viaje asignado");
+
+    const { llamadas } = mockFetch([
+      {
+        method: "GET",
+        path: "/catalogos/motivos",
+        body: [{ id: "m1", nombre: "Vehículo averiado" }, { id: "m2", nombre: "Cambio de planes" }],
+      },
+      { method: "POST", path: "/viajes/conductor/cancelar", body: { estado: "SOLICITADO" } },
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "Cancelar viaje" }));
+
+    const select = await screen.findByLabelText("Motivo de la cancelación");
+    const botonConfirmar = screen.getByRole("button", { name: "Confirmar cancelación" });
+    expect(botonConfirmar).toBeDisabled();
+
+    await user.selectOptions(select, "Vehículo averiado");
+    expect(botonConfirmar).toBeEnabled();
+    await user.click(botonConfirmar);
+
+    await waitFor(() => {
+      const cancelacion = llamadas.find((c) => c.path === "/viajes/conductor/cancelar");
+      expect(cancelacion?.body).toEqual({ motivo: "Vehículo averiado" });
+    });
+  });
+
   it("al rechazar, descarta la oferta y vuelve al panel de turno sin pedir el viaje asignado", async () => {
     const user = await iniciarTurnoConOferta();
 
@@ -205,38 +266,53 @@ describe("web-conductor — aceptar/rechazar oferta (CU-O06)", () => {
   });
 });
 
-describe("web-conductor — Mi perfil (Sección 2.2 de ux_complementaria.md)", () => {
-  it("muestra el campo de foto de perfil y lo actualiza junto al resto del contacto", async () => {
-    const perfil = {
-      id: "conductor-test-1",
-      nombre: "Conductor Original",
-      telefono: "+593900000002",
-      email: null,
-      roles: ["conductor"],
-      fecha_registro: new Date().toISOString(),
-      foto_url: null,
+describe("web-conductor — foto de perfil (ronda de foto de perfil + siembra de 26 usuarios)", () => {
+  it("sube una foto nueva desde Ajustes, sin pedir contraseña, y la refleja en el header", async () => {
+    const prefsBase = {
+      tema: "claro",
+      densidad_tablas: "comoda",
+      notificaciones_push: {},
+      sonido_oferta: true,
+      vibracion_oferta: true,
+      recordatorio_turno_hora: null,
+    };
+    const archivoSubido = {
+      id: "archivo-foto-1",
+      nombre_original: "foto.jpg",
+      content_type: "image/jpeg",
+      tamano_bytes: 3,
+      contexto: "foto_perfil",
+      propietario_id: "conductor-test-1",
+      ts_creacion: new Date().toISOString(),
     };
     const { llamadas } = mockFetch([
       { method: "GET", path: "/viajes/conductor/activo", body: null },
-      { method: "GET", path: "/perfil", body: perfil },
-      { method: "GET", path: "/perfil/sesiones", body: [] },
-      { method: "PATCH", path: "/perfil", body: { ...perfil, foto_url: "https://storage.local/foto.jpg" } },
+      { method: "GET", path: "/preferencias", body: prefsBase },
+      { method: "POST", path: "/archivos", body: archivoSubido },
+      { method: "PATCH", path: "/perfil/foto", body: { foto_url: "archivo-foto-1" } },
     ]);
     const user = userEvent.setup();
 
     renderApp();
-    await user.click(await screen.findByRole("button", { name: "Mi perfil" }));
+    // Fase 3 del Sistema Riel: Ajustes ya no está en una barra lateral
+    // siempre visible -- vive detrás de la parada "Más" del riel inferior.
+    await user.click(await screen.findByRole("button", { name: "Más" }));
+    await user.click(await screen.findByRole("button", { name: "Ajustes" }));
 
-    await user.click(await screen.findByRole("button", { name: "Editar" }));
-    const fotoInput = screen.getByLabelText("URL de foto de perfil (la ve el pasajero al asignarte un viaje)");
-    await user.type(fotoInput, "https://storage.local/foto.jpg");
-    await user.type(screen.getByLabelText("Contraseña actual (para confirmar el cambio)"), "clave-actual");
-    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    const input = await screen.findByLabelText("Cambiar foto");
+    const archivo = new File(["contenido-de-prueba"], "foto.jpg", { type: "image/jpeg" });
+    await user.upload(input, archivo);
 
     await waitFor(() => {
-      const patch = llamadas.find((c) => c.method === "PATCH" && c.path === "/perfil");
-      expect(patch?.body).toMatchObject({ foto_url: "https://storage.local/foto.jpg" });
+      const subida = llamadas.find((c) => c.method === "POST" && c.path === "/archivos");
+      expect(subida).toBeDefined();
+      const patch = llamadas.find((c) => c.method === "PATCH" && c.path === "/perfil/foto");
+      expect(patch?.body).toEqual({ archivo_id: "archivo-foto-1" });
     });
+
+    // No se pidió contraseña en ningún momento -- endpoint separado de
+    // "Mi perfil" (decisión D1 no aplica acá, ver AjustesPropios.tsx).
+    expect(screen.queryByLabelText("Contraseña actual (para confirmar el cambio)")).not.toBeInTheDocument();
   });
 });
 
@@ -258,6 +334,9 @@ describe("web-conductor — Ajustes / preferencias de turno (Sección 2.3 de ux_
     const user = userEvent.setup();
 
     renderApp();
+    // Fase 3 del Sistema Riel: Ajustes ya no está en una barra lateral
+    // siempre visible -- vive detrás de la parada "Más" del riel inferior.
+    await user.click(await screen.findByRole("button", { name: "Más" }));
     await user.click(await screen.findByRole("button", { name: "Ajustes" }));
 
     const checkboxSonido = await screen.findByLabelText("Sonido al llegar una nueva oferta");
@@ -267,5 +346,60 @@ describe("web-conductor — Ajustes / preferencias de turno (Sección 2.3 de ux_
       const patch = llamadas.find((c) => c.method === "PATCH" && c.path === "/preferencias");
       expect(patch?.body).toEqual({ sonido_oferta: false });
     });
+  });
+});
+
+describe("web-conductor — Mi vehículo (ficha de mantenimiento del propio vehículo)", () => {
+  const FICHA_FIXTURE = {
+    id: "v-test-1",
+    placa: "ABC-1234",
+    marca: "Toyota",
+    modelo: "Corolla",
+    estado_habilitacion: "HABILITADO",
+    km_acumulado: 4200,
+    fecha_ultima_intervencion: "2026-07-01T00:00:00Z",
+    km_ultima_intervencion: 4000,
+    proxima_km_preventivo: 9000,
+    le_toca_preventivo: false,
+    umbral_km_preventivo: 5000,
+  };
+
+  it("muestra el kilometraje acumulado y la próxima preventiva desde la navegación", async () => {
+    const { llamadas } = mockFetch([
+      { method: "GET", path: "/viajes/conductor/activo", body: null },
+      { method: "GET", path: "/mantenimiento/vehiculos/mio/ficha", body: FICHA_FIXTURE },
+    ]);
+    const user = userEvent.setup();
+
+    renderApp();
+    // Fase 3 del Sistema Riel: "Mi vehículo" vive detrás de la parada "Más"
+    // del riel inferior, junto a "Fallas del vehículo"/"Mis documentos".
+    await user.click(await screen.findByRole("button", { name: "Más" }));
+    await user.click(await screen.findByRole("button", { name: "Mi vehículo" }));
+
+    expect(await screen.findByText(/4[.,]200 km/)).toBeInTheDocument();
+    expect(screen.getByText(/9[.,]000 km/)).toBeInTheDocument();
+    expect(
+      llamadas.some((c) => c.method === "GET" && c.path === "/mantenimiento/vehiculos/mio/ficha"),
+    ).toBe(true);
+  });
+
+  it("muestra un aviso claro cuando el conductor no tiene ningún vehículo asignado", async () => {
+    mockFetch([
+      { method: "GET", path: "/viajes/conductor/activo", body: null },
+      {
+        method: "GET",
+        path: "/mantenimiento/vehiculos/mio/ficha",
+        status: 404,
+        body: { code: "VEHICULO_CONDUCTOR_NO_ASIGNADO", message: "No tenés un vehículo asignado" },
+      },
+    ]);
+    const user = userEvent.setup();
+
+    renderApp();
+    await user.click(await screen.findByRole("button", { name: "Más" }));
+    await user.click(await screen.findByRole("button", { name: "Mi vehículo" }));
+
+    expect(await screen.findByText(/Todavía no tenés un vehículo asignado/)).toBeInTheDocument();
   });
 });

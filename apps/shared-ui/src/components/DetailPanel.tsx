@@ -9,10 +9,14 @@ const etiquetaModo: Record<ModoPanel, string> = {
   nuevo: "Modo: Nuevo registro",
 };
 
-const colorModo: Record<ModoPanel, string> = {
-  consulta: "var(--color-text-muted)",
-  edicion: "var(--color-warning)",
-  nuevo: "var(--color-accent)",
+// Mismo tratamiento de chip (fondo suave + texto semántico) que Badge, ver
+// CLAUDE.md -- este indicador es propio de DetailPanel, no reutiliza Badge
+// directamente porque sus 3 estados (consulta/edición/nuevo) no mapean a
+// los tonos de BadgeTono.
+const estiloModo: Record<ModoPanel, { color: string; background: string }> = {
+  consulta: { color: "var(--color-text-muted)", background: "var(--color-neutral-bg)" },
+  edicion: { color: "var(--color-warning)", background: "var(--color-warning-bg)" },
+  nuevo: { color: "var(--color-accent)", background: "var(--color-warning-bg)" },
 };
 
 interface DetailPanelProps extends PropsWithChildren {
@@ -58,7 +62,7 @@ export function DetailPanel({
         justifyContent: "center",
         padding: "var(--space-5)",
         overflowY: "auto",
-        zIndex: 100,
+        zIndex: "var(--z-modal)",
       }}
     >
       <div
@@ -85,9 +89,8 @@ export function DetailPanel({
               borderRadius: "999px",
               fontSize: "var(--font-size-sm)",
               fontWeight: 600,
-              color: "#fff",
-              background: colorModo[modo],
               whiteSpace: "nowrap",
+              ...estiloModo[modo],
             }}
           >
             {etiquetaModo[modo]}

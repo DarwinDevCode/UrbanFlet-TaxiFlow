@@ -1,4 +1,4 @@
-import { ApiError, Badge, Button, Card, DataTable, DetailPanel, UserPicker, apiFetch, type ModoPanel } from "@urbanflet/shared-ui";
+import { ApiError, Badge, Button, Card, DataTable, DetailPanel, nombreRol, UserPicker, apiFetch, type ModoPanel } from "@urbanflet/shared-ui";
 import { useEffect, useState } from "react";
 
 interface ConfiguracionAlerta {
@@ -11,14 +11,16 @@ interface ConfiguracionAlerta {
 }
 
 const ETIQUETA_TIPO: Record<string, string> = {
-  denegaciones_rbac: "Denegaciones de permisos repetidas (CU-O18 A4)",
-  gps_spoofing: "Posible GPS spoofing",
-  pipeline_fallido: "Corrida de pipeline fallida",
+  denegaciones_rbac: "Denegaciones de permisos repetidas",
+  gps_spoofing: "Posible falsificación de ubicación GPS",
+  pipeline_fallido: "Corrida de proceso de datos fallida",
+  reporte_falla: "Falla de vehículo reportada por un conductor",
+  incidencia_operativa: "Incidencia operativa en curso (aviso a Coordinación de Operaciones)",
 };
 
 const NOTA_TIPO: Record<string, string> = {
   pipeline_fallido:
-    "Configurable, pero sin disparo real todavía: el pipeline (Airflow) no tiene un webhook hacia este backend, solo escribe en ClickHouse y en su propio log. La configuración queda lista para el día en que se agregue ese enlace.",
+    "Configurable, pero todavía no se dispara automáticamente: falta conectar este aviso al proceso que corre los informes. Mientras tanto, esta alerta no genera notificaciones por sí sola.",
 };
 
 export function SeccionConfiguracionAlertas() {
@@ -101,7 +103,7 @@ export function SeccionConfiguracionAlertas() {
           vacio="Sin configuración."
           columns={[
             { header: "Alerta", render: (a) => ETIQUETA_TIPO[a.tipo_alerta] ?? a.tipo_alerta },
-            { header: "Rol por defecto", render: (a) => a.rol_destinatario_default },
+            { header: "Rol por defecto", render: (a) => nombreRol(a.rol_destinatario_default) },
             {
               header: "Destinatarios adicionales",
               render: (a) =>
@@ -130,7 +132,7 @@ export function SeccionConfiguracionAlertas() {
               <p style={{ color: "var(--color-warning)", fontSize: "var(--font-size-sm)" }}>{NOTA_TIPO[seleccionada.tipo_alerta]}</p>
             )}
             <p style={{ fontSize: "var(--font-size-sm)", color: "var(--color-text-muted)" }}>
-              Canal: Web Push (único disponible) — Rol que siempre la recibe: {seleccionada.rol_destinatario_default}
+              Canal: Web Push (único disponible) — Rol que siempre la recibe: {nombreRol(seleccionada.rol_destinatario_default)}
             </p>
             <UserPicker label="Destinatarios adicionales" seleccionados={destinatarios} onChange={setDestinatarios} />
             <label style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>

@@ -1,99 +1,307 @@
-/* Design tokens compartidos por las 3 PWA (pasajero, conductor, interno).
-   Un solo sistema visual minimalista — cada app solo cambia --color-accent. */
+/* ═══════════════════════════════════════════════════════════════════════
+   SISTEMA RIEL — tokens compartidos por las 3 PWA (pasajero, conductor,
+   interno). Fase 1 del rediseño de identidad (ver SISTEMA_RIEL.md).
+
+   Por qué se reescribió esta paleta: las 2 rondas de rediseño anteriores
+   cambiaron color/tipografía/radios sobre el mismo esqueleto, y el
+   resultado siguió leyéndose como plantilla de panel administrativo. La
+   paleta anterior (crema #f7f1e6 + ámbar) además caía justo en el look
+   más repetido de interfaces generadas hoy: fondo crema cálido con acento
+   terracota.
+
+   La dirección nueva sale del dominio, no de una tendencia: UrbanFleet es
+   transporte urbano, y su material es el asfalto, la señalética y el plano
+   de rutas. De ahí:
+   - Neutros con sesgo FRÍO (concreto/asfalto), nunca crema.
+   - El ámbar de marca se conserva intacto -- viene del logotipo (un taxi
+     amarillo) y es el color real del dominio. El problema nunca fue el
+     color.
+   - Superficies que se leen como PLANOS separados por líneas, no como
+     tarjetas flotando: sombra neutralizada y radios casi a cero.
+
+   TEMA: claro es el principal (`:root`). El oscuro vive en
+   `[data-theme="dark"]` y es la MISMA identidad con la luz invertida --
+   mismos componentes, misma distribución, mismos roles de color; solo
+   cambia el material de fondo. `theme.ts` estampa el atributo de forma
+   sincrónica antes del primer render y la preferencia se guarda por cuenta
+   en el servidor (`preferencias/service.py::DEFAULTS`, default "claro"),
+   así que se conserva entre sesiones y dispositivos.
+
+   Tipografía: se conservan Barlow (cuerpo/UI/datos) y Big Shoulders
+   Display (títulos y cifras). Ambas vienen de la señalética civil y urbana,
+   son correctas para este dominio y ya estaban integradas -- cambiarlas por
+   tercera vez sería repetir el error de las rondas anteriores.
+   ═══════════════════════════════════════════════════════════════════════ */
+/* Big Shoulders Display se cargaba desde un .woff2 local que se perdió del
+   disco (nunca llegó a commitearse); ahora viene de Google Fonts, igual que
+   Barlow, con los mismos pesos 700/900 que usaba el @font-face local. */
+@import url("https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Big+Shoulders+Display:wght@700;900&display=swap");
+
 :root {
-  --color-bg: #f7f7f8;
+  /* ── Material: concreto claro, sesgo frío deliberado ─────────────────
+     No es gris puro (leería como "sin elegir") ni crema (el look genérico
+     que se está corrigiendo): verde-azulado muy desaturado, el color real
+     del concreto y el asfalto claro. */
+  --color-bg: #eef1f1;
   --color-surface: #ffffff;
-  --color-text: #14161a;
-  --color-text-muted: #5b6270;
-  --color-border: #e4e5e9;
-  --color-accent: #2a78d6;
-  --color-accent-contrast: #ffffff;
-  --color-danger: #d03b3b;
-  --color-success: #0ca30c;
-  --color-warning: #b5760a;
+  --color-surface-muted: #e4e9ea;
+  --color-text: #121a1d;
+  --color-text-muted: #5c6b72;
+  --color-border: #d1d9db;
+  --color-border-soft: #e2e7e8;
+  --color-row-hover: #eaeeef;
 
-  /* Paleta de estado (KPIs/badges) — semántica reservada, nunca reusada
-     para series de gráfico (skill dataviz: "status colors are reserved").
-     `serious` es el escalón intermedio entre advertencia y crítico (p.ej.
-     "por vencer en 7 días" vs. "vencido"). */
-  --status-good: #0ca30c;
-  --status-warning: #b5760a;
-  --status-serious: #d9652f;
-  --status-critical: #d03b3b;
+  /* ── Marca ───────────────────────────────────────────────────────────
+     El ámbar del taxi, sin cambios. Como TEXTO sobre fondo claro falla
+     contraste (2.08:1), por eso existe la variante honda -- misma regla de
+     siempre: `--color-accent` para rellenos y rieles, `--color-accent-deep`
+     para texto y enlaces. 6.79:1 sobre --color-surface. */
+  --color-accent: #f2a413;
+  --color-accent-contrast: #1a1207;
+  --color-accent-deep: #8a4b0a;
 
-  /* Paleta categórica de gráficos (skill dataviz, orden fijo validado —
-     nunca reordenar por serie individual, solo asignar en este orden). */
-  --chart-series-1: #2a78d6; /* azul */
-  --chart-series-2: #eb6834; /* naranja */
-  --chart-series-3: #1baf7a; /* aqua */
-  --chart-series-4: #eda100; /* amarillo */
-  --chart-series-5: #e87ba4; /* magenta */
-  --chart-series-6: #008300; /* verde */
-  --chart-series-7: #4a3aa7; /* violeta */
-  --chart-series-8: #e34948; /* rojo */
-  --chart-grid: #e1e0d9;
-  --chart-axis: #c3c2b7;
-  --chart-muted: #898781;
+  /* ── Semánticos ──────────────────────────────────────────────────────
+     Valores conservados de la calibración WCAG anterior: siguen pasando
+     contra la superficie nueva (más clara que la anterior, así que el
+     contraste solo mejora) y no son parte del problema de identidad. */
+  --color-danger: #b23a1f;
+  --color-danger-bg: rgba(178, 58, 31, 0.12);
+  --color-danger-contrast: #ffffff;
+  --color-success: #15794f;
+  --color-success-bg: rgba(21, 121, 79, 0.11);
+  --color-warning: #9c5b0a;
+  --color-warning-bg: rgba(156, 91, 10, 0.11);
+  --color-neutral-bg: #e4e9ea;
+  --color-info: #35607f;
+  --color-info-bg: rgba(53, 96, 127, 0.12);
 
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 16px;
+  /* ── EL RIEL ─────────────────────────────────────────────────────────
+     El componente firma del sistema. Todo objeto del negocio es un
+     trayecto entre paradas conocidas (viaje, solicitud, orden,
+     liquidación, documento), y el riel muestra a la vez EN QUÉ estado
+     está y CUÁNTO le falta -- información que una píldora de estado no
+     puede dar.
 
+     `recorrido` usa el ámbar hondo (no el de marca) porque son trazos
+     finos sobre fondo claro: 6.79:1 contra superficie, muy por encima del
+     3:1 que WCAG 1.4.11 pide para elementos no textuales. */
+  --riel-recorrido: #8a4b0a;
+  --riel-actual: #f2a413;
+  /* Contorno del nodo actual. El ámbar de marca sobre fondo claro da 2.08:1,
+     por debajo del 3:1 que WCAG 1.4.11 pide para un elemento no textual que
+     transmite información -- y el nodo actual es justamente EL elemento que
+     comunica el estado. En vez de apagar el ámbar (perdiendo la lectura de
+     "encendido" que hace al riel reconocible), se le da contorno: el relleno
+     sigue siendo el ámbar vivo y el borde garantiza 6.79:1 contra la
+     superficie. Es además lo que hacen los mapas de transporte reales con la
+     estación actual. */
+  --riel-actual-contorno: #8a4b0a;
+  --riel-halo: rgba(242, 164, 19, 0.22);
+  --riel-pendiente: #c3cccf;
+  --riel-grosor: 2px;
+  --riel-nodo: 9px;
+  --riel-nodo-actual: 13px;
+
+  /* ── Geometría ───────────────────────────────────────────────────────
+     Radios casi a cero: el sistema se compone de planos y líneas, no de
+     tarjetas redondeadas. `--corte` es la esquina diagonal de las acciones
+     -- geometría de señalética vial, la forma que reemplaza al botón
+     píldora. */
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 0px;
+  --corte: 9px;
+
+  /* ── Ritmo ───────────────────────────────────────────────────────────
+     Escala con más aire en los escalones grandes: el sistema respira por
+     el espacio en blanco y las líneas, ya no por sombras y bordes. */
   --space-1: 4px;
   --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 24px;
-  --space-6: 32px;
+  --space-3: 14px;
+  --space-4: 20px;
+  --space-5: 28px;
+  --space-6: 40px;
 
-  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-size-sm: 0.875rem;
-  --font-size-md: 1rem;
-  --font-size-lg: 1.25rem;
-  --font-size-xl: 1.75rem;
-  --font-size-2xl: 2.25rem;
+  --font-sans: "Barlow", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Solo para títulos de pantalla y cifras grandes (títulos de área, valor
+     de los instrumentos, montos de un registro). Nunca en cuerpo, labels
+     ni controles. */
+  --font-display: "Big Shoulders Display", "Arial Narrow", var(--font-sans);
+  /* Preferencia de accesibilidad por cuenta (`tamanoTexto.ts`): solo mueve
+     este factor, así que la proporción entre escalones se mantiene y
+     ninguna pantalla necesita saber de esto. */
+  --font-scale: 1;
+  --font-size-xs: calc(11px * var(--font-scale));
+  --font-size-sm: calc(13px * var(--font-scale));
+  --font-size-md: calc(14px * var(--font-scale));
+  --font-size-lg: calc(17px * var(--font-scale));
+  --font-size-xl: calc(24px * var(--font-scale));
+  --font-size-2xl: calc(30px * var(--font-scale));
+  /* Escalón nuevo: la cifra de un instrumento, que ahora se apoya en su
+     escala de referencia en vez de vivir dentro de una tarjeta. */
+  --font-size-3xl: calc(42px * var(--font-scale));
 
-  --shadow-sm: 0 1px 2px rgba(20, 22, 26, 0.06);
-  --shadow-md: 0 4px 16px rgba(20, 22, 26, 0.08);
+  /* Rótulo del sistema: versalitas espaciadas. Es el tratamiento que
+     identifica toda etiqueta de dato (cabecera de registro, label de
+     campo, label de instrumento) -- una sola regla, no un valor distinto
+     por componente. */
+  --rotulo-size: calc(10.5px * var(--font-scale));
+  --rotulo-tracking: 0.12em;
 
-  /* AppShell (sidebar + header) — mismo sistema de tokens, no colores nuevos
-     sueltos: la barra lateral es oscura por diseño (referencia del dueño de
-     producto), el resto de la app sigue usando los tokens de arriba. */
-  --color-sidebar-bg: #12172b;
-  --color-sidebar-text: #b9bfd6;
-  --color-sidebar-text-muted: #7a8099;
-  --color-sidebar-border: rgba(255, 255, 255, 0.08);
-  --color-sidebar-active-bg: #ffffff;
-  --color-sidebar-active-text: #12172b;
+  --control-height: 40px;
+
+  /* Sombra neutralizada a propósito: la separación entre superficies la
+     hacen las líneas y la barra de acento del plano, no la elevación.
+     `--shadow-md` sobrevive solo para lo que realmente flota sobre el
+     contenido (modales, menús desplegables). */
+  --shadow-sm: none;
+  --shadow-md: 0 10px 32px rgba(18, 26, 29, 0.16);
+
+  /* ── AppShell ────────────────────────────────────────────────────────
+     Fase 1 no rediseña el chasis (eso es Fase 2: el andén). Estos valores
+     se realinean a la familia fría nueva para que el shell actual no
+     desentone con los componentes ya rediseñados. Siguen siendo el eje de
+     preferencia independiente del tema (`sidebarTono.ts` sobreescribe los
+     otros 3 swatches). */
+  --color-sidebar-bg: #e7ecec;
+  --color-sidebar-text: #2c383c;
+  --color-sidebar-text-strong: #121a1d;
+  --color-sidebar-text-muted: #66757b;
+  --color-sidebar-border: #d1d9db;
+  --color-sidebar-hover: #dde4e4;
+  --color-sidebar-active-bg: #d4dcdd;
+  --color-sidebar-active-text: #121a1d;
+  --color-sidebar-rail-subtle: #8a4b0a;
+  --color-sidebar-rail-bold: #b36a0a;
+  /* La tinta del logotipo (isotipo + "UrbanFleet") viene horneada en el PNG
+     -- no puede recolorearse por CSS. En vez de una placa de fondo fija
+     (que se lee como un rectángulo ajeno al fondo real, encontrado en
+     verificación real), se preparó una SEGUNDA variante del PNG con la
+     tinta ya recoloreada a un tono claro, y este interruptor de 0/1 elige
+     cuál mostrar -- mismo mecanismo de "propiedad por tema" que el resto
+     de este archivo, sin agregar infraestructura nueva. 0 = tinta oscura
+     (fondo claro detrás del logo); 1 = tinta clara (fondo oscuro). */
+  --logo-invertido: 0;
+  /* Variable HERMANA de `--logo-invertido`, deliberadamente separada: esta
+     SOLO reacciona al tema de contenido, nunca a `sidebarTono.ts`. Las 3
+     pantallas de login no tienen sidebar, pero `aplicarSidebarTonoInicial()`
+     igual corre ahí (la preferencia es de cuenta, no de app) y puede dejar
+     `--logo-invertido` con un override inline por localStorage -- si el
+     login leyera esa misma variable, un pasajero que alguna vez eligió
+     "Ámbar" en Ajustes (0) vería tinta oscura ilegible sobre un login en
+     tema oscuro. El logo del login usa esta variable en su lugar, que
+     ningún selector de sidebar toca jamás. */
+  --logo-invertido-tema: 0;
   --shell-sidebar-width: 264px;
   --shell-header-height: 64px;
+
+  /* ── Paletas reservadas ──────────────────────────────────────────────
+     Estado y series de gráfico: validadas por la skill `dataviz`, fuera de
+     alcance del rediseño de identidad. La categórica NUNCA se reordena ni
+     se reusa para estado. */
+  --status-good: #1f9d6b;
+  --status-warning: #d98a0b;
+  --status-serious: #c2570e;
+  --status-critical: #d64545;
+
+  --chart-series-1: #2a78d6;
+  --chart-series-2: #eb6834;
+  --chart-series-3: #1baf7a;
+  --chart-series-4: #eda100;
+  --chart-series-5: #e87ba4;
+  --chart-series-6: #008300;
+  --chart-series-7: #4a3aa7;
+  --chart-series-8: #e34948;
+  --chart-grid: #dde3e4;
+  --chart-axis: #b8c2c5;
+  --chart-muted: #7c8a8f;
+
+  /* ── Capas ───────────────────────────────────────────────────────────
+     Escala deliberada y única (ver la regla `.leaflet-container` abajo:
+     encierra a Leaflet en su propio stacking context, sin lo cual estos
+     valores no serían comparables entre sí). */
+  --z-map: 0;
+  --z-map-overlay: 10;
+  --z-header: 20;
+  --z-backdrop: 30;
+  --z-sidebar: 40;
+  --z-dropdown: 50;
+  --z-modal: 100;
+  --z-lightbox: 110;
 }
 
-/* Sección 1.4/3.2 de ux_complementaria.md: tema oscuro. `data-theme="dark"`
-   se estampa en <html> por `theme.ts` (aplicación sincrónica al cargar,
-   antes del primer render, para no parpadear en claro) -- nunca se decide
-   por `prefers-color-scheme` sola, porque la preferencia real vive en
-   `preferencias_usuario` (servidor), no solo en el sistema operativo.
-   Paleta de gráficos/estado re-calibrada para contraste sobre fondo oscuro
-   (misma identidad de matiz que la paleta clara, luminosidad ajustada) --
-   mismo criterio de la skill dataviz aplicado al modo oscuro. El sidebar
-   del AppShell ya era oscuro por diseño en ambos temas, sin cambios. */
-:root[data-theme="dark"] {
-  --color-bg: #0f1115;
-  --color-surface: #1a1d24;
-  --color-text: #e8e9ec;
-  --color-text-muted: #9aa0ad;
-  --color-border: #2c303a;
-  --color-accent: #5b9de8;
-  --color-accent-contrast: #0f1115;
-  --color-danger: #f2635f;
-  --color-success: #35c235;
-  --color-warning: #d99a3d;
+/* ═══════════════════════════════════════════════════════════════════════
+   TEMA OSCURO — misma identidad, luz invertida.
 
-  --status-good: #35c235;
-  --status-warning: #d99a3d;
+   No es una interfaz distinta: mismos componentes, misma distribución,
+   mismos roles de color. Lo único que cambia es el material -- el concreto
+   claro pasa a ser asfalto nocturno, y el texto invierte su relación con
+   el fondo. El ámbar de marca y el riel se conservan como el elemento
+   que se enciende sobre el asfalto, que es exactamente lo que hace un
+   taxi de noche.
+
+   Se activa por elección explícita en Ajustes (nunca por
+   `prefers-color-scheme` sola): la preferencia real vive en el servidor,
+   por cuenta, no en el sistema operativo.
+   ═══════════════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"] {
+  --color-bg: #10161a;
+  --color-surface: #171f24;
+  --color-surface-muted: #1e282e;
+  --color-text: #e6edf1;
+  --color-text-muted: #94a5ae;
+  --color-border: #2a353c;
+  --color-border-soft: #212b31;
+  --color-row-hover: #1c262c;
+
+  --color-accent: #f2a413;
+  --color-accent-contrast: #1a1207;
+  /* Variante clara del ámbar hondo: mismo rol (texto/enlace) recalibrado
+     para leerse sobre superficie oscura -- 9.8:1 sobre --color-surface. */
+  --color-accent-deep: #f6c667;
+
+  --color-danger: #ec8262;
+  --color-danger-bg: rgba(236, 130, 98, 0.16);
+  /* El rojo de este tema es CLARO sobre fondo oscuro, así que el texto del
+     botón de peligro tiene que ser oscuro, no blanco (6.45:1 vs 2.65:1). */
+  --color-danger-contrast: #1a1207;
+  --color-success: #5cc48a;
+  --color-success-bg: rgba(92, 196, 138, 0.16);
+  --color-warning: #e0a339;
+  --color-warning-bg: rgba(224, 163, 57, 0.16);
+  --color-neutral-bg: #1e282e;
+  --color-info: #7fb3e0;
+  --color-info-bg: rgba(127, 179, 224, 0.16);
+
+  /* El riel invierte igual que el resto: sobre asfalto, el tramo ya
+     recorrido usa el ámbar hondo CLARO (no el oscuro del tema claro, que
+     desaparecería contra el fondo). */
+  --riel-recorrido: #b36a0a;
+  --riel-actual: #f2a413;
+  /* Sobre asfalto el ámbar ya da 8.03:1 por sí solo, así que el contorno no
+     hace falta para contraste -- se deja en el mismo ámbar para conservar
+     exactamente la misma forma del nodo en los dos temas. */
+  --riel-actual-contorno: #f2a413;
+  --riel-halo: rgba(242, 164, 19, 0.2);
+  --riel-pendiente: #33414a;
+
+  --logo-invertido: 1;
+  --logo-invertido-tema: 1;
+  --color-sidebar-bg: #141c21;
+  --color-sidebar-text: #b9c7ce;
+  --color-sidebar-text-strong: #e6edf1;
+  --color-sidebar-text-muted: #7d8d96;
+  --color-sidebar-border: #2a353c;
+  --color-sidebar-hover: #1c262c;
+  --color-sidebar-active-bg: #223038;
+  --color-sidebar-active-text: #ffffff;
+  --color-sidebar-rail-subtle: #b36a0a;
+  --color-sidebar-rail-bold: #f2a413;
+
+  --status-good: #4cc49a;
+  --status-warning: #f2a413;
   --status-serious: #e8834f;
-  --status-critical: #f2635f;
+  --status-critical: #ec6a6a;
 
   --chart-series-1: #5b9de8;
   --chart-series-2: #f28a5c;
@@ -103,12 +311,12 @@
   --chart-series-6: #4fbf4f;
   --chart-series-7: #8b7bd8;
   --chart-series-8: #ec7170;
-  --chart-grid: #2c303a;
-  --chart-axis: #454a56;
-  --chart-muted: #8a8f9c;
+  --chart-grid: #24303a;
+  --chart-axis: #3c4a54;
+  --chart-muted: #84939c;
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --shadow-sm: none;
+  --shadow-md: 0 10px 32px rgba(0, 0, 0, 0.55);
 }
 
 * {
@@ -122,4 +330,66 @@ body {
   font-family: var(--font-sans);
   font-size: var(--font-size-md);
   -webkit-font-smoothing: antialiased;
+}
+
+/* Los controles de formulario NO heredan `font-family` del documento: la
+   hoja del navegador les impone la suya (Arial en Chrome). Sin esta regla,
+   cualquier control que no la declare se sale del sistema tipográfico. Solo
+   se hereda la FAMILIA -- el tamaño lo pone cada control con los tokens. */
+button,
+input,
+select,
+textarea,
+optgroup {
+  font-family: inherit;
+}
+
+/* Encierra el mapa en su propio stacking context: Leaflet fija
+   `position:relative` en el contenedor pero nunca un z-index, así que sus
+   paneles internos (400-1000) competían contra los del shell en el contexto
+   raíz. No cambia el orden interno del mapa, solo su techo. */
+.leaflet-container {
+  z-index: var(--z-map);
+}
+
+/* Oculta la barra de scroll sin desactivar el desplazamiento -- overflow
+   sigue siendo "auto", nunca "hidden". */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Foco de teclado del sistema. Dentro del sidebar se usa el token de riel
+   propio, porque `--color-accent-deep` no alcanza 3:1 contra todas las
+   opciones de color de sidebar. */
+:focus-visible {
+  outline: 2px solid var(--color-accent-deep);
+  outline-offset: 2px;
+}
+.shell-sidebar :focus-visible {
+  outline-color: var(--color-sidebar-rail-bold);
+}
+
+/* ── Rótulo: el tratamiento único de toda etiqueta de dato ──────────────
+   Cabecera de registro, label de campo, label de instrumento, eyebrow de
+   un plano. Una sola regla en vez de repetir el mismo bloque de
+   `text-transform` + `letter-spacing` en cada componente. */
+.uf-rotulo {
+  font-size: var(--rotulo-size);
+  font-weight: 700;
+  letter-spacing: var(--rotulo-tracking);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
 }

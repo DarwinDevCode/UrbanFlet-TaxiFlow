@@ -8,6 +8,7 @@ import {
   DataTable,
   DetailField,
   DetailPanel,
+  nombreRol,
   TextField,
   useSwr,
 } from "@urbanflet/shared-ui";
@@ -92,10 +93,12 @@ function SeccionAnonimizacion() {
         cuenta se conservan sin modificarse — el identificador que usan (un id interno, nunca el nombre) sigue
         siendo válido; el propio evento de anonimización queda registrado, sin exponer el dato purgado.
       </p>
+      {/* "Nuevo"/"Eliminar" quitados (segunda pasada, punto 1): esta pantalla
+          solo anonimiza cuentas existentes, vía "Anonimizar" en el
+          resultado -- ningún rol tiene un uso real para crear o eliminar
+          acá. */}
       <ActionBar
-        nuevo={{ onClick: () => {}, disabled: true, title: "No aplica: esta pantalla solo anonimiza cuentas existentes." }}
         actualizar={{ onClick: () => buscar(), disabled: !texto.trim() }}
-        eliminar={{ onClick: () => {}, disabled: true, title: "No aplica: usa 'Anonimizar' sobre el resultado." }}
         buscar={{ onClick: () => buscar(), disabled: !texto.trim() }}
         salir={{ onClick: () => { setTexto(""); setResultados([]); } }}
       />
@@ -121,7 +124,7 @@ function SeccionAnonimizacion() {
             { header: "Nombre", render: (u) => u.nombre },
             { header: "Teléfono", render: (u) => u.telefono ?? "—" },
             { header: "Correo", render: (u) => u.email ?? "—" },
-            { header: "Roles", render: (u) => u.roles.join(", ") },
+            { header: "Roles", render: (u) => u.roles.map(nombreRol).join(", ") },
             {
               header: "Acción",
               render: (u) =>

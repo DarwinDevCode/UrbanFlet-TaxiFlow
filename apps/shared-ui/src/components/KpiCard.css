@@ -1,0 +1,131 @@
+/* EL INSTRUMENTO y LA FRANJA — ver KpiCard.tsx. */
+
+.uf-franja {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  border-top: 2px solid var(--color-border);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.uf-instrumento {
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  border-right: 1px solid var(--color-border-soft);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  /* La cifra manda: todo lo demás se apila debajo sin competir. */
+  gap: 0;
+}
+
+.uf-instrumento:last-child {
+  border-right: none;
+}
+
+.uf-instrumento-etiqueta {
+  margin: 0 0 var(--space-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.uf-instrumento-valor {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--font-size-3xl);
+  font-weight: 700;
+  line-height: 0.88;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+
+.uf-instrumento--exito .uf-instrumento-valor { color: var(--status-good); }
+.uf-instrumento--advertencia .uf-instrumento-valor { color: var(--status-warning); }
+.uf-instrumento--serio .uf-instrumento-valor { color: var(--status-serious); }
+.uf-instrumento--peligro .uf-instrumento-valor { color: var(--status-critical); }
+
+/* ── La escala: lo que convierte una cifra suelta en una lectura ──────── */
+.uf-instrumento-escala {
+  position: relative;
+  height: 3px;
+  margin-top: var(--space-3);
+  background: var(--color-border-soft);
+}
+
+.uf-instrumento-escala i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--color-accent);
+}
+
+.uf-instrumento--exito .uf-instrumento-escala i { background: var(--status-good); }
+.uf-instrumento--advertencia .uf-instrumento-escala i { background: var(--status-warning); }
+.uf-instrumento--serio .uf-instrumento-escala i { background: var(--status-serious); }
+.uf-instrumento--peligro .uf-instrumento-escala i { background: var(--status-critical); }
+
+/* La marca de referencia: el objetivo o umbral contra el que se lee. */
+.uf-instrumento-escala u {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  background: var(--color-text-muted);
+}
+
+.uf-instrumento-descripcion {
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+  color: var(--color-text-muted);
+}
+
+.uf-instrumento-interpretacion {
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+.uf-instrumento-interpretacion--exito { color: var(--status-good); }
+.uf-instrumento-interpretacion--peligro { color: var(--status-critical); }
+
+/* ── Instrumento accionable (drill-down) ─────────────────────────────── */
+.uf-instrumento--accionable {
+  cursor: pointer;
+  position: relative;
+  transition: background-color 0.14s ease;
+}
+
+.uf-instrumento--accionable:hover,
+.uf-instrumento--accionable:focus-visible {
+  background: var(--color-row-hover);
+}
+
+/* La marca de que es accionable es una barra inferior que aparece al
+   pasar, no un cambio de borde de la caja -- ya no hay caja. */
+.uf-instrumento--accionable::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--color-accent);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.16s ease;
+}
+
+.uf-instrumento--accionable:hover::after,
+.uf-instrumento--accionable:focus-visible::after {
+  transform: scaleX(1);
+}
+
+.uf-instrumento-detalle {
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: var(--rotulo-tracking);
+  text-transform: uppercase;
+  color: var(--color-accent-deep);
+}

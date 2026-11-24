@@ -8,6 +8,7 @@ import "leaflet/dist/leaflet.css";
 import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
 import markerIcon from "leaflet/dist/images/marker-icon.png";
 import markerShadow from "leaflet/dist/images/marker-shadow.png";
+import { MarcadorVehiculo } from "@urbanflet/shared-ui";
 import { useEffect } from "react";
 import { MapContainer, Marker, Polyline, TileLayer, useMap, useMapEvents } from "react-leaflet";
 
@@ -28,26 +29,6 @@ const destinoIcon = new L.Icon({
   iconSize: [25, 41],
   iconAnchor: [12, 41],
   className: "destino-marker",
-});
-
-// CU-O04 P1: "íconos anónimos" de taxis cercanos — sin popup, sin datos de
-// conductor/vehículo, solo un marcador genérico.
-const taxiIcon = L.divIcon({
-  html: "🚕",
-  className: "taxi-icon-anonimo",
-  iconSize: [22, 22],
-  iconAnchor: [11, 11],
-});
-
-// A diferencia de `taxiIcon` (anónimo, para el radio de búsqueda antes de
-// asignar), este ícono representa al conductor YA asignado a este viaje —
-// deliberadamente distinto (más grande, resaltado) para que el pasajero no
-// lo confunda con los taxis anónimos cercanos.
-const conductorIcon = L.divIcon({
-  html: '<div style="font-size:22px;filter:drop-shadow(0 0 2px rgba(0,0,0,.5))">🚖</div>',
-  className: "conductor-icon-asignado",
-  iconSize: [30, 30],
-  iconAnchor: [15, 15],
 });
 
 interface LatLon {
@@ -161,6 +142,12 @@ export interface RideMapProps {
   // sin sesión, sin clics de "elegir destino", sin botón de "mi ubicación"
   // (no tiene sentido pedirle geolocalización a un contacto que solo mira).
   soloLectura?: boolean;
+  // Punto 5 de la ronda de auditoría de pantallas: `origen` siempre pinta el
+  // pin plano de Leaflet (semántica de "punto de recogida"). La vista
+  // pública de "Compartir viaje" reusa `origen` solo para centrar el mapa
+  // en la posición del conductor -- sin este flag quedaba un pin genérico
+  // ahí en vez de la flecha de vehículo (`conductor`, ver más abajo).
+  ocultarPinOrigen?: boolean;
   // Cuando es true, el mapa llena el 100% de la altura de su contenedor en
   // vez de la altura fija ALTO_MAPA -- usado en la vista de viaje activo
   // (VistaViaje), que ahora ocupa todo el alto disponible de la pantalla en
@@ -182,10 +169,24 @@ export function RideMap({
   onUbicacionError,
   clicksHabilitados = true,
   soloLectura = false,
+  ocultarPinOrigen = false,
   llenarAltura = false,
 }: RideMapProps) {
   return (
-    <div style={{ height: llenarAltura ? "100%" : ALTO_MAPA, borderRadius: "var(--radius-md)", overflow: "hidden" }}>
+    // `llenarAltura` se apoya en el contenedor `position:relative` que la
+    // pantalla de viaje ya declara para esto, en vez de `height:100%`: el
+    // padre es un flex item con `flex:1`, y su alto resuelto NO cuenta como
+    // definido para un porcentaje — el mapa colapsaba a 0px (medido: con
+    // alto fijo daba 703px, con 100% daba 0). `inset:0` no depende de esa
+    // resolución. Es además la forma que el propio comentario del
+    // contenedor ya anticipaba.
+    <div
+      style={
+        llenarAltura
+          ? { position: "absolute", inset: 0, borderRadius: "var(--radius-md)", overflow: "hidden" }
+          : { height: ALTO_MAPA, borderRadius: "var(--radius-md)", overflow: "hidden" }
+      }
+    >
       <MapContainer center={[origen.lat, origen.lon]} zoom={15} style={{ height: "100%", width: "100%" }}>
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -196,13 +197,13 @@ export function RideMap({
         {!soloLectura && (
           <ControlDeUbicacion onEncontrada={onUbicacionEncontrada} onError={onUbicacionError} />
         )}
-        <Marker position={[origen.lat, origen.lon]} />
+        {!ocultarPinOrigen && <Marker position={[origen.lat, origen.lon]} />}
         {destino && <Marker position={[destino.lat, destino.lon]} icon={destinoIcon} />}
         {ruta && ruta.length > 1 && <Polyline positions={ruta} pathOptions={{ color: "#1f6feb", weight: 4 }} />}
         {cercanos.map((c, i) => (
-          <Marker key={i} position={[c.lat, c.lon]} icon={taxiIcon} interactive={false} />
+          <MarcadorVehiculo key={i} lat={c.lat} lon={c.lon} interactive={false} tamano={20} />
         ))}
-        {conductor && <Marker position={[conductor.lat, conductor.lon]} icon={conductorIcon} />}
+        {conductor && <MarcadorVehiculo lat={conductor.lat} lon={conductor.lon} destacado />}
       </MapContainer>
     </div>
   );

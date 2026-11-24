@@ -170,3 +170,60 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
+
+// Ronda 2 del flujo de fallas, Fase A/C: primer mecanismo de carga de
+// archivos del proyecto -- multipart/form-data, así que no puede pasar por
+// `apiFetch` (que siempre serializa `body` como JSON). Reusa el mismo
+// single-flight de renovación de token que `apiFetch` en vez de duplicar su
+// propia lógica de reintento.
+export interface ArchivoSubidoOut {
+  id: string;
+  nombre_original: string;
+  content_type: string;
+  tamano_bytes: number;
+  contexto: string;
+  propietario_id: string;
+  ts_creacion: string;
+}
+
+export async function subirArchivo(file: File, contexto: string): Promise<ArchivoSubidoOut> {
+  const doRequest = async (): Promise<Response> => {
+    const formData = new FormData();
+    formData.append("contexto", contexto);
+    formData.append("file", file);
+    const headers: Record<string, string> = {};
+    const token = tokenStorage.getAccess();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return fetch(`${baseUrl}/archivos`, { method: "POST", headers, body: formData });
+  };
+
+  const tokenEnviado = tokenStorage.getAccess();
+  let response = await doRequest();
+  if (response.status === 401) {
+    const yaRenovadoPorOtra = tokenStorage.getAccess() !== tokenEnviado;
+    const renovado = yaRenovadoPorOtra || (await renovarUnaSolaVez());
+    if (renovado) response = await doRequest();
+  }
+  if (!response.ok) await parseError(response);
+  return (await response.json()) as ArchivoSubidoOut;
+}
+
+/** URL autenticada de un archivo -- no sirve como `<img src>` directo (el
+ * navegador no adjunta el Bearer token a una carga de imagen plana); usar
+ * `obtenerArchivoBlobUrl` para renderizarlo. */
+export function urlArchivo(archivoId: string): string {
+  return `${baseUrl}/archivos/${archivoId}`;
+}
+
+/** Descarga un archivo protegido y devuelve un Object URL listo para
+ * `<img src>` -- quien lo use debe revocarlo (`URL.revokeObjectURL`) cuando
+ * ya no lo necesite. */
+export async function obtenerArchivoBlobUrl(archivoId: string): Promise<string> {
+  const headers: Record<string, string> = {};
+  const token = tokenStorage.getAccess();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(`${baseUrl}/archivos/${archivoId}`, { headers });
+  if (!response.ok) await parseError(response);
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
+}
