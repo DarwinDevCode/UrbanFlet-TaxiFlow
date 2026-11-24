@@ -34,15 +34,68 @@ class ResultadoAuditoria(StrEnum):
 class AccionAuditoria(StrEnum):
     VIAJE_TRANSICION_ESTADO = "VIAJE_TRANSICION_ESTADO"
     VIAJE_CANCELADO_PASAJERO = "VIAJE_CANCELADO_PASAJERO"
+    # CU-O07 A6: "si la posición se aleja más de 2 km de la ruta prevista sin
+    # recálculo, el sistema recalcula la ruta y lo registra... el dato queda
+    # para auditoría". El recálculo en sí ocurre del lado del cliente (ver
+    # UMBRAL_DESVIO_RUTA_KM en apps/shared-ui/src/api/rutas.ts) -- esta
+    # acción es exclusivamente el registro que la spec exige, vía
+    # POST /viajes/conductor/recalculo-ruta (viajes/service_ejecucion.py).
+    VIAJE_RECALCULO_RUTA = "VIAJE_RECALCULO_RUTA"
     PASAJERO_REGISTRO = "PASAJERO_REGISTRO"
     SOLICITUD_CONDUCTOR_ENVIO = "SOLICITUD_CONDUCTOR_ENVIO"
     SOLICITUD_CONDUCTOR_TOMA = "SOLICITUD_CONDUCTOR_TOMA"
     SOLICITUD_CONDUCTOR_DECISION = "SOLICITUD_CONDUCTOR_DECISION"
+    # Misma ronda de corrección acotada: cédula/licencia/datos del vehículo
+    # declarado, mientras la solicitud no llegó a APROBADA -- recién ahí se
+    # copian a `usuarios.conductor` y a un documento `vehiculos` nuevo
+    # (`_aprobar_solicitud_en_transaccion`); antes de eso viven solo en
+    # `solicitudes`, sin usarse en ningún otro lado.
+    SOLICITUD_CONDUCTOR_CORRECCION = "SOLICITUD_CONDUCTOR_CORRECCION"
     VEHICULO_RETIRO = "VEHICULO_RETIRO"
     VEHICULO_HABILITACION = "VEHICULO_HABILITACION"
+    # Decisión 3 (baja lógica de vehículos): acción propia, NO se reusa
+    # VEHICULO_RETIRO. Ese es el retiro TEMPORAL y automático por una orden
+    # de mantenimiento (se revierte solo al cerrarla); esto es la salida
+    # PERMANENTE de la flota operativa. Compartir la misma acción dejaría los
+    # dos casos indistinguibles en la bitácora, que es justo donde hay que
+    # poder diferenciarlos.
+    VEHICULO_BAJA = "VEHICULO_BAJA"
+    # Cierre del CRUD de vehículos (Punto 3): corrección de datos
+    # descriptivos, distinta del retiro/baja de estado.
+    VEHICULO_EDICION = "VEHICULO_EDICION"
     ORDEN_MANTENIMIENTO_REGISTRO = "ORDEN_MANTENIMIENTO_REGISTRO"
     ORDEN_MANTENIMIENTO_CIERRE = "ORDEN_MANTENIMIENTO_CIERRE"
     ORDEN_MANTENIMIENTO_ANULACION = "ORDEN_MANTENIMIENTO_ANULACION"
+    # Ronda 2, Fase E (H8 + CU-O12 A3): "en taller" nunca se auditaba, a
+    # diferencia de crear/cerrar/anular -- corregido de paso en esta misma
+    # fase (ver Fase G, punto 3, mismo hallazgo, cerrado ya acá para no
+    # dejarlo pendiente dos veces). ESPERA_REPUESTO/REANUDACION son las 2
+    # transiciones nuevas del estado intermedio.
+    ORDEN_MANTENIMIENTO_EN_TALLER = "ORDEN_MANTENIMIENTO_EN_TALLER"
+    ORDEN_MANTENIMIENTO_ESPERA_REPUESTO = "ORDEN_MANTENIMIENTO_ESPERA_REPUESTO"
+    ORDEN_MANTENIMIENTO_REANUDACION = "ORDEN_MANTENIMIENTO_REANUDACION"
+    # Ronda de "corrección acotada por estado": distinta de REGISTRO/CIERRE/
+    # ANULACION -- ajusta un campo puntual (descripción/taller/fecha
+    # programada/repuestos estimados/mano de obra estimada) mientras la
+    # orden sigue en un estado donde ese campo todavía no generó ninguna
+    # consecuencia real (ver análisis en el resumen de esa ronda), nunca
+    # tras el cierre.
+    ORDEN_MANTENIMIENTO_CORRECCION = "ORDEN_MANTENIMIENTO_CORRECCION"
+    # Ronda 2 del flujo de fallas (PROPUESTA_FLUJO_FALLA_VEHICULO.md), Fase C:
+    # el conductor reporta una falla del vehículo (con o sin viaje activo).
+    # Distinta de ORDEN_MANTENIMIENTO_REGISTRO -- un reporte no es todavía una
+    # orden, puede convertirse en una (Fase D) o descartarse.
+    INCIDENCIA_REPORTADA = "INCIDENCIA_REPORTADA"
+    # Ronda 2, Fase D: decisión del Jefe de Mantenimiento sobre un reporte
+    # PENDIENTE -- convertirlo en orden real (ORDEN_MANTENIMIENTO_REGISTRO se
+    # audita aparte, dentro de mantenimiento.service.crear_orden, sin
+    # duplicar) o descartarlo con motivo.
+    REPORTE_FALLA_CONVERSION = "REPORTE_FALLA_CONVERSION"
+    REPORTE_FALLA_DESCARTE = "REPORTE_FALLA_DESCARTE"
+    # Misma ronda de corrección acotada: solo mientras el reporte sigue
+    # PENDIENTE -- una vez CONVERTIDO_A_ORDEN o DESCARTADO ya es historial,
+    # el propio servicio lo bloquea (`_reporte_pendiente`).
+    REPORTE_FALLA_CORRECCION = "REPORTE_FALLA_CORRECCION"
     CUMPLIMIENTO_BANDERA_CAMBIO = "CUMPLIMIENTO_BANDERA_CAMBIO"
     PAGO_REGISTRO = "PAGO_REGISTRO"
     PAGO_AJUSTE = "PAGO_AJUSTE"
@@ -70,6 +123,16 @@ class AccionAuditoria(StrEnum):
     USUARIO_SUSPENSION = "USUARIO_SUSPENSION"
     USUARIO_REACTIVACION = "USUARIO_REACTIVACION"
     USUARIO_BAJA = "USUARIO_BAJA"
+    # Autoservicio de baja de cuenta con periodo de gracia (30 días). Son 3
+    # acciones distintas de `USUARIO_BAJA` a propósito: esa es la baja
+    # ADMINISTRATIVA (un admin la aplica sobre otra cuenta, efecto inmediato);
+    # estas son la solicitud del propio titular, su arrepentimiento, y el
+    # vencimiento automático del plazo. Nada de esto es la anonimización de
+    # CU-O17 A2 (`USUARIO_ANONIMIZACION`), que sigue siendo una acción legal
+    # aparte sobre datos personales y nunca se dispara sola desde acá.
+    CUENTA_BAJA_SOLICITADA = "CUENTA_BAJA_SOLICITADA"
+    CUENTA_BAJA_CANCELADA = "CUENTA_BAJA_CANCELADA"
+    CUENTA_BAJA_EFECTIVA = "CUENTA_BAJA_EFECTIVA"
     ROL_MODIFICACION = "ROL_MODIFICACION"
     POLITICA_AUTH_CAMBIO = "POLITICA_AUTH_CAMBIO"
     SESION_CIERRE_REMOTO = "SESION_CIERRE_REMOTO"
@@ -144,6 +207,13 @@ class AccionAuditoria(StrEnum):
     # vehículo a quien tenga el enlace) -- se audita igual que cualquier otra
     # activación de algo que afecta la privacidad del viaje.
     VIAJE_COMPARTIR_ACTIVADO = "VIAJE_COMPARTIR_ACTIVADO"
+    # Ronda de correcciones (agosto 2026): restablecimiento de contraseña de
+    # un usuario existente por `admin_sistema` -- distinta de `PASSWORD_CAMBIO`
+    # (autoservicio, el propio titular con su contraseña actual) a propósito,
+    # mismo criterio ya aplicado a `CUENTA_BAJA_SOLICITADA` vs `USUARIO_BAJA`:
+    # quien revise la bitácora debe poder distinguir "el usuario cambió su
+    # propia contraseña" de "un administrador se la restableció".
+    USUARIO_PASSWORD_RESTABLECIDA = "USUARIO_PASSWORD_RESTABLECIDA"
 
 
 # Módulo 6.1 de admin_sistema (specs/specs-administrativas/admin_sistema.md):
@@ -161,10 +231,23 @@ ACCIONES_ADMINISTRATIVAS: frozenset[AccionAuditoria] = frozenset(
         AccionAuditoria.USUARIO_SUSPENSION,
         AccionAuditoria.USUARIO_REACTIVACION,
         AccionAuditoria.USUARIO_BAJA,
+        # El cierre de cuenta iniciado por el propio titular y su vencimiento
+        # también son trazables desde la auditoría administrativa: quien
+        # revise por qué una cuenta dejó de tener acceso debe poder ver que
+        # fue voluntaria, no una acción de un administrador.
+        AccionAuditoria.CUENTA_BAJA_SOLICITADA,
+        AccionAuditoria.CUENTA_BAJA_CANCELADA,
+        AccionAuditoria.CUENTA_BAJA_EFECTIVA,
+        # Decisión 3: sacar un vehículo de la flota es una acción
+        # administrativa sobre un dato maestro, igual que dar de baja una
+        # cuenta -- pertenece a la misma vista de auditoría administrativa.
+        AccionAuditoria.VEHICULO_BAJA,
+        AccionAuditoria.VEHICULO_EDICION,
         AccionAuditoria.ROL_MODIFICACION,
         AccionAuditoria.POLITICA_AUTH_CAMBIO,
         AccionAuditoria.SESION_CIERRE_REMOTO,
         AccionAuditoria.PASSWORD_CAMBIO,
+        AccionAuditoria.USUARIO_PASSWORD_RESTABLECIDA,
         AccionAuditoria.FLAG_CREACION,
         AccionAuditoria.FLAG_MODIFICACION,
         AccionAuditoria.PARAMETRO_SISTEMA_CAMBIO,

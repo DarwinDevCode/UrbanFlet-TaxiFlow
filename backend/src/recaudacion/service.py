@@ -331,7 +331,13 @@ async def listar_bandeja_discrepancias(db: AsyncIOMotorDatabase) -> tuple[list[d
     )
 
     limite = datetime.now(UTC) - timedelta(hours=VIAJE_SIN_PAGO_HORAS)
-    candidatos = await db.viajes.find({"estado": "FINALIZADO", "ts_fin": {"$lt": limite}}).to_list(length=500)
+    # Más reciente primero (ronda de orden por defecto en tablas) -- antes
+    # sin `.sort()`, quedaba en el orden natural de Mongo, no confiable.
+    candidatos = (
+        await db.viajes.find({"estado": "FINALIZADO", "ts_fin": {"$lt": limite}})
+        .sort("ts_fin", -1)
+        .to_list(length=500)
+    )
     viaje_ids = [v["_id"] for v in candidatos]
 
     ids_con_pago: set[str] = set()
@@ -581,6 +587,12 @@ async def generar_liquidaciones(db: AsyncIOMotorDatabase, *, autorizador_id: str
                 }
             )
 
+        # Más reciente primero (auditoría exhaustiva de orden de tablas). Se
+        # arma iterando un `set` de viaje_id, así que sin este sort el orden
+        # de la tabla "Viajes de la liquidación" es el de iteración del set:
+        # no determinista entre corridas. Cada fila ya trae su `ts`.
+        detalle.sort(key=lambda d: d["ts"], reverse=True)
+
         bruto = round(bruto, 2)
         comisiones = round(comisiones, 2)
         neto = round(neto, 2)
@@ -674,6 +686,7 @@ async def listar_liquidaciones(
     *,
     conductor_id: str | None = None,
     estado: str | None = None,
+    periodo_inicio: datetime | None = None,
     limit: int | None = None,
     offset: int = 0,
 ) -> list[dict]:
@@ -682,6 +695,13 @@ async def listar_liquidaciones(
         filtro["conductor_id"] = conductor_id
     if estado:
         filtro["estado"] = estado
+    # Punto 5 de la ronda de correcciones (agosto 2026): permite enlazar
+    # directo desde "Generar liquidaciones del periodo cerrado" a la MISMA
+    # tabla de abajo, ya filtrada -- comparación exacta contra el
+    # `periodo_inicio` real (el mismo valor que el propio endpoint de
+    # generación ya devuelve), no un rango aproximado.
+    if periodo_inicio is not None:
+        filtro["periodo_inicio"] = periodo_inicio
     cursor = db.liquidaciones.find(filtro).sort("periodo_fin", -1)
     if limit is not None:
         cursor = cursor.skip(offset).limit(limit)
@@ -690,13 +710,19 @@ async def listar_liquidaciones(
 
 
 async def contar_liquidaciones(
-    db: AsyncIOMotorDatabase, *, conductor_id: str | None = None, estado: str | None = None
+    db: AsyncIOMotorDatabase,
+    *,
+    conductor_id: str | None = None,
+    estado: str | None = None,
+    periodo_inicio: datetime | None = None,
 ) -> int:
     filtro: dict = {}
     if conductor_id:
         filtro["conductor_id"] = conductor_id
     if estado:
         filtro["estado"] = estado
+    if periodo_inicio is not None:
+        filtro["periodo_inicio"] = periodo_inicio
     return await db.liquidaciones.count_documents(filtro)
 
 
@@ -902,6 +928,10 @@ async def listar_alertas_saldo_negativo(db: AsyncIOMotorDatabase) -> list[dict]:
             alertas.append(
                 {"conductor_id": conductor_id, "periodos_consecutivos": len(recientes), "liquidaciones": recientes}
             )
+    # Más reciente primero (ronda de orden por defecto en tablas): por el
+    # periodo_fin de la liquidación más reciente de cada socio -- `recientes`
+    # ya viene ordenada desc, así que `recientes[0]` es esa liquidación.
+    alertas.sort(key=lambda a: a["liquidaciones"][0]["periodo_fin"], reverse=True)
     return alertas
 
 
@@ -999,6 +1029,12 @@ def obtener_panel_integridad_financiera(*, meses: int = 12) -> dict:
     conc_previo = tendencia_conciliacion[-2]["pct_conciliado"] if len(tendencia_conciliacion) > 1 else None
     disc_actual = tendencia_conciliacion[-1]["pct_discrepancia"] if tendencia_conciliacion else None
     disc_previo = tendencia_conciliacion[-2]["pct_discrepancia"] if len(tendencia_conciliacion) > 1 else None
+    # Tier 1, punto 6 (H-T5): `pct_conciliado`/`pct_discrepancia` son promedios
+    # ponderados por `total_registros` -- ambos salen de la MISMA fila
+    # (`tendencia_conciliacion[-2]`), así que comparten el mismo n real.
+    registros_previos_conciliacion = (
+        tendencia_conciliacion[-2]["total_registros"] if len(tendencia_conciliacion) > 1 else None
+    )
 
     # Tabla: periodos con discrepancia relevante (> 0), del más alto al más bajo.
     periodos_con_discrepancia = sorted(
@@ -1028,11 +1064,13 @@ def obtener_panel_integridad_financiera(*, meses: int = 12) -> dict:
             "variacion_conciliado_pct": variacion_pct(conc_actual, conc_previo),
             "tasa_discrepancias": disc_actual,
             "variacion_discrepancias_pct": variacion_pct(disc_actual, disc_previo),
-            "margen_comision_promedio": (
-                round(sum(p["margen"] for p in tendencia_margen) / len(tendencia_margen), 4)
-                if tendencia_margen
-                else None
-            ),
+            # Cierre Tier 1-2, punto 2.3 (C5): antes era una media aritmética
+            # simple entre periodos -- un mes con 3 liquidaciones pesaba igual
+            # que uno con 300. `promedio_ponderado` por `bruto_total` (ya
+            # usado más arriba para construir cada punto de `tendencia_margen`
+            # a nivel de fila individual) le da a cada mes el peso real de su
+            # volumen recaudado.
+            "margen_comision_promedio": promedio_ponderado(tendencia_margen, "margen", "bruto_total"),
         },
         "tendencia_conciliacion": tendencia_conciliacion,
         "tendencia_margen": tendencia_margen,
@@ -1042,6 +1080,10 @@ def obtener_panel_integridad_financiera(*, meses: int = 12) -> dict:
             "meses": meses,
             "interanual_disponible": bool(interanual),
             "dataset_mixto": len({p[:4] for p in periodos}) > 1,
+            "registros_previos": {
+                "variacion_conciliado_pct": registros_previos_conciliacion,
+                "variacion_discrepancias_pct": registros_previos_conciliacion,
+            },
             "fuentes": ["rpt_tasa_discrepancias", "rpt_margen_comision"],
         },
     }

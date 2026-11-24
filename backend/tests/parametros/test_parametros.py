@@ -84,3 +84,37 @@ async def test_obtener_vigente_devuelve_la_version_correcta_por_fecha(client, db
 
     assert resp.status_code == 200
     assert resp.json()["valores"]["arrancada"] == 0.6
+
+
+async def test_historial_de_comision_lista_todas_las_versiones_mas_reciente_primero(client, db):
+    headers = await _admin_headers(db)
+    await client.post(
+        "/parametros/comisiones",
+        headers=headers,
+        json={"porcentaje": 0.2, "vigente_desde": "2026-01-01T00:00:00Z"},
+    )
+    await client.post(
+        "/parametros/comisiones",
+        headers=headers,
+        json={"porcentaje": 0.25, "vigente_desde": "2026-03-01T00:00:00Z"},
+    )
+
+    resp = await client.get("/parametros/historial", params={"tipo": "comision"}, headers=headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 2
+    # Más reciente primero.
+    assert body[0]["valores"]["porcentaje"] == 0.25
+    assert body[0]["vigente_hasta"] is None
+    assert body[1]["valores"]["porcentaje"] == 0.2
+    assert body[1]["vigente_hasta"] is not None
+
+
+async def test_historial_de_comision_rechaza_rol_sin_permiso(client, db):
+    await crear_usuario_activo(db, usuario_id="u-fin-parametros", telefono="+593977777777", roles=["admin_financiero"])
+    headers = auth_headers("u-fin-parametros", ["admin_financiero"])
+
+    resp = await client.get("/parametros/historial", params={"tipo": "comision"}, headers=headers)
+
+    assert resp.status_code == 403

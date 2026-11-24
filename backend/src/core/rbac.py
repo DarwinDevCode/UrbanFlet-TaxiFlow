@@ -116,6 +116,24 @@ async def get_current_actor(
     return actor
 
 
+async def get_current_actor_opcional(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Actor | None:
+    """Variante de `get_current_actor` para endpoints públicos que se
+    comportan mejor con sesión pero no la exigen (ver `archivos/router.py`,
+    descarga de un archivo de contexto de lectura pública) -- un token
+    ausente, vencido, o inválido nunca revienta con 401 acá, se trata como
+    visitante anónimo en vez de rechazar la petición completa."""
+    if credentials is None:
+        return None
+    try:
+        return await get_current_actor(request, credentials, db)
+    except DomainError:
+        return None
+
+
 async def _alertar_supervisores_cumplimiento(request: Request, db: AsyncIOMotorDatabase, motivo: str) -> None:
     # Módulo 6.3 de admin_sistema: canal/destinatarios/activo ya no están
     # hardcodeados acá -- delega a `notificaciones.service.disparar_alerta`,

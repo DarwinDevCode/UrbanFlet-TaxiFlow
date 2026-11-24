@@ -69,6 +69,7 @@ class GobernanzaMetadataOut(BaseModel):
     meses: int
     desde: datetime
     fuente: str
+    registros_previos: dict[str, int | None] | None = None
 
 
 class PanelGobernanzaOut(BaseModel):

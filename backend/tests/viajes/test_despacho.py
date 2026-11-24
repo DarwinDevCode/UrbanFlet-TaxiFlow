@@ -205,9 +205,10 @@ async def test_oferta_expirada_avanza_al_siguiente_candidato_en_el_siguiente_pol
     viaje_id = creado.json()["id"]
     assert (await db.viajes.find_one({"_id": viaje_id}))["conductor_ofertado_id"] == "cd8"
 
-    # Simula que expiró: retrocede ts_oferta_emitida más allá de los 20s.
+    # Simula que expiró: retrocede ts_oferta_emitida más allá de los 60s
+    # (bitácora de revisión, hallazgo #6 -- default subido de 20s a 60s).
     await db.viajes.update_one(
-        {"_id": viaje_id}, {"$set": {"ts_oferta_emitida": datetime.now(UTC) - timedelta(seconds=25)}}
+        {"_id": viaje_id}, {"$set": {"ts_oferta_emitida": datetime.now(UTC) - timedelta(seconds=65)}}
     )
 
     resp = await client.get("/viajes/activo", headers=headers_pasajero)

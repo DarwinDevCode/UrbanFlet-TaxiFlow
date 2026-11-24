@@ -48,6 +48,83 @@ async def test_crear_cuenta_staff_ok_forza_cambio_password(client, db):
     assert evento["actor_id"] == "admin-1"
 
 
+async def test_crear_cuenta_staff_sin_password_genera_una_automatica(client, db):
+    _, headers = await _admin(db)
+
+    resp = await client.post(
+        "/usuarios",
+        headers=headers,
+        json={"nombre": "Sin Password", "telefono": "+593900000950", "roles": ["jefe_mantenimiento"]},
+    )
+
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["password_generada"] is not None
+    assert len(body["password_generada"]) >= 12
+    assert any(c.isalpha() for c in body["password_generada"])
+    assert any(c.isdigit() for c in body["password_generada"])
+    assert body["forzar_cambio_password"] is True
+
+    # La contraseña generada debe servir de verdad para iniciar sesión.
+    login = await client.post(
+        "/auth/login", json={"identificador": "+593900000950", "password": body["password_generada"]}
+    )
+    assert login.status_code == 200
+
+
+async def test_crear_cuenta_staff_con_password_propia_no_hace_eco(client, db):
+    _, headers = await _admin(db)
+
+    resp = await _crear_staff(
+        client, headers, nombre="Con Password", telefono="+593900000951", roles=["jefe_mantenimiento"]
+    )
+
+    assert resp.status_code == 201
+    assert resp.json()["password_generada"] is None
+
+
+async def test_restablecer_password_requiere_admin_sistema(client, db):
+    admin, _headers_admin = await _admin(db)
+    await crear_usuario_activo(db, usuario_id="otro-1", telefono="+593900000952", roles=["jefe_mantenimiento"])
+    headers_otro = auth_headers("otro-1", ["jefe_mantenimiento"])
+
+    resp = await client.post(f"/usuarios/{admin['_id']}/restablecer-password", headers=headers_otro)
+    assert resp.status_code == 403
+
+
+async def test_restablecer_password_ok_genera_una_nueva_y_permite_login(client, db):
+    _, headers = await _admin(db)
+    creado = await _crear_staff(
+        client, headers, nombre="A Restablecer", telefono="+593900000953", roles=["jefe_mantenimiento"]
+    )
+    usuario_id = creado.json()["id"]
+
+    resp = await client.post(f"/usuarios/{usuario_id}/restablecer-password", headers=headers)
+
+    assert resp.status_code == 200
+    nueva_password = resp.json()["password_generada"]
+    assert len(nueva_password) >= 12
+
+    # La contraseña vieja ya no sirve.
+    login_vieja = await client.post(
+        "/auth/login", json={"identificador": "+593900000953", "password": "clave-larga-123"}
+    )
+    assert login_vieja.status_code == 401
+
+    # La nueva sí, y exige cambiarla.
+    login_nueva = await client.post(
+        "/auth/login", json={"identificador": "+593900000953", "password": nueva_password}
+    )
+    assert login_nueva.status_code == 200
+    assert login_nueva.json()["debe_cambiar_password"] is True
+
+    evento = await db.bitacora.find_one(
+        {"accion": "USUARIO_PASSWORD_RESTABLECIDA", "entidad_id": usuario_id}
+    )
+    assert evento is not None
+    assert evento["actor_id"] == "admin-1"
+
+
 async def test_listar_usuarios_filtra_por_rol_y_texto(client, db):
     _, headers = await _admin(db)
     await _crear_staff(
@@ -65,6 +142,27 @@ async def test_listar_usuarios_filtra_por_rol_y_texto(client, db):
 
     resp_texto = await client.get("/usuarios", headers=headers, params={"texto": "Beto"})
     assert resp_texto.json()["total"] == 1
+
+
+async def test_listar_y_obtener_usuario_incluyen_foto_url(client, db):
+    """Ronda de fotos en historial/usuarios: mismo campo general de
+    `usuarios.foto_url` que ya expone `PerfilOut` (autoservicio) -- acá
+    Administración lo consume vía el mismo `_to_out()` que ya usan tanto el
+    listado como `GET /usuarios/{id}`."""
+    _, headers = await _admin(db)
+    creado = await _crear_staff(
+        client, headers, nombre="Con Foto", telefono="+593900000920", roles=["jefe_mantenimiento"]
+    )
+    usuario_id = creado.json()["id"]
+    await db.usuarios.update_one({"_id": usuario_id}, {"$set": {"foto_url": "archivo-foto-usuario-1"}})
+
+    resp_lista = await client.get("/usuarios", headers=headers, params={"texto": "Con Foto"})
+    assert resp_lista.status_code == 200
+    assert resp_lista.json()["items"][0]["foto_url"] == "archivo-foto-usuario-1"
+
+    resp_detalle = await client.get(f"/usuarios/{usuario_id}", headers=headers)
+    assert resp_detalle.status_code == 200
+    assert resp_detalle.json()["foto_url"] == "archivo-foto-usuario-1"
 
 
 async def test_asignar_roles_registra_antes_y_despues(client, db):
@@ -230,3 +328,184 @@ async def test_listar_no_revienta_con_cuenta_legacy_sin_fecha_registro(client, d
     assert resp.status_code == 200
     item = next(u for u in resp.json()["items"] if u["id"] == "legacy-sin-fecha")
     assert item["fecha_registro"] is not None
+
+
+async def test_no_permite_dar_de_baja_con_viaje_activo(client, db):
+    """Caso borde de la baja lógica (ronda de personalización/QA): un viaje
+    vivo deja al pasajero esperando y al viaje sin actor que pueda cerrarlo,
+    así que la baja se BLOQUEA con 409 en vez de permitirse en silencio."""
+    _, headers = await _admin(db)
+    creado = await _crear_staff(
+        client, headers, nombre="Con Viaje", telefono="+593900000920", roles=["jefe_mantenimiento"]
+    )
+    usuario_id = creado.json()["id"]
+    await db.viajes.insert_one(
+        {"_id": "viaje-activo-baja", "conductor_id": usuario_id, "pasajero_id": "otro", "estado": "EN_CURSO"}
+    )
+
+    resp = await client.post(
+        f"/usuarios/{usuario_id}/dar-de-baja", headers=headers, json={"motivo": "Renunció"}
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "BAJA_CON_VIAJE_ACTIVO"
+    # La cuenta NO cambió de estado -- el guard corta antes de escribir.
+    sigue = await client.get(f"/usuarios/{usuario_id}", headers=headers)
+    assert sigue.json()["estado"] == "ACTIVO"
+
+
+async def test_permite_dar_de_baja_con_viaje_ya_terminado(client, db):
+    """Contraparte del test anterior: un viaje que ya no está vivo no bloquea
+    nada -- si no, una cuenta con historial nunca podría darse de baja."""
+    _, headers = await _admin(db)
+    creado = await _crear_staff(
+        client, headers, nombre="Sin Viaje Vivo", telefono="+593900000921", roles=["jefe_mantenimiento"]
+    )
+    usuario_id = creado.json()["id"]
+    await db.viajes.insert_one(
+        {"_id": "viaje-pagado-baja", "conductor_id": usuario_id, "pasajero_id": "otro", "estado": "PAGADO"}
+    )
+
+    resp = await client.post(
+        f"/usuarios/{usuario_id}/dar-de-baja", headers=headers, json={"motivo": "Renunció"}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["estado"] == "BAJA"
+
+
+async def test_baja_de_socio_retira_su_vehiculo_de_la_flota(db, client):
+    """Decisión 2: al dar de baja al socio, su vehículo HABILITADO sale
+    automáticamente del pool de despacho, con el MISMO estado que usa la baja
+    manual de un vehículo (`DADO_DE_BAJA`), y trazable al evento que lo
+    originó."""
+    _, headers = await _admin(db)
+    creado = await _crear_staff(
+        client, headers, nombre="Socio Con Auto", telefono="+593900000930", roles=["jefe_mantenimiento"]
+    )
+    usuario_id = creado.json()["id"]
+    await db.vehiculos.insert_one(
+        {
+            "_id": "veh-baja-auto",
+            "placa": "AUT-0001",
+            "marca": "X",
+            "modelo": "Y",
+            "estado_habilitacion": "HABILITADO",
+            "propietario_id": usuario_id,
+        }
+    )
+
+    resp = await client.post(
+        f"/usuarios/{usuario_id}/dar-de-baja", headers=headers, json={"motivo": "Dejó la cooperativa"}
+    )
+
+    assert resp.status_code == 200
+    vehiculo = await db.vehiculos.find_one({"_id": "veh-baja-auto"})
+    assert vehiculo["estado_habilitacion"] == "DADO_DE_BAJA"
+
+    evento = await db.bitacora.find_one({"accion": "VEHICULO_BAJA", "entidad_id": "veh-baja-auto"})
+    assert evento is not None
+    # Trazable: referencia explícita a la baja de la cuenta que lo originó.
+    assert evento["datos_posteriores"]["origen"] == f"usuario_baja:{usuario_id}"
+
+
+async def test_baja_de_socio_sin_vehiculo_no_falla(db, client):
+    """Contraparte: la mayoría del personal interno no tiene vehículo -- la
+    baja no debe depender de que exista uno."""
+    _, headers = await _admin(db)
+    creado = await _crear_staff(
+        client, headers, nombre="Sin Auto", telefono="+593900000931", roles=["admin_financiero"]
+    )
+    usuario_id = creado.json()["id"]
+
+    resp = await client.post(
+        f"/usuarios/{usuario_id}/dar-de-baja", headers=headers, json={"motivo": "Renunció"}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["estado"] == "BAJA"
+
+
+# ---------------------------------------------------------------------------
+# Vencimiento del periodo de gracia (job diario)
+# ---------------------------------------------------------------------------
+
+
+async def test_procesar_bajas_vencidas_aplica_la_baja_logica(db):
+    """Al vencer el plazo, la cuenta usa el MISMO mecanismo de baja lógica que
+    la baja administrativa: estado BAJA, documento conservado. NO se dispara
+    la anonimización de CU-O17 A2 -- son intenciones distintas."""
+    from datetime import UTC, datetime, timedelta
+
+    from src.usuarios import service as usuarios_service
+
+    await crear_usuario_activo(db, usuario_id="venc-1", telefono="+593900003001", roles=["pasajero"])
+    await db.usuarios.update_one(
+        {"_id": "venc-1"},
+        {"$set": {"baja_efectiva_en": datetime.now(UTC) - timedelta(days=1), "baja_solicitada_en": datetime.now(UTC)}},
+    )
+
+    resultado = await usuarios_service.procesar_bajas_vencidas(db)
+
+    assert resultado["aplicadas"] == 1
+    usuario = await db.usuarios.find_one({"_id": "venc-1"})
+    assert usuario["estado"] == "BAJA"
+    # El documento sigue existiendo y los datos personales NO se anonimizaron.
+    assert usuario["telefono"] == "+593900003001"
+    evento = await db.bitacora.find_one({"accion": "CUENTA_BAJA_EFECTIVA", "entidad_id": "venc-1"})
+    assert evento is not None
+
+
+async def test_procesar_bajas_no_toca_las_que_aun_no_vencen(db):
+    from datetime import UTC, datetime, timedelta
+
+    from src.usuarios import service as usuarios_service
+
+    await crear_usuario_activo(db, usuario_id="venc-2", telefono="+593900003002", roles=["pasajero"])
+    await db.usuarios.update_one(
+        {"_id": "venc-2"}, {"$set": {"baja_efectiva_en": datetime.now(UTC) + timedelta(days=10)}}
+    )
+
+    resultado = await usuarios_service.procesar_bajas_vencidas(db)
+
+    assert resultado["aplicadas"] == 0
+    assert (await db.usuarios.find_one({"_id": "venc-2"}))["estado"] == "ACTIVO"
+
+
+async def test_procesar_bajas_omite_cuenta_con_viaje_activo(db):
+    """Si al vencer el plazo el titular está a mitad de un viaje, no se le
+    corta el acceso -- queda para la corrida siguiente."""
+    from datetime import UTC, datetime, timedelta
+
+    from src.usuarios import service as usuarios_service
+
+    await crear_usuario_activo(db, usuario_id="venc-3", telefono="+593900003003", roles=["conductor"])
+    await db.usuarios.update_one(
+        {"_id": "venc-3"}, {"$set": {"baja_efectiva_en": datetime.now(UTC) - timedelta(days=1)}}
+    )
+    await db.viajes.insert_one(
+        {"_id": "viaje-venc-3", "conductor_id": "venc-3", "pasajero_id": "p", "estado": "EN_CURSO"}
+    )
+
+    resultado = await usuarios_service.procesar_bajas_vencidas(db)
+
+    assert resultado["aplicadas"] == 0
+    assert resultado["omitidas_por_viaje_activo"] == 1
+    assert (await db.usuarios.find_one({"_id": "venc-3"}))["estado"] == "ACTIVO"
+
+
+async def test_login_de_cuenta_dada_de_baja_da_mensaje_claro(client, db):
+    """Punto 7: no un 'credenciales inválidas' genérico."""
+    from src.core.security import hash_password
+
+    await crear_usuario_activo(db, usuario_id="venc-4", telefono="+593900003004", roles=["pasajero"])
+    await db.usuarios.update_one(
+        {"_id": "venc-4"}, {"$set": {"estado": "BAJA", "hash_password": hash_password("ClaveLarga123!")}}
+    )
+
+    resp = await client.post(
+        "/auth/login", json={"identificador": "+593900003004", "password": "ClaveLarga123!"}
+    )
+
+    assert resp.status_code == 403
+    assert resp.json()["code"] == "CUENTA_DADA_DE_BAJA"

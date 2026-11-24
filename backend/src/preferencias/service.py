@@ -12,10 +12,21 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 DEFAULTS: dict = {
     "tema": "claro",
     "densidad_tablas": "comoda",
+    # Segundo rediseño visual (v2): color de sidebar por cuenta, ver
+    # `schemas.py::SidebarTono`.
+    "sidebar_tono": "claro",
     "notificaciones_push": {},
     "sonido_oferta": True,
     "vibracion_oferta": True,
     "recordatorio_turno_hora": None,
+    # Ronda de personalización: accesibilidad (factor sobre la escala
+    # tipográfica, ver shared-ui/tamanoTexto.ts) y accesos rápidos del
+    # sidebar. `secciones_favoritas` guarda ids de sección de `web-interno`
+    # (`App.tsx::SECCIONES`) -- se valida contra las secciones que el rol
+    # realmente ve al renderizar, nunca acá: un id que ya no existe (sección
+    # retirada) o que el rol perdió simplemente no se pinta, sin romper.
+    "tamano_texto": "normal",
+    "secciones_favoritas": [],
 }
 
 

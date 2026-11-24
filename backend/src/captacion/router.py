@@ -4,7 +4,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from src.captacion import schemas, service
 from src.core.db_mongo import get_database
 from src.core.notifications import NotificationDispatcher, get_notification_dispatcher
-from src.core.rbac import Actor, require_roles
+from src.core.rbac import Actor, get_current_actor, require_roles
 
 router = APIRouter(prefix="/captacion", tags=["captacion"])
 
@@ -17,12 +17,24 @@ def _to_out(doc: dict) -> schemas.SolicitudOut:
         usuario_id=doc["usuario_id"],
         usuario_nombre=doc.get("usuario_nombre"),
         cedula=doc["cedula"],
+        licencia_numero=doc["licencia_numero"],
+        vehiculo=schemas.VehiculoInput(**doc["vehiculo"]),
         estado=doc["estado"],
         fecha_envio=doc["fecha_envio"],
         fecha_decision=doc["fecha_decision"],
         revision_reforzada=doc["revision_reforzada"],
         motivo_rechazo=doc["motivo_rechazo"],
         canal=doc.get("canal"),
+        documentos=[
+            schemas.DocumentoSolicitudOut(
+                tipo=d["tipo"],
+                propietario_tipo=d["propietario_tipo"],
+                archivo_id=d["url_objeto"],
+                fecha_emision=d.get("fecha_emision"),
+                fecha_vencimiento=d.get("fecha_vencimiento"),
+            )
+            for d in doc.get("documentos", [])
+        ],
     )
 
 
@@ -59,6 +71,23 @@ async def crear_solicitud(
         documentos=body.documentos,
         enviar=body.enviar,
         canal=body.canal,
+    )
+    return _to_out(solicitud)
+
+
+@router.post("/solicitudes/mia/documentos", response_model=schemas.SolicitudOut)
+async def enviar_solicitud_con_documentos(
+    body: schemas.EnviarSolicitudConDocumentosRequest,
+    actor: Actor = Depends(get_current_actor),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+    dispatcher: NotificationDispatcher = Depends(get_notification_dispatcher),
+):
+    # Sin `require_roles`: el postulante recién creado no tiene NINGÚN rol
+    # todavía (se asigna "conductor" solo al aprobar) -- cualquier actor
+    # autenticado alcanza, el service ya acota la operación a SU PROPIA
+    # solicitud en BORRADOR (`usuario_id == actor.usuario_id`).
+    solicitud = await service.enviar_solicitud_con_documentos(
+        db, dispatcher, actor_id=actor.usuario_id, documentos=body.documentos
     )
     return _to_out(solicitud)
 

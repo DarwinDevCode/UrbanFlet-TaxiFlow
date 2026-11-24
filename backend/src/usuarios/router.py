@@ -1,9 +1,13 @@
 from datetime import datetime, UTC
 
-from fastapi import APIRouter, Depends, Query
+import secrets
+
+from fastapi import APIRouter, Depends, Header, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from src.core.config import get_settings
 from src.core.db_mongo import get_database
+from src.core.exceptions import DomainError
 from src.core.rbac import Actor, require_roles
 from src.usuarios import permisos_matriz, schemas, service
 
@@ -13,6 +17,20 @@ router = APIRouter(prefix="/usuarios", tags=["usuarios"])
 # roles combinados (nota de seguridad de la spec, distinta de la mayoría de
 # los demás routers del proyecto que sí comparten acceso entre 2-3 roles).
 _admin_sistema = require_roles("admin_sistema")
+
+
+class TokenInternoInvalidoError(DomainError):
+    def __init__(self) -> None:
+        super().__init__(code="TOKEN_INTERNO_INVALIDO", message="Token interno inválido", status_code=401)
+
+
+async def _verificar_token_interno(x_internal_token: str | None = Header(default=None)) -> None:
+    """Mismo mecanismo que ya usa `viajes/router_trips.py` para el disparo de
+    viajes programados desde Airflow -- no se inventa un segundo esquema de
+    autenticación máquina-a-máquina."""
+    esperado = get_settings().internal_api_token
+    if not x_internal_token or not secrets.compare_digest(x_internal_token, esperado):
+        raise TokenInternoInvalidoError()
 
 # Hallazgo real (Módulo de usabilidad, punto #5, 2026-08-07): al construir
 # el buscador de usuarios de `UserPicker`, una búsqueda por texto real
@@ -39,16 +57,17 @@ def _to_out(u: dict) -> schemas.UsuarioOut:
         motivo_suspension=u.get("motivo_suspension"),
         motivo_baja=u.get("motivo_baja"),
         anonimizado=bool(u.get("anonimizado")),
+        foto_url=u.get("foto_url"),
     )
 
 
-@router.post("", response_model=schemas.UsuarioOut, status_code=201)
+@router.post("", response_model=schemas.UsuarioCreadoOut, status_code=201)
 async def crear_cuenta(
     body: schemas.CuentaStaffCreate,
     actor: Actor = Depends(_admin_sistema),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ):
-    usuario = await service.crear_cuenta_staff(
+    usuario, password_generada = await service.crear_cuenta_staff(
         db,
         actor_id=actor.usuario_id,
         actor_rol=",".join(actor.roles),
@@ -58,7 +77,23 @@ async def crear_cuenta(
         password=body.password,
         roles=body.roles,
     )
-    return _to_out(usuario)
+    return schemas.UsuarioCreadoOut(**_to_out(usuario).model_dump(), password_generada=password_generada)
+
+
+@router.post("/{usuario_id}/restablecer-password", response_model=schemas.PasswordRestablecidaOut)
+async def restablecer_password(
+    usuario_id: str,
+    actor: Actor = Depends(_admin_sistema),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+):
+    """Genera una contraseña nueva para un usuario existente, visible una
+    sola vez en esta respuesta. El usuario deberá cambiarla en su próximo
+    login (`forzar_cambio_password`), mismo mecanismo ya usado al crear una
+    cuenta nueva."""
+    password_generada = await service.restablecer_password(
+        db, actor_id=actor.usuario_id, actor_rol=",".join(actor.roles), usuario_id=usuario_id
+    )
+    return schemas.PasswordRestablecidaOut(password_generada=password_generada)
 
 
 @router.get("", response_model=schemas.UsuarioListOut)
@@ -188,3 +223,15 @@ async def cerrar_sesion(
     await service.revocar_sesion(
         db, actor_id=actor.usuario_id, actor_rol=",".join(actor.roles), usuario_id=usuario_id, jti=jti
     )
+
+
+@router.post("/procesar-bajas-vencidas", dependencies=[Depends(_verificar_token_interno)])
+async def procesar_bajas_vencidas(db: AsyncIOMotorDatabase = Depends(get_database)):
+    """Job diario del autoservicio de baja de cuenta: aplica la baja lógica a
+    las cuentas cuyo periodo de gracia de 30 días venció sin cancelarse.
+
+    Máquina-a-máquina (lo llama `dag_procesar_bajas_cuenta` desde Airflow),
+    no un usuario -- de ahí el token interno en vez de un gate de rol, mismo
+    patrón que `POST /viajes/{id}/disparar-programado`.
+    """
+    return await service.procesar_bajas_vencidas(db)

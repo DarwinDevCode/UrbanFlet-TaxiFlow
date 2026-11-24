@@ -1,10 +1,16 @@
 """CU-O14 — Consultar el historial de viajes.
 
 Cortes de alcance explícitos en este slice:
-- Paso 3 ("mapa con la ruta recorrida"): no hay componente de mapa en el
-  stack todavía. El detalle expone la traza cruda (lat/lon/ts por punto, ya
-  acumulada por CU-O07) para que un mapa futuro la consuma, pero no la
-  renderiza — mismo corte que la ausencia de motor de ruteo en CU-O04/O05.
+- Paso 3 ("mapa con la ruta recorrida"): CERRADO. Durante mucho tiempo este
+  docstring afirmó que "el detalle expone la traza cruda para que un mapa
+  futuro la consuma" — era falso: `ViajeOut` nunca tuvo un campo `traza`, así
+  que ningún cliente podía consumirla. Hoy sí: `simplificar_traza` (más
+  abajo) la publica en los endpoints de DETALLE (`to_out(...,
+  incluir_traza=True)`) y los 3 portales la pintan con el mismo Leaflet/OSM
+  del resto del sistema. Cuando un viaje no tiene traza (cancelado antes de
+  arrancar, SIN_CONDUCTOR, o los viajes históricos sembrados desde el dataset
+  NYC) el mapa muestra solo origen/destino y lo dice explícitamente — nunca
+  se dibuja una línea recta como si fuera la ruta real.
 - Paso 4 (comprobante en PDF con folio secuencial y "datos fiscales de la
   cooperativa"): depende estructuralmente de un viaje en estado PAGADO, que
   todavía no existe — CU-O09 (registrar pago, Fase 4/Control Financiero) es
@@ -26,6 +32,38 @@ ESTADOS_HISTORIAL = frozenset({"FINALIZADO", "PAGADO", "CANCELADO", "SIN_CONDUCT
 ESTADOS_HISTORIAL_FILTRABLES = frozenset({"FINALIZADO", "CANCELADO"})
 
 
+# Mapa del historial (CU-O14 paso 3): tope de puntos que se serializan por
+# viaje. `TRAZA_MAX_PUNTOS` (service_ejecucion.py) permite hasta 20 000 puntos
+# por viaje -- pintar eso en Leaflet es innecesario (a esa densidad varios
+# puntos caen dentro del mismo píxel) y engorda la respuesta sin aportar
+# nada visible.
+TRAZA_MAX_PUNTOS_SALIDA = 400
+
+
+def simplificar_traza(traza: list[dict] | None) -> list[tuple[float, float]] | None:
+    """Convierte la traza cruda del documento (`{lat, lon, ts, velocidad}`
+    por punto, acumulada por `service_ejecucion.registrar_punto_traza`) al
+    par `[lat, lon]` que consume el mapa, con un muestreo uniforme si supera
+    `TRAZA_MAX_PUNTOS_SALIDA`.
+
+    El muestreo SOLO descarta puntos reales, conservando siempre el primero y
+    el último -- nunca interpola ni inventa una coordenada que el vehículo no
+    reportó. Devuelve `None` (no `[]`) cuando no hay traza, para que el
+    frontend distinga "este viaje no tiene recorrido registrado" de "tiene un
+    recorrido de cero puntos", que no es un estado real.
+    """
+    if not traza:
+        return None
+    puntos = [(p["lat"], p["lon"]) for p in traza if p.get("lat") is not None and p.get("lon") is not None]
+    if not puntos:
+        return None
+    if len(puntos) <= TRAZA_MAX_PUNTOS_SALIDA:
+        return puntos
+    paso = (len(puntos) - 1) / (TRAZA_MAX_PUNTOS_SALIDA - 1)
+    indices = sorted({round(i * paso) for i in range(TRAZA_MAX_PUNTOS_SALIDA)} | {0, len(puntos) - 1})
+    return [puntos[i] for i in indices]
+
+
 def _nombre_de_pila(nombre: str) -> str:
     return nombre.strip().split(" ")[0]
 
@@ -42,6 +80,7 @@ async def enriquecer_con_pasajero(db: AsyncIOMotorDatabase, viaje: dict) -> dict
         **viaje,
         "pasajero_nombre": _nombre_de_pila(pasajero["nombre"]),
         "pasajero_calificacion": (pasajero.get("pasajero") or {}).get("calificacion_promedio"),
+        "pasajero_foto_url": pasajero.get("foto_url"),
     }
 
 

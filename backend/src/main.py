@@ -12,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from src.archivos.router import router as archivos_router
 from src.auditoria.router import router as auditoria_router
 from src.auth.router import router as auth_router
 from src.captacion.router import router as captacion_router
@@ -37,6 +38,7 @@ from src.preferencias.router import router as preferencias_router
 from src.plataforma.router import router as plataforma_router
 from src.recaudacion.router import router as recaudacion_router
 from src.recaudacion.router import router_liquidaciones
+from src.reportes_falla.router import router as reportes_falla_router
 from src.seguridad.router import router as seguridad_router
 from src.respaldos.router import router as respaldos_router
 from src.sistema.router import router as sistema_router
@@ -94,6 +96,7 @@ async def domain_error_handler(request: Request, exc: DomainError) -> JSONRespon
 app.add_exception_handler(RequestValidationError, validation_error_handler)
 
 
+app.include_router(archivos_router)
 app.include_router(auth_router)
 app.include_router(captacion_router)
 app.include_router(cumplimiento_router)
@@ -121,6 +124,7 @@ app.include_router(respaldos_router)
 app.include_router(perfil_router)
 app.include_router(preferencias_router)
 app.include_router(direcciones_router)
+app.include_router(reportes_falla_router)
 
 
 @app.get("/salud")

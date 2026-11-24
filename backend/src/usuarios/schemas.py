@@ -8,7 +8,11 @@ class CuentaStaffCreate(BaseModel):
     nombre: str = Field(min_length=1, max_length=200)
     telefono: str | None = Field(default=None, min_length=7, max_length=20)
     email: EmailStr | None = None
-    password: str = Field(min_length=1, max_length=128)
+    # Ronda de correcciones (agosto 2026): opcional -- si se omite, el
+    # servicio genera una contraseña segura automáticamente
+    # (`security.generar_password_segura`) en vez de exigir que
+    # `admin_sistema` la escriba a mano.
+    password: str | None = Field(default=None, min_length=1, max_length=128)
     roles: list[str] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -52,11 +56,32 @@ class UsuarioOut(BaseModel):
     motivo_suspension: str | None = None
     motivo_baja: str | None = None
     anonimizado: bool = False
+    # Ronda de fotos en historial/usuarios: mismo campo general de
+    # `usuarios.foto_url` que ya expone `PerfilOut` (autoservicio) --
+    # Administración (Módulo 1, admin_sistema) también puede verla, no es un
+    # dato más sensible que el nombre/teléfono que este mismo endpoint ya
+    # expone a ese rol.
+    foto_url: str | None = None
 
 
 class UsuarioListOut(BaseModel):
     items: list[UsuarioOut]
     total: int
+
+
+# Ronda de correcciones (agosto 2026): respuestas de "crear usuario" y
+# "restablecer contraseña" -- extienden `UsuarioOut` con la contraseña en
+# texto plano, visible SOLO en esta respuesta puntual (nunca se persiste ni
+# se puede recuperar después, mismo criterio ya usado por
+# `integraciones.CredencialCreadaOut` para el secreto de una credencial
+# nueva). `password_generada` es `None` cuando `admin_sistema` mandó una
+# contraseña propia en la creación en vez de pedir que se generara.
+class UsuarioCreadoOut(UsuarioOut):
+    password_generada: str | None = None
+
+
+class PasswordRestablecidaOut(BaseModel):
+    password_generada: str
 
 
 class AccesoOut(BaseModel):

@@ -5,7 +5,12 @@ import jwt
 from src.core.config import get_settings
 from tests.utils import auth_headers, crear_usuario_activo
 
-_ZONA_BODY = {"nombre": "Centro", "geometria": {}}
+# Bitácora de revisión (segunda pasada, punto 2): antes usaba
+# `/parametros/zonas` (funcionalidad de zonas eliminada por completo) solo
+# como ejemplo de endpoint gateado -- reemplazado por `/parametros/
+# comisiones`, sin relación con lo que esta prueba realmente verifica
+# (umbral de suspensión RBAC).
+_COMISION_BODY = {"porcentaje": 0.2, "vigente_desde": "2026-01-01T00:00:00Z"}
 
 
 async def _admin(db):
@@ -77,11 +82,11 @@ async def test_publicar_politica_reduce_el_umbral_de_suspension_rbac(client, db)
     headers_pasajero = auth_headers("u-suspendido-cfg", ["pasajero"])
 
     for _ in range(3):
-        resp = await client.post("/parametros/zonas", json=_ZONA_BODY, headers=headers_pasajero)
+        resp = await client.post("/parametros/comisiones", json=_COMISION_BODY, headers=headers_pasajero)
         assert resp.status_code == 403
 
     await db.usuarios.update_one({"_id": "u-suspendido-cfg"}, {"$set": {"roles": ["admin_plataforma"]}})
-    resp = await client.post("/parametros/zonas", json=_ZONA_BODY, headers=headers_pasajero)
+    resp = await client.post("/parametros/comisiones", json=_COMISION_BODY, headers=headers_pasajero)
 
     assert resp.status_code == 403
     assert resp.json()["code"] == "SESSION_SUSPENDED"

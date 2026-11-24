@@ -6,6 +6,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from src.core.db_mongo import get_database
 from src.core.rbac import Actor, require_roles
+from src.core.tiempo import como_utc
 from src.parametros import schemas, service
 
 router = APIRouter(prefix="/parametros", tags=["parametros"])
@@ -14,23 +15,20 @@ router = APIRouter(prefix="/parametros", tags=["parametros"])
 # tarifas/comisión — son "reglas de dinero y estado" (línea 123 arquitectura).
 _puede_escribir_parametros = require_roles("admin_plataforma", "gerencia")
 
-# Módulo 3.1 de admin_sistema (specs/specs-administrativas/admin_sistema.md):
-# gestión de catálogos -- zonas ya vivía en este router (creado antes de que
-# existiera el paquete de Administración del Sistema), así que se extiende
-# el acceso de escritura a `admin_sistema` en vez de duplicar un segundo
-# CRUD de zonas en otro módulo. Deliberadamente separado de
-# `_puede_escribir_parametros` (tarifa/comisión) -- admin_sistema no debe
-# poder tocar reglas de dinero, solo el catálogo de zonas.
-_puede_gestionar_zonas = require_roles("admin_plataforma", "gerencia", "admin_sistema")
-
-
 def _to_out(doc: dict) -> schemas.ParametroOut:
+    # Bug real encontrado al construir la pantalla de comisión (nunca antes
+    # detectado: ningún frontend mostraba `vigente_desde` hasta ahora): Mongo
+    # devuelve datetime naive (BSON no guarda tzinfo), y Pydantic serializa
+    # un datetime naive SIN sufijo de zona -- el navegador entonces lo
+    # interpreta como hora LOCAL, no UTC, y desplaza la fecha mostrada por el
+    # offset del usuario. Mismo gotcha ya conocido en el resto del proyecto,
+    # mismo helper de siempre (`como_utc`).
     return schemas.ParametroOut(
         id=doc["_id"],
         tipo=doc["tipo"],
         valores=doc["valores"],
-        vigente_desde=doc["vigente_desde"],
-        vigente_hasta=doc["vigente_hasta"],
+        vigente_desde=como_utc(doc["vigente_desde"]),
+        vigente_hasta=como_utc(doc["vigente_hasta"]) if doc["vigente_hasta"] is not None else None,
     )
 
 
@@ -81,50 +79,18 @@ async def obtener_vigente(
     return _to_out(doc)
 
 
-def _zona_to_out(doc: dict) -> schemas.ZonaOut:
-    return schemas.ZonaOut(id=doc["_id"], nombre=doc["nombre"], geometria=doc["geometria"])
-
-
-@router.post("/zonas", response_model=schemas.ZonaOut, status_code=201)
-async def crear_zona(
-    body: schemas.ZonaCreate,
-    actor: Actor = Depends(_puede_gestionar_zonas),
+# Historial de versiones -- a diferencia de `/vigente` (sin gate, la usa el
+# estimador de tarifa del pasajero sin sesión), esto revela cómo cambió un
+# parámetro de dinero en el tiempo: mismo criterio de "reglas de dinero y
+# estado" que la escritura, gateado a los mismos 2 roles.
+@router.get("/historial", response_model=list[schemas.ParametroOut])
+async def listar_historial(
+    tipo: Literal["tarifa", "comision"],
+    franja: Literal["DIURNA", "NOCTURNA"] | None = None,
+    actor: Actor = Depends(_puede_escribir_parametros),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ):
-    doc = await service.crear_zona(
-        db, actor_id=actor.usuario_id, rol=",".join(actor.roles), nombre=body.nombre, geometria=body.geometria
-    )
-    return _zona_to_out(doc)
+    docs = await service.listar_historial(db, tipo=tipo, franja=franja)
+    return [_to_out(d) for d in docs]
 
 
-@router.get("/zonas", response_model=list[schemas.ZonaOut])
-async def listar_zonas(db: AsyncIOMotorDatabase = Depends(get_database)):
-    docs = await service.listar_zonas(db)
-    return [_zona_to_out(d) for d in docs]
-
-
-@router.patch("/zonas/{zona_id}", response_model=schemas.ZonaOut)
-async def editar_zona(
-    zona_id: str,
-    body: schemas.ZonaCreate,
-    actor: Actor = Depends(_puede_gestionar_zonas),
-    db: AsyncIOMotorDatabase = Depends(get_database),
-):
-    doc = await service.editar_zona(
-        db,
-        actor_id=actor.usuario_id,
-        rol=",".join(actor.roles),
-        zona_id=zona_id,
-        nombre=body.nombre,
-        geometria=body.geometria,
-    )
-    return _zona_to_out(doc)
-
-
-@router.delete("/zonas/{zona_id}", status_code=204)
-async def eliminar_zona(
-    zona_id: str,
-    actor: Actor = Depends(_puede_gestionar_zonas),
-    db: AsyncIOMotorDatabase = Depends(get_database),
-):
-    await service.eliminar_zona(db, actor_id=actor.usuario_id, rol=",".join(actor.roles), zona_id=zona_id)

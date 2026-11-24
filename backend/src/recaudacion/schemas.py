@@ -192,6 +192,7 @@ class IntegridadFinancieraMetadataOut(BaseModel):
     # comparación interanual homogénea.
     dataset_mixto: bool
     fuentes: list[str]
+    registros_previos: dict[str, int | None] | None = None
 
 
 class PanelIntegridadFinancieraOut(BaseModel):

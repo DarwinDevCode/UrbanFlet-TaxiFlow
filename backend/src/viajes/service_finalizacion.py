@@ -93,17 +93,33 @@ async def finalizar_viaje(db: AsyncIOMotorDatabase, *, conductor_id: str) -> dic
 
     if tarifa is not None:
         valores = tarifa["valores"]
-        bruto = valores["arrancada"] + valores["costo_km"] * km_recorridos + valores["costo_min_espera"] * min_espera
-        tarifa_final = round(max(bruto, valores["carrera_minima"]), 2)
+        # CU-O08 paso 3: los 3 rubros se redondean primero, y el subtotal es
+        # la suma de esos 3 montos YA redondeados -- así lo que el frontend
+        # muestra en cada línea del desglose siempre suma exacto al
+        # "Subtotal" mostrado, sin sorpresas de coma flotante entre el total
+        # desglosado y el total en una sola línea.
+        monto_arrancada = round(valores["arrancada"], 2)
+        monto_distancia = round(valores["costo_km"] * km_recorridos, 2)
+        monto_espera = round(valores["costo_min_espera"] * min_espera, 2)
+        subtotal = round(monto_arrancada + monto_distancia + monto_espera, 2)
+        tarifa_final = round(max(subtotal, valores["carrera_minima"]), 2)
         tarifa_version_id_final = tarifa["_id"]
+        desglose_tarifa = {
+            "arrancada": monto_arrancada,
+            "distancia": monto_distancia,
+            "espera": monto_espera,
+            "subtotal": subtotal,
+        }
     else:
         # Degenerado: no hay parámetro de tarifa vigente para esta franja en
         # esta fecha — no debería ocurrir en operación real (parametros/
         # siempre debería tener una serie vigente), pero no se bloquea la
         # finalización del viaje por un problema de configuración ajeno al
-        # pasajero/conductor.
+        # pasajero/conductor. Sin tarifa vigente tampoco hay rubros que
+        # desglosar.
         tarifa_final = 0.0
         tarifa_version_id_final = None
+        desglose_tarifa = None
 
     tarifa_estimada = viaje.get("tarifa_estimada")
     revision_tarifa = False
@@ -119,6 +135,7 @@ async def finalizar_viaje(db: AsyncIOMotorDatabase, *, conductor_id: str) -> dic
         "destino_lon": destino_lon,
         "tarifa_final": tarifa_final,
         "tarifa_version_id_final": tarifa_version_id_final,
+        "desglose_tarifa": desglose_tarifa,
         "franja": franja_final,
         "revision_tarifa": revision_tarifa,
     }
@@ -149,6 +166,16 @@ async def finalizar_viaje(db: AsyncIOMotorDatabase, *, conductor_id: str) -> dic
         await db.usuarios.update_one(
             {"_id": conductor_id}, {"$set": {"conductor.estado_servicio": "DISPONIBLE"}}, session=session
         )
+        # Fase B de la Ronda 2 (flujo de fallas, H7): alimentación hacia
+        # adelante de `vehiculos.km_acumulado` -- antes este campo existía en
+        # el esquema pero nada lo escribía (81/81 vehículos reales en 0,
+        # confirmado en la auditoría). `$inc` en vez de leer+sumar+escribir:
+        # atómico, y coherente con que varios viajes de vehículos distintos
+        # pueden finalizar en paralelo.
+        if viaje.get("vehiculo_id") and km_recorridos:
+            await db.vehiculos.update_one(
+                {"_id": viaje["vehiculo_id"]}, {"$inc": {"km_acumulado": km_recorridos}}, session=session
+            )
         return session
 
     await with_transaction(get_mongo_client(), _en_transaccion)

@@ -106,6 +106,28 @@ async def ensure_indexes() -> None:
     await db.ordenes.create_index("vehiculo_id")
 
     await db.parametros.create_index([("tipo", 1), ("vigente_desde", -1)])
+    # Salvaguarda de integridad, no solo de aplicación: `_crear_version`
+    # (parametros/service.py) ya cierra la versión abierta previa antes de
+    # insertar una nueva, pero eso solo protege a quien pase por el servicio
+    # real -- una inserción manual directa a Mongo (como la que dejó 2
+    # documentos "vigentes para siempre" de tipo=comision en este mismo
+    # entorno, corregida con `scripts/consolidar_parametro_comision.py`)
+    # no pasa por ese código y el bug puede repetirse. Este índice único
+    # parcial hace que la propia base de datos rechace cualquier segunda
+    # inserción con `vigente_hasta:null` para la misma serie, sin importar
+    # cómo se haya escrito. `franja` está ausente en los documentos de
+    # `tipo="comision"` (esa serie no se particiona por franja) -- Mongo
+    # indexa un campo ausente como null, así que los 2 documentos de
+    # comisión sin franja colisionan entre sí en la misma entrada de
+    # índice (exactamente lo que se quiere: 1 serie global, 1 vigente).
+    # Los de `tipo="tarifa"` sí traen `franja`, así que DIURNA y NOCTURNA
+    # siguen siendo series independientes, cada una con su propio vigente.
+    await db.parametros.create_index(
+        [("tipo", 1), ("franja", 1)],
+        unique=True,
+        partialFilterExpression={"vigente_hasta": None},
+        name="parametros_vigente_unico",
+    )
 
     # Módulo 1 de admin_sistema (specs/specs-administrativas/admin_sistema.md):
     # búsqueda/filtro de cuentas por rol y por estado (GET /usuarios).
@@ -122,6 +144,11 @@ async def ensure_indexes() -> None:
     # Punto #3 de la ronda de usabilidad (2026-08-07): mismo patrón para el
     # catálogo de talleres.
     await db.talleres.create_index("nombre", unique=True)
+    # Catálogos Ronda 1 (Ola 1.5): marca/color de vehículo, mismo patrón.
+    await db.marcas_vehiculo.create_index("nombre", unique=True)
+    await db.colores_vehiculo.create_index("nombre", unique=True)
+    # Catálogos Ola 3 (PROPUESTA_CATALOGOS_Y_ADMINISTRACION.md §3.2): repuestos.
+    await db.repuestos.create_index("nombre", unique=True)
 
     # Punto #6 de la ronda de usabilidad (2026-08-07): histórico de
     # latencia/estado del panel de Monitoreo -- TTL de 7 días (aprobado
@@ -143,3 +170,8 @@ async def ensure_indexes() -> None:
     # Sección 1.2 de ux_complementaria.md: compartir viaje en tiempo real --
     # sparse porque la mayoría de los viajes nunca tienen este campo.
     await db.viajes.create_index("token_compartir", unique=True, sparse=True)
+
+    # Ronda 2 del flujo de fallas, Fase C: la bandeja del Jefe de
+    # Mantenimiento (Fase D) filtra por estado, ordenado por fecha reciente.
+    await db.reportes_falla.create_index([("estado", 1), ("ts", -1)])
+    await db.reportes_falla.create_index("vehiculo_id")

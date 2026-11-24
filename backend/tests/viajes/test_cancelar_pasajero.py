@@ -46,7 +46,9 @@ async def test_cancelar_viaje_solicitado_exitoso(client, db):
         }
     )
 
-    resp = await client.post("/viajes/activo/cancelar", headers=headers)
+    resp = await client.post(
+        "/viajes/activo/cancelar", headers=headers, json={"motivo": "Cancelado por el pasajero"}
+    )
 
     assert resp.status_code == 200
     assert resp.json()["estado"] == "CANCELADO"
@@ -81,7 +83,9 @@ async def test_cancelar_viaje_ofertado_exitoso(client, db, redis):
     assert creado.json()["estado"] == "OFERTADO"
     viaje_id = creado.json()["id"]
 
-    resp = await client.post("/viajes/activo/cancelar", headers=headers)
+    resp = await client.post(
+        "/viajes/activo/cancelar", headers=headers, json={"motivo": "Cancelado por el pasajero"}
+    )
 
     assert resp.status_code == 200
     assert resp.json()["estado"] == "CANCELADO"
@@ -110,7 +114,9 @@ async def test_cancelar_viaje_asignado_rechazado(client, db, redis):
     aceptado = await client.post("/viajes/oferta/responder", headers=headers_conductor, json={"aceptar": True})
     assert aceptado.json()["estado"] == "ASIGNADO"
 
-    resp = await client.post("/viajes/activo/cancelar", headers=headers)
+    resp = await client.post(
+        "/viajes/activo/cancelar", headers=headers, json={"motivo": "Cancelado por el pasajero"}
+    )
 
     assert resp.status_code == 409
     assert resp.json()["code"] == "VIAJE_NO_CANCELABLE"
@@ -122,7 +128,9 @@ async def test_cancelar_viaje_asignado_rechazado(client, db, redis):
 async def test_cancelar_sin_viaje_activo_devuelve_404(client, db):
     headers = await _pasajero_headers(db, usuario_id="pc4", telefono="+593960300004")
 
-    resp = await client.post("/viajes/activo/cancelar", headers=headers)
+    resp = await client.post(
+        "/viajes/activo/cancelar", headers=headers, json={"motivo": "Cancelado por el pasajero"}
+    )
 
     assert resp.status_code == 404
     assert resp.json()["code"] == "SIN_VIAJE_ACTIVO"
@@ -141,7 +149,9 @@ async def test_cancelar_no_afecta_viaje_de_otro_pasajero(client, db, redis):
     )
     viaje_id = creado.json()["id"]
 
-    resp = await client.post("/viajes/activo/cancelar", headers=headers_b)
+    resp = await client.post(
+        "/viajes/activo/cancelar", headers=headers_b, json={"motivo": "Cancelado por el pasajero"}
+    )
 
     assert resp.status_code == 404
     assert resp.json()["code"] == "SIN_VIAJE_ACTIVO"

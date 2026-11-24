@@ -37,19 +37,35 @@ class PasajeroRegistroResponse(BaseModel):
 class DocumentoInput(BaseModel):
     tipo: str
     propietario_tipo: TipoPropietarioDocumento
-    url_objeto: str
-    hash_archivo: str
+    # Antes `url_objeto`/`hash_archivo` de texto libre, confiados tal cual
+    # del cliente -- mismo patrón ya corregido en `documento_renovacion`
+    # (ver cumplimiento/schemas.py::RenovacionSubirRequest): ahora el
+    # cliente sube el archivo real primero (`POST /archivos`, contexto
+    # "documento_postulacion") y solo manda el id devuelto -- el hash real
+    # se resuelve del lado del servidor, nunca se confía en el del cliente.
+    archivo_id: str
     fecha_emision: date | None = None
     fecha_vencimiento: date | None = None
 
 
+class DocumentoSolicitudOut(BaseModel):
+    tipo: str
+    propietario_tipo: TipoPropietarioDocumento
+    archivo_id: str
+    fecha_emision: date | None
+    fecha_vencimiento: date | None
+
+
 class VehiculoInput(BaseModel):
+    # Bitácora de revisión (2026-08-26, hallazgo #2): sin cota alguna hasta
+    # ahora -- mismos límites ya usados por el endpoint de edición
+    # (`mantenimiento/schemas.py::VehiculoEditarRequest`), para no divergir.
     placa: str
     marca: str
     modelo: str
-    anio: int
+    anio: int = Field(ge=1950, le=2100)
     color: str
-    capacidad: int
+    capacidad: int = Field(ge=1, le=20)
 
 
 class SolicitudCrearRequest(BaseModel):
@@ -76,17 +92,40 @@ class SolicitudOut(BaseModel):
     usuario_id: str
     usuario_nombre: str | None = None
     cedula: str
+    # Nunca se habían expuesto por API pese a que se piden al crear la
+    # solicitud (`SolicitudCrearRequest`) -- sin esto, ni la pantalla de
+    # verificación podía mostrarlos, ni esta misma ronda podía construir una
+    # corrección sobre un dato que la UI no mostraba en ningún lado.
+    licencia_numero: str
+    vehiculo: VehiculoInput
     estado: EstadoSolicitud
     fecha_envio: datetime | None
     fecha_decision: datetime | None
     revision_reforzada: bool
     motivo_rechazo: str | None
     canal: str | None = None
+    # Gestión documental en la postulación (Fase 2): visible en la pantalla
+    # de revisión de Captación para que quien decide vea qué se subió, no
+    # solo que "hay documentos". Vacío para solicitudes viejas que nunca
+    # cargaron nada -- no es un error, es el estado real previo a esta ronda.
+    documentos: list[DocumentoSolicitudOut] = Field(default_factory=list)
 
 
 class SolicitudDecisionRequest(BaseModel):
     decision: Literal["APROBADA", "RECHAZADA", "OBSERVADA"]
     motivo: str | None = None
+
+
+# Gestión documental en la postulación, Fase 1: separado de
+# `SolicitudCrearRequest` porque el archivo real solo puede subirse DESPUÉS
+# de que la cuenta exista (POST /archivos exige un actor autenticado, y la
+# cuenta se crea recién al enviar la solicitud) -- el flujo real es
+# crear_solicitud(enviar=False) -> login -> subir cada archivo -> este
+# endpoint, que adjunta los documentos ya subidos y recién ahí pasa la
+# solicitud a ENVIADA (mismo efecto que `enviar=True` de siempre, solo que
+# en dos pasos en vez de uno).
+class EnviarSolicitudConDocumentosRequest(BaseModel):
+    documentos: list[DocumentoInput] = Field(min_length=1)
 
 
 class SolicitudListOut(BaseModel):
@@ -131,6 +170,9 @@ class AltasRetencionCanalOut(BaseModel):
 
 class CrecimientoKpisOut(BaseModel):
     pct_conversion_onboarding: float | None
+    # Cierre Tier 1-2, punto 2.1: variación PROPIA de `pct_conversion_onboarding`
+    # (antes el Tablero Ejecutivo mostraba `variacion_altas_pct`, un KPI distinto).
+    variacion_onboarding_pct: float | None = None
     pct_retencion_90d: float | None
     altas_periodo: int | None
     variacion_altas_pct: float | None
@@ -147,6 +189,17 @@ class PuntoAltasOut(BaseModel):
 
 class PuntoConversionOut(BaseModel):
     periodo: str
+    pct_conversion: float
+    total_solicitudes: int
+
+
+class PuntoConversionCanalOut(BaseModel):
+    """Cierre Tier 1-2, punto 2.6 (N1): mismo dato que `PuntoConversionOut`
+    pero desglosado por canal -- serie temporal, no solo el consolidado de
+    `canales` (más abajo)."""
+
+    periodo: str
+    canal: str
     pct_conversion: float
     total_solicitudes: int
 
@@ -172,12 +225,14 @@ class CrecimientoMetadataOut(BaseModel):
     canal_cobertura_parcial: bool
     demanda_disponible: bool
     fuentes: list[str]
+    registros_previos: dict[str, int | None] | None = None
 
 
 class PanelCrecimientoOut(BaseModel):
     kpis: CrecimientoKpisOut
     tendencia_altas: list[PuntoAltasOut]
     tendencia_conversion: list[PuntoConversionOut]
+    tendencia_conversion_por_canal: list[PuntoConversionCanalOut] = Field(default_factory=list)
     tendencia_onboarding: list[PuntoOnboardingOut]
     canales: list[CanalCrecimientoOut]
     metadata: CrecimientoMetadataOut

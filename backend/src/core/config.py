@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     # el volumen con nombre.
     respaldos_dir: str = "/app/respaldos"
 
+    # Fase A de la Ronda 2 del flujo de fallas de vehículo: primer mecanismo
+    # de carga de archivos del proyecto -- mismo patrón que `respaldos_dir`
+    # arriba, volumen Docker con nombre (`archivos_data`) separado del bind
+    # mount de código, para que un archivo subido sobreviva a recrear el
+    # contenedor.
+    archivos_dir: str = "/app/archivos"
+
     vapid_public_key: str = ""
     vapid_private_key: str = ""
     vapid_subject: str = "mailto:soporte@urbanflet.local"

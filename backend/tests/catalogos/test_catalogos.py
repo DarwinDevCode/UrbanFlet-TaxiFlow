@@ -119,3 +119,76 @@ async def test_solo_admin_sistema_gestiona_talleres(client, db):
 
     resp = await client.post("/catalogos/talleres", headers=headers, json={"nombre": "Taller Sur"})
     assert resp.status_code == 403
+
+
+# --- Ola 3 de PROPUESTA_CATALOGOS_Y_ADMINISTRACION.md (§3.2): repuestos ----
+
+
+async def test_crear_listar_y_editar_repuesto(client, db):
+    headers = await _admin(db)
+
+    creado = await client.post(
+        "/catalogos/repuestos",
+        headers=headers,
+        json={"nombre": "Filtro de aceite", "categoria": "Motor", "precio_referencial": 8.5, "unidad": "unidad"},
+    )
+    assert creado.status_code == 201
+    body = creado.json()
+    assert body["activo"] is True
+    assert body["categoria"] == "Motor"
+    assert body["precio_referencial"] == 8.5
+    assert body["unidad"] == "unidad"
+
+    listado = await client.get("/catalogos/repuestos", headers=headers)
+    assert any(r["nombre"] == "Filtro de aceite" for r in listado.json())
+
+    repuesto_id = body["id"]
+    editado = await client.patch(
+        f"/catalogos/repuestos/{repuesto_id}", headers=headers, json={"precio_referencial": 9.0}
+    )
+    assert editado.status_code == 200
+    assert editado.json()["precio_referencial"] == 9.0
+
+    evento = await db.bitacora.find_one({"accion": "CATALOGO_EDICION", "entidad_id": repuesto_id})
+    assert evento["datos_previos"] == {"precio_referencial": 8.5}
+    assert evento["datos_posteriores"] == {"precio_referencial": 9.0}
+
+
+async def test_repuesto_duplicado_devuelve_409(client, db):
+    headers = await _admin(db)
+    body = {"nombre": "Bujías", "categoria": "Motor", "precio_referencial": 5.0, "unidad": "unidad"}
+    await client.post("/catalogos/repuestos", headers=headers, json=body)
+    resp = await client.post("/catalogos/repuestos", headers=headers, json=body)
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "REPUESTO_CATALOGO_YA_EXISTE"
+
+
+async def test_editar_repuesto_inexistente_devuelve_404(client, db):
+    headers = await _admin(db)
+    resp = await client.patch("/catalogos/repuestos/no-existe", headers=headers, json={"activo": False})
+    assert resp.status_code == 404
+
+
+async def test_repuesto_categoria_invalida_devuelve_422(client, db):
+    headers = await _admin(db)
+    resp = await client.post(
+        "/catalogos/repuestos",
+        headers=headers,
+        json={"nombre": "Pieza rara", "categoria": "Carrocería", "precio_referencial": 5.0, "unidad": "unidad"},
+    )
+    assert resp.status_code == 422
+
+
+async def test_repuesto_lectura_abierta_a_cualquier_actor_pero_escritura_solo_admin_sistema(client, db):
+    await crear_usuario_activo(db, usuario_id="mant-cat-2", telefono="+593900000553", roles=["jefe_mantenimiento"])
+    headers = auth_headers("mant-cat-2", ["jefe_mantenimiento"])
+
+    resp_lectura = await client.get("/catalogos/repuestos", headers=headers)
+    assert resp_lectura.status_code == 200
+
+    resp_escritura = await client.post(
+        "/catalogos/repuestos",
+        headers=headers,
+        json={"nombre": "Correa", "categoria": "Motor", "precio_referencial": 10.0, "unidad": "unidad"},
+    )
+    assert resp_escritura.status_code == 403

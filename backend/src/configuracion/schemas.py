@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Annotated
 
 from pydantic import BaseModel, Field
 
@@ -9,7 +10,12 @@ class ParametroSistemaCreate(BaseModel):
     # Primer elemento = radio inicial de despacho; los siguientes son las
     # ampliaciones sucesivas si no aparece candidato (CU-O05 A1/A2). Mismo
     # dato que hoy vive fijo en `viajes/service_dispatch.py::RADIOS_M`.
-    radios_despacho_m: list[int] = Field(min_length=1, max_length=10)
+    # Bitácora de revisión (2026-08-26, hallazgo #2): solo la longitud de la
+    # lista tenía cota -- un radio individual en 0 o negativo pasaba sin
+    # avisar. El propio frontend (`ParametrosGlobales.tsx`) ya filtra valores
+    # no positivos antes de enviar; esto cierra el mismo hueco para quien
+    # llame a la API directo.
+    radios_despacho_m: list[Annotated[int, Field(gt=0)]] = Field(min_length=1, max_length=10)
     oferta_expira_segundos: int = Field(ge=5, le=300)
     vigente_desde: datetime
 

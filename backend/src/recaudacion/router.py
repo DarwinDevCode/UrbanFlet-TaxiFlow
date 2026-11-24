@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -99,9 +101,19 @@ async def registrar_pago_efectivo(
     return to_out(pago, nombres)
 
 
+# Cierre Tier 1-2, punto 2.4: este endpoint alimenta el drill-down de "Tasa
+# de discrepancias" en el Panel de Integridad Financiera ESTRATÉGICO (que sí
+# ve `gerencia`, sin `admin_financiero` como único rol) -- mismo patrón ya
+# usado en `cumplimiento/router.py::listar_documentos_por_vencer` (hallazgo
+# de RBAC del lote 6 de drill-down, CLAUDE.md §17.11): un OR-gate puntual
+# SOLO para esta ruta, sin tocar `_admin_financiero` (compartido por otros
+# 11 endpoints CRUD de este router, que no deben abrirse a `gerencia`).
+_discrepancias_estrategico = require_roles("admin_financiero", "gerencia")
+
+
 @router.get("/discrepancias", response_model=schemas.BandejaDiscrepanciasOut)
 async def listar_discrepancias(
-    actor: Actor = Depends(_admin_financiero),
+    actor: Actor = Depends(_discrepancias_estrategico),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ):
     discrepancias, viajes_sin_pago = await service.listar_bandeja_discrepancias(db)
@@ -183,13 +195,16 @@ async def generar_liquidaciones(
 @router_liquidaciones.get("", response_model=schemas.LiquidacionListOut)
 async def listar_liquidaciones(
     estado: str | None = Query(default=None),
+    periodo_inicio: datetime | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     actor: Actor = Depends(_admin_financiero),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ):
-    liquidaciones = await service.listar_liquidaciones(db, estado=estado, limit=limit, offset=offset)
-    total = await service.contar_liquidaciones(db, estado=estado)
+    liquidaciones = await service.listar_liquidaciones(
+        db, estado=estado, periodo_inicio=periodo_inicio, limit=limit, offset=offset
+    )
+    total = await service.contar_liquidaciones(db, estado=estado, periodo_inicio=periodo_inicio)
     nombres = await service.obtener_nombres_conductores(db, {doc["conductor_id"] for doc in liquidaciones})
     revision = await service.contar_viajes_en_revision(db, liquidaciones=liquidaciones)
     return schemas.LiquidacionListOut(

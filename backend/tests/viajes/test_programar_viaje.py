@@ -128,7 +128,9 @@ async def test_cancelar_viaje_programado(client, db, redis):
         },
     )
 
-    resp = await client.post("/viajes/activo/cancelar", headers=headers_pasajero)
+    resp = await client.post(
+        "/viajes/activo/cancelar", headers=headers_pasajero, json={"motivo": "Cambié de planes"}
+    )
 
     assert resp.status_code == 200
     assert resp.json()["estado"] == "CANCELADO"

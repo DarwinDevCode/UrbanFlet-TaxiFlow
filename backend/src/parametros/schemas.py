@@ -1,20 +1,25 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ParametroTarifaCreate(BaseModel):
     franja: Literal["DIURNA", "NOCTURNA"]
-    arrancada: float
-    costo_km: float
-    costo_min_espera: float
-    carrera_minima: float
+    # Bitácora de revisión (2026-08-26, hallazgo #2): ningún monto de tarifa
+    # tenía restricción de signo -- no hay pantalla que los edite todavía,
+    # pero el endpoint ya aceptaba valores negativos vía API directa.
+    arrancada: float = Field(ge=0)
+    costo_km: float = Field(ge=0)
+    costo_min_espera: float = Field(ge=0)
+    carrera_minima: float = Field(ge=0)
     vigente_desde: datetime
 
 
 class ParametroComisionCreate(BaseModel):
-    porcentaje: float
+    # Se guarda como fracción 0-1 (`Comision.tsx` divide el % ingresado entre
+    # 100 antes de enviarlo) -- 0% o 100%+ no son comisiones reales.
+    porcentaje: float = Field(gt=0, le=1)
     vigente_desde: datetime
 
 
@@ -24,14 +29,3 @@ class ParametroOut(BaseModel):
     valores: dict
     vigente_desde: datetime
     vigente_hasta: datetime | None
-
-
-class ZonaCreate(BaseModel):
-    nombre: str
-    geometria: dict
-
-
-class ZonaOut(BaseModel):
-    id: str
-    nombre: str
-    geometria: dict

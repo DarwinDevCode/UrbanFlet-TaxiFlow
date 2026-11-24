@@ -271,7 +271,7 @@ async def disparar_viaje_programado(db: AsyncIOMotorDatabase, *, viaje_id: str) 
     return await service_dispatch.avanzar_despacho(db, viaje)
 
 
-async def cancelar_viaje_pasajero(db: AsyncIOMotorDatabase, *, pasajero_id: str) -> dict:
+async def cancelar_viaje_pasajero(db: AsyncIOMotorDatabase, *, pasajero_id: str, motivo: str) -> dict:
     """CU-O04 A4: cancelación temprana por el pasajero, sobre SU viaje activo
     (no toma un viaje_id de la URL — evita cualquier ambigüedad de ownership,
     y de paso evita chocar en el ruteo con /viajes/conductor/cancelar de
@@ -302,20 +302,20 @@ async def cancelar_viaje_pasajero(db: AsyncIOMotorDatabase, *, pasajero_id: str)
         entidad_id=viaje_id,
         resultado=ResultadoAuditoria.OK,
         datos_previos={"estado": viaje["estado"]},
-        datos_posteriores={"estado": "CANCELADO", "motivo_cancelacion": "Cancelado por el pasajero"},
+        datos_posteriores={"estado": "CANCELADO", "motivo_cancelacion": motivo},
     )
     await db.viajes.update_one(
         {"_id": viaje_id},
         {
             "$set": {
                 "estado": "CANCELADO",
-                "motivo_cancelacion": "Cancelado por el pasajero",
+                "motivo_cancelacion": motivo,
                 "actor_cancelacion": "pasajero",
             }
         },
     )
     viaje["estado"] = "CANCELADO"
-    viaje["motivo_cancelacion"] = "Cancelado por el pasajero"
+    viaje["motivo_cancelacion"] = motivo
     viaje["actor_cancelacion"] = "pasajero"
     return viaje
 
@@ -470,7 +470,320 @@ def obtener_tasa_cancelacion() -> list[dict]:
         filas = fetch_latest_snapshot(client, "rpt_tasa_cancelacion")
     finally:
         client.close()
-    return sorted(filas, key=lambda f: (f["periodo"], f["zona_origen_id"]))
+    # Periodo más reciente primero (auditoría exhaustiva de orden de tablas).
+    # Dentro del mismo periodo, la zona ascendente: ahí no hay cronología, es
+    # una comparación entre zonas.
+    filas = sorted(filas, key=lambda f: f["zona_origen_id"])
+    return sorted(filas, key=lambda f: f["periodo"], reverse=True)
+
+
+async def obtener_panel_desempeno_conductores(
+    db: AsyncIOMotorDatabase, *, meses: int = 3, historico_completo: bool = False, incluir_inactivos: bool = False
+) -> dict:
+    """Panel táctico "Rendimiento de Conductores" -- Punto 3 de la ronda de
+    mejoras de claridad y profundidad analítica (agosto 2026, ver CLAUDE.md
+    §17.4). Combina `rpt_desempeno_conductor` + `rpt_ingreso_conductor` (2
+    tablas, grano de periodo distinto en origen -- ver el docstring en
+    `analytics/plugins/indicadores.py::refrescar_desempeno_conductor`).
+
+    `historico_completo=False` (default) es la ventana reciente pedida
+    explícitamente: los 1.3M viajes NYC sembrados (CLAUDE.md §7/§8.5) están
+    repartidos por round-robin entre solo 5 conductores reales, así que
+    cualquier comparación sobre el histórico completo mostraría 5 socios casi
+    idénticos con ~270K viajes cada uno -- sin varianza real entre ellos. Con
+    la ventana reciente (los `meses` periodos más recientes con dato
+    publicado) la comparación sí refleja despacho real casi siempre -- PERO
+    hay un caso real donde la ventana reciente sola no basta, encontrado con
+    verificación real en navegador (no solo en teoría): este entorno de
+    desarrollo tiene un salto de 5 años sin ningún dato entre el rango NYC
+    (2021-01/02) y la operación real (2026-07+) -- con `meses=3` sobre un
+    dataset que solo tiene 3 periodos distintos EN TOTAL, "los 3 más
+    recientes" son los 3 únicos que existen, incluidos los 2 de NYC. Por eso
+    la advertencia de concentración NO depende solo de `historico_completo`
+    (ver más abajo): se enciende también si algún socio en el resultado ya
+    filtrado supera `UMBRAL_CONCENTRACION_NYC` viajes en un solo periodo --
+    señal real del patrón de siembra, no una fecha de corte arbitraria (que
+    dejaría de ser cierta el día que la operación real acumule más historia).
+    """
+    UMBRAL_CONCENTRACION_NYC = 1000
+
+    client = get_clickhouse_client()
+    try:
+        desempeno = fetch_latest_snapshot(client, "rpt_desempeno_conductor")
+        ingreso = fetch_latest_snapshot(client, "rpt_ingreso_conductor")
+    finally:
+        client.close()
+
+    periodos_filtro: set[str] | None = None
+    if not historico_completo:
+        periodos_filtro = set(ultimos_periodos((f["periodo"] for f in desempeno), meses))
+        desempeno = [f for f in desempeno if f["periodo"] in periodos_filtro]
+        ingreso = [f for f in ingreso if f["periodo"] in periodos_filtro]
+
+    concentracion_detectada = any(f["viajes_completados"] > UMBRAL_CONCENTRACION_NYC for f in desempeno)
+
+    # Parte 3 (ronda de diagnóstico y nuevos indicadores, agosto 2026):
+    # kilómetros recorridos y distribución de calificaciones -- ninguno de
+    # los dos vive en una `rpt_*` (habría exigido tocar el DAG/Airflow para
+    # un solo panel), así que se leen directo de `fact_viaje` con la misma
+    # ventana de periodo ya resuelta arriba. Consulta liviana (GROUP BY
+    # simple sobre columnas ya existentes, sin el patrón de deduplicación
+    # que causó el problema real de memoria documentado en CLAUDE.md §8.6b)
+    # -- deliberadamente NO se reintenta ese patrón acá.
+    km_por_socio: list[dict] = []
+    histograma_calificaciones: list[dict] = []
+    client_directo = get_clickhouse_client()
+    try:
+        condicion_periodo = ""
+        parametros: dict = {}
+        if periodos_filtro is not None:
+            condicion_periodo = "AND formatDateTime(ts_fin, '%Y-%m') IN {periodos:Array(String)}"
+            parametros["periodos"] = list(periodos_filtro)
+
+        km_rows = client_directo.query(
+            f"""
+            SELECT conductor_id, sum(km_recorridos) AS km_total
+            FROM urbanflet_gold.fact_viaje
+            WHERE conductor_id != '' {condicion_periodo}
+            GROUP BY conductor_id
+            """,
+            parameters=parametros,
+        ).result_rows
+        km_por_socio = [{"conductor_id": cid, "km_total": round(km, 1)} for cid, km in km_rows]
+
+        calif_rows = client_directo.query(
+            f"""
+            SELECT calificacion_puntaje, count() AS viajes
+            FROM urbanflet_gold.fact_viaje
+            WHERE calificacion_puntaje IS NOT NULL {condicion_periodo}
+            GROUP BY calificacion_puntaje
+            ORDER BY calificacion_puntaje
+            """,
+            parameters=parametros,
+        ).result_rows
+        histograma_calificaciones = [
+            {"estrellas": int(estrellas), "viajes": viajes} for estrellas, viajes in calif_rows
+        ]
+    except Exception:  # noqa: BLE001 -- ClickHouse caído/tabla ausente: el panel se sirve sin estos 2 extras, nunca 500
+        pass
+    finally:
+        client_directo.close()
+
+    ingreso_por_clave = {(f["conductor_id"], f["periodo"]): f for f in ingreso}
+    conductor_ids = {f["conductor_id"] for f in desempeno} | {f["conductor_id"] for f in ingreso}
+
+    ids_inactivos: set[str] = set()
+    if incluir_inactivos:
+        # Roster completo de conductores activos, cruzado contra quienes YA
+        # tienen alguna fila en la ventana -- la diferencia son los socios sin
+        # ningún viaje completado/cancelado, informativo para un jefe de área
+        # que quiere ver también quién no está produciendo, no solo quién sí
+        # (Parte 3 de la ronda de diagnóstico, agosto 2026). Roster acotado a
+        # `estado: ACTIVO` -- un conductor suspendido o dado de baja no debería
+        # aparecer como "sin actividad", ya está fuera de operación por otra
+        # razón documentada en su propia ficha.
+        todos_conductores = await db.usuarios.find(
+            {"roles": "conductor", "estado": "ACTIVO"}, {"_id": 1}
+        ).to_list(length=1000)
+        ids_inactivos = {u["_id"] for u in todos_conductores} - conductor_ids
+
+    nombres = await _resolver_nombres_conductores(
+        db, conductor_ids | ids_inactivos | {f["conductor_id"] for f in km_por_socio}
+    )
+
+    filas = []
+    for f in desempeno:
+        ing = ingreso_por_clave.get((f["conductor_id"], f["periodo"]))
+        filas.append({
+            "conductor_id": f["conductor_id"],
+            "conductor_nombre": nombres.get(f["conductor_id"]),
+            "periodo": f["periodo"],
+            "viajes_completados": f["viajes_completados"],
+            "viajes_cancelados": f["viajes_cancelados"],
+            "pct_exito": f["pct_exito"],
+            "calificacion_promedio": f.get("calificacion_promedio"),
+            "bruto": ing["bruto"] if ing else None,
+            "comisiones": ing["comisiones"] if ing else None,
+            "neto": ing["neto"] if ing else None,
+            "sin_actividad": False,
+        })
+    # Periodo más reciente primero (auditoría exhaustiva de orden de tablas):
+    # el periodo es un string "YYYY-MM", así que ordena bien lexicográficamente.
+    # Dentro de un mismo periodo se mantiene el nombre del socio ascendente --
+    # ahí no hay "más reciente" que valga, es una lista de comparación.
+    filas.sort(key=lambda f: f["conductor_id"])
+    filas.sort(key=lambda f: f["periodo"], reverse=True)
+
+    filas_inactivas = [
+        {
+            "conductor_id": cid,
+            "conductor_nombre": nombres.get(cid),
+            "periodo": "Sin actividad en la ventana",
+            "viajes_completados": 0,
+            "viajes_cancelados": 0,
+            "pct_exito": 0.0,
+            "calificacion_promedio": None,
+            "bruto": None,
+            "comisiones": None,
+            "neto": None,
+            "sin_actividad": True,
+        }
+        for cid in sorted(ids_inactivos, key=lambda cid: nombres.get(cid, cid))
+    ]
+
+    km_por_socio_out = [
+        {
+            "conductor_id": f["conductor_id"],
+            "conductor_nombre": nombres.get(f["conductor_id"]),
+            "km_total": f["km_total"],
+        }
+        for f in km_por_socio
+    ]
+    km_por_socio_out.sort(key=lambda f: f["km_total"], reverse=True)
+
+    return {
+        "filas": filas + filas_inactivas,
+        "km_por_socio": km_por_socio_out,
+        "histograma_calificaciones": histograma_calificaciones,
+        "metadata": {
+            "historico_completo": historico_completo,
+            "ventana_meses": None if historico_completo else meses,
+            "advertencia_concentracion_historica": historico_completo or concentracion_detectada,
+            "incluir_inactivos": incluir_inactivos,
+            "conductores_sin_actividad": len(ids_inactivos),
+        },
+    }
+
+
+async def _resolver_nombres_conductores(db: AsyncIOMotorDatabase, conductor_ids: set[str]) -> dict[str, str]:
+    conductor_ids = {c for c in conductor_ids if c}
+    if not conductor_ids:
+        return {}
+    usuarios = await db.usuarios.find({"_id": {"$in": list(conductor_ids)}}).to_list(length=len(conductor_ids))
+    return {u["_id"]: u["nombre"] for u in usuarios}
+
+
+def _periodo_a_trimestre(periodo: str) -> str:
+    anio, mes = periodo.split("-")[0], int(periodo.split("-")[1])
+    return f"{anio}-T{(mes - 1) // 3 + 1}"
+
+
+# ---------------------------------------------------------------------------
+# Nivel estratégico -- Panel de Desempeño de Conductores (N6 rediseñado)
+# ---------------------------------------------------------------------------
+# Cierre del pendiente 1.1 (Tier 1/Tier 2): la primera versión de este panel
+# reusaba `obtener_panel_desempeno_conductores` TAL CUAL -- misma
+# granularidad mensual por conductor que ve `coordinador_operaciones` en el
+# panel táctico, sin ninguna segunda capa de agregación propia. Eso rompía
+# el patrón de los otros 9 paneles estratégicos (todos agregan sobre `rpt_*`,
+# no re-exponen el dato táctico intacto).
+#
+# Evaluación de costo (pedida explícitamente antes de decidir): las 2
+# fuentes (`rpt_desempeno_conductor`/`rpt_ingreso_conductor`) YA son un
+# agregado por conductorxmes, no una tabla operativa fila por fila -- así que
+# no hay "más crudo" que agregar hacia arriba salvo el propio grano temporal.
+# Agrupar por TRIMESTRE en vez de por mes resultó de costo bajo: reusa el
+# mismo patrón de bucketing ya escrito en
+# `estrategico/service.py::obtener_panel_rentabilidad`
+# (trimestre = año + (mes-1)//3 + 1) -- una vista genuinamente más gruesa que
+# la operativa, no una re-exposición. Se implementa acá en vez de
+# documentar una excepción, porque el esfuerzo real resultó bajo y hay
+# margen real para una capa distinta.
+UMBRAL_CONCENTRACION_NYC_TRIMESTRE = 3000  # 3x el umbral mensual del panel táctico
+
+
+async def obtener_panel_estrategico_desempeno_conductores(
+    db: AsyncIOMotorDatabase, *, trimestres: int = 4, historico_completo: bool = False
+) -> dict:
+    """Panel estratégico de Desempeño de Conductores -- filas por
+    conductorxTRIMESTRE (no por conductorxmes como el panel táctico), sin
+    KPI de concentración (decisión de negocio ya cerrada) y con la misma
+    advertencia PERMANENTE (no condicional) sobre la concentración
+    artificial del dataset NYC sembrado (CLAUDE.md §8.5/§17.4)."""
+    client = get_clickhouse_client()
+    try:
+        desempeno = fetch_latest_snapshot(client, "rpt_desempeno_conductor")
+        ingreso = fetch_latest_snapshot(client, "rpt_ingreso_conductor")
+    finally:
+        client.close()
+
+    if not historico_completo:
+        periodos_recientes = set(ultimos_periodos((f["periodo"] for f in desempeno), trimestres * 3))
+        desempeno = [f for f in desempeno if f["periodo"] in periodos_recientes]
+        ingreso = [f for f in ingreso if f["periodo"] in periodos_recientes]
+
+    ingreso_por_clave = {(f["conductor_id"], f["periodo"]): f for f in ingreso}
+
+    acumulado: dict[tuple[str, str], dict] = {}
+    for f in desempeno:
+        trimestre = _periodo_a_trimestre(f["periodo"])
+        clave = (f["conductor_id"], trimestre)
+        acc = acumulado.setdefault(
+            clave,
+            {
+                "conductor_id": f["conductor_id"],
+                "trimestre": trimestre,
+                "viajes_completados": 0,
+                "viajes_cancelados": 0,
+                "_peso_calificacion": 0.0,
+                "_suma_calificacion": 0.0,
+                "bruto": 0.0,
+                "comisiones": 0.0,
+                "neto": 0.0,
+            },
+        )
+        acc["viajes_completados"] += f["viajes_completados"]
+        acc["viajes_cancelados"] += f["viajes_cancelados"]
+        if f.get("calificacion_promedio") is not None:
+            acc["_suma_calificacion"] += f["calificacion_promedio"] * f["viajes_completados"]
+            acc["_peso_calificacion"] += f["viajes_completados"]
+        ing = ingreso_por_clave.get((f["conductor_id"], f["periodo"]))
+        if ing:
+            acc["bruto"] += ing["bruto"]
+            acc["comisiones"] += ing["comisiones"]
+            acc["neto"] += ing["neto"]
+
+    concentracion_detectada = any(
+        acc["viajes_completados"] > UMBRAL_CONCENTRACION_NYC_TRIMESTRE for acc in acumulado.values()
+    )
+
+    conductor_ids = {conductor_id for conductor_id, _ in acumulado}
+    nombres = await _resolver_nombres_conductores(db, conductor_ids)
+
+    filas = []
+    for (conductor_id, trimestre), acc in acumulado.items():
+        total = acc["viajes_completados"] + acc["viajes_cancelados"]
+        filas.append(
+            {
+                "conductor_id": conductor_id,
+                "conductor_nombre": nombres.get(conductor_id),
+                "trimestre": trimestre,
+                "viajes_completados": acc["viajes_completados"],
+                "viajes_cancelados": acc["viajes_cancelados"],
+                "pct_exito": round(acc["viajes_completados"] / total, 4) if total else None,
+                "calificacion_promedio": (
+                    round(acc["_suma_calificacion"] / acc["_peso_calificacion"], 2)
+                    if acc["_peso_calificacion"]
+                    else None
+                ),
+                "bruto": round(acc["bruto"], 2),
+                "comisiones": round(acc["comisiones"], 2),
+                "neto": round(acc["neto"], 2),
+            }
+        )
+    # Trimestre más reciente primero (mismo criterio que el panel táctico
+    # equivalente). "YYYY-Qn" ordena bien lexicográficamente.
+    filas.sort(key=lambda f: f["conductor_id"])
+    filas.sort(key=lambda f: f["trimestre"], reverse=True)
+
+    return {
+        "filas": filas,
+        "metadata": {
+            "historico_completo": historico_completo,
+            "ventana_trimestres": None if historico_completo else trimestres,
+            "advertencia_concentracion_historica": historico_completo or concentracion_detectada,
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -494,23 +807,25 @@ def obtener_panel_confiabilidad(*, meses: int = 6, cortes: int = 12) -> dict:
     snapshot; `rpt_tiempo_asignacion` y `rpt_flota_activa_franja` no, así que
     su tendencia sale del historial de `fecha_datos` (`fetch_snapshot_history`).
 
-    **Dos limitaciones reales de las fuentes tácticas, verificadas contra los
+    **Una limitación real de las fuentes tácticas, verificada contra los
     datos, que este endpoint declara en vez de disimular:**
 
-    1. `rpt_tasa_cancelacion.tasa_cancelacion` NO es una tasa consolidable.
-       El query que la publica (`indicadores.refrescar_tasa_cancelacion`)
-       agrupa por motivo/actor y filtra `HAVING cancelados > 0`, así que en
-       cada fila `solicitados == cancelados` y la tasa vale siempre 1.0 --
-       sumar filas no arregla eso, porque los viajes NO cancelados nunca
-       llegan a la tabla. Se expone el **volumen** de cancelaciones por mes
-       (dato real y consolidable) y su variación; la tasa se devuelve `None`
-       con `tasa_cancelacion_disponible=false` en metadata. Resolverlo de
-       verdad exige cambiar el DAG táctico, fuera del alcance de esta fase.
-    2. La dimensión "franja" no usa el mismo vocabulario en las dos tablas:
+    1. La dimensión "franja" no usa el mismo vocabulario en las dos tablas:
        `rpt_flota_activa_franja` publica `00-06/06-12/12-18/18-24` y
        `rpt_tiempo_asignacion` publica `DIURNA/NOCTURNA`. No se cruzan por
        franja (un join daría 100% de nulos); se devuelven como dos listas
        separadas, cada una con su propia taxonomía.
+
+    (Hasta la ronda de correcciones de agosto 2026, `rpt_tasa_cancelacion.
+    tasa_cancelacion` no era una tasa consolidable -- `solicitados` se
+    calculaba con el mismo `GROUP BY` que particiona por motivo/actor, así
+    que siempre valía 1.0. Corregido de raíz en
+    `indicadores.refrescar_tasa_cancelacion` con un JOIN contra el universo
+    real de viajes solicitados por periodo/zona -- ver el docstring de esa
+    función. Como `solicitados` ahora se repite igual en cada fila de
+    desglose que comparte periodo+zona, sumarlo tal cual entre filas de
+    motivo/actor distintos seguiría multiplicando el denominador -- por eso
+    abajo se deduplica por zona antes de sumar, no se suma la fila cruda.)
     """
     client = get_clickhouse_client()
     try:
@@ -528,6 +843,15 @@ def obtener_panel_confiabilidad(*, meses: int = 6, cortes: int = 12) -> dict:
 
     por_periodo_cancelacion = agrupar(cancelacion, "periodo")
     periodos = ultimos_periodos(por_periodo_cancelacion.keys(), meses)
+
+    def _solicitados_del_periodo(filas: list[dict]) -> int:
+        # `solicitados` viaja repetido en cada fila de desglose que comparte
+        # periodo+zona (ver refrescar_tasa_cancelacion) -- deduplicar por
+        # zona antes de sumar, o el denominador se multiplica por la
+        # cantidad de motivos/actores distintos de esa zona.
+        por_zona = {f["zona_origen_id"]: f["solicitados"] for f in filas}
+        return sum(por_zona.values())
+
     tendencia_cancelacion = [
         {
             "periodo": periodo,
@@ -535,12 +859,17 @@ def obtener_panel_confiabilidad(*, meses: int = 6, cortes: int = 12) -> dict:
             "sin_conductor": sum(
                 f["cancelados"] for f in por_periodo_cancelacion[periodo] if f["motivo"] == "SIN_CONDUCTOR"
             ),
+            "solicitados": _solicitados_del_periodo(por_periodo_cancelacion[periodo]),
         }
         for periodo in periodos
     ]
 
     cancelados_actual = tendencia_cancelacion[-1]["cancelados"] if tendencia_cancelacion else None
     cancelados_previo = tendencia_cancelacion[-2]["cancelados"] if len(tendencia_cancelacion) > 1 else None
+    solicitados_actual = tendencia_cancelacion[-1]["solicitados"] if tendencia_cancelacion else None
+    tasa_cancelacion_actual = (
+        cancelados_actual / solicitados_actual if cancelados_actual is not None and solicitados_actual else None
+    )
 
     # --- Tendencia por corte (tablas sin dimensión de periodo propia) ------
     tendencia_asignacion = [
@@ -599,7 +928,7 @@ def obtener_panel_confiabilidad(*, meses: int = 6, cortes: int = 12) -> dict:
             "segundos_asignacion_promedio": segundos_promedio,
             "cancelaciones_periodo": cancelados_actual,
             "variacion_cancelaciones_pct": variacion_pct(cancelados_actual, cancelados_previo),
-            "tasa_cancelacion": None,  # ver limitación 1 del docstring
+            "tasa_cancelacion": tasa_cancelacion_actual,
             "pct_flota_activa": pct_flota_activa,
             "franja_menor_cobertura": franjas[0]["franja"] if franjas else None,
         },
@@ -611,7 +940,11 @@ def obtener_panel_confiabilidad(*, meses: int = 6, cortes: int = 12) -> dict:
         "metadata": {
             "meses": meses,
             "zona_disponible": zona_disponible,
-            "tasa_cancelacion_disponible": False,
+            "tasa_cancelacion_disponible": True,
             "fuentes": ["rpt_tiempo_asignacion", "rpt_tasa_cancelacion", "rpt_flota_activa_franja"],
+            # Tier 1, punto 6 (H-T5): `cancelados` ya es un conteo, no un
+            # promedio ponderado -- el propio `cancelados_previo` es el n real
+            # que respalda `variacion_cancelaciones_pct`.
+            "registros_previos": {"variacion_cancelaciones_pct": cancelados_previo},
         },
     }

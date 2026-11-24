@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel
 
@@ -74,3 +74,24 @@ async def cancelar_por_conductor(
     viaje = await service_ejecucion.cancelar_por_conductor(db, conductor_id=actor.usuario_id, motivo=body.motivo)
     await _notificar_pasajero(dispatcher, viaje, "VIAJE_CANCELADO_CONDUCTOR")
     return to_out(viaje)
+
+
+@router.post("/recalculo-ruta", status_code=status.HTTP_204_NO_CONTENT)
+async def registrar_recalculo_ruta(
+    body: schemas.RecalculoRutaRequest,
+    actor: Actor = Depends(_conductor),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> None:
+    # CU-O07 A6: el cliente ya recalculó la ruta (GET /viajes/estimacion-ruta)
+    # al detectar un desvío >2km -- este endpoint solo deja el registro que la
+    # spec exige en la bitácora (CU-O17). Sin efecto de negocio propio, sin
+    # response body.
+    await service_ejecucion.registrar_recalculo_ruta_por_desvio(
+        db,
+        conductor_id=actor.usuario_id,
+        lat=body.lat,
+        lon=body.lon,
+        distancia_desvio_km=body.distancia_desvio_km,
+        ruta_anterior=body.ruta_anterior,
+        ruta_nueva=body.ruta_nueva,
+    )

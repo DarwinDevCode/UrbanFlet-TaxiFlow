@@ -91,4 +91,7 @@ async def obtener_viaje_por_id(
     # detalle por id (también usado para seguir un viaje activo en vivo).
     if viaje.get("conductor_id") == actor.usuario_id:
         viaje = await service_historial.enriquecer_con_pasajero(db, viaje)
-    return to_out(viaje)
+    # `incluir_traza=True`: este es el endpoint de detalle que consumen "Mis
+    # viajes" de web-pasajero y web-conductor para pintar el mapa del
+    # recorrido (CU-O14 paso 3). La lista de historial sigue sin traza.
+    return to_out(viaje, incluir_traza=True)

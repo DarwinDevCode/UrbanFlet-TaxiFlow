@@ -38,6 +38,24 @@ from src.core.security import TokenType, create_token, decode_token, hash_passwo
 from src.seguridad.service import ROLES_ALTO_PRIVILEGIO, obtener_politica_seguridad_vigente, obtener_politica_vigente
 
 
+class CuentaDadaDeBajaError(DomainError):
+    """Punto 7 del autoservicio de baja: al intentar entrar con una cuenta ya
+    dada de baja, el mensaje dice qué pasó en vez de un "credenciales
+    inválidas" genérico que haría pensar en un error de tecleo. Cubre tanto
+    la baja voluntaria vencida como la administrativa -- desde el login son
+    el mismo estado."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            code="CUENTA_DADA_DE_BAJA",
+            message=(
+                "Esta cuenta está dada de baja y ya no puede iniciar sesión. "
+                "Si crees que es un error, comunícate con la cooperativa."
+            ),
+            status_code=403,
+        )
+
+
 class PhoneAlreadyRegisteredError(DomainError):
     def __init__(self) -> None:
         super().__init__(code="PHONE_ALREADY_REGISTERED", message="El teléfono ya está registrado", status_code=409)
@@ -185,6 +203,19 @@ async def login_con_password(
 
     if not credenciales_validas:
         await _registrar_fallo_login(db, redis, failure_key, lock_key, identificador, usuario, politica)
+        # Mensaje específico SOLO cuando la contraseña era correcta y lo único
+        # que bloqueó fue el estado de la cuenta (punto 7 del autoservicio de
+        # baja: "no un error genérico"). No filtra nada que quien escribe la
+        # contraseña correcta no sepa ya: es el propio titular. Con contraseña
+        # incorrecta se sigue devolviendo el error genérico de siempre, para
+        # no revelar si un identificador existe.
+        password_correcta = (
+            usuario is not None
+            and usuario.get("hash_password") is not None
+            and verify_password(password, usuario["hash_password"])
+        )
+        if password_correcta and usuario["estado"] == "BAJA":
+            raise CuentaDadaDeBajaError()
         raise InvalidCredentialsError()
 
     await redis.delete(failure_key)

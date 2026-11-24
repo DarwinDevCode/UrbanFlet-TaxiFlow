@@ -85,6 +85,7 @@ class CapacidadesMetadataOut(BaseModel):
     cortes: int
     capacitacion_disponible: bool
     fuentes: list[str]
+    registros_previos: dict[str, int | None] | None = None
 
 
 class PanelCapacidadesOut(BaseModel):

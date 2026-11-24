@@ -54,7 +54,11 @@ async def crear_flag(
 
 
 async def listar_flags(db: AsyncIOMotorDatabase) -> list[dict]:
-    return await db.feature_flags.find().sort("nombre", 1).to_list(length=500)
+    # Más reciente primero (auditoría exhaustiva de orden de tablas): a
+    # diferencia de los catálogos (que no tienen ninguna fecha y por eso van
+    # alfabéticos), `feature_flags` SÍ guarda `creado_en` -- el flag recién
+    # creado es el que interesa ver arriba.
+    return await db.feature_flags.find().sort("creado_en", -1).to_list(length=500)
 
 
 async def actualizar_flag(db: AsyncIOMotorDatabase, *, nombre: str, cambios: dict) -> dict:

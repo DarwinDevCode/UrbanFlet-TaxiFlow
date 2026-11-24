@@ -341,7 +341,10 @@ async def responder_oferta(db: AsyncIOMotorDatabase, *, conductor_id: str, acept
                         "ts_asignacion": ahora,
                         "conductor_nombre": usuario["nombre"],
                         "conductor_calificacion": (usuario.get("conductor") or {}).get("calificacion_promedio"),
-                        "conductor_foto_url": (usuario.get("conductor") or {}).get("foto_url"),
+                        # Ronda de foto de perfil: `foto_url` es un campo
+                        # general de `usuarios` (ver perfil/service.py), ya
+                        # no vive anidado en `conductor`.
+                        "conductor_foto_url": usuario.get("foto_url"),
                         "vehiculo_placa": vehiculo["placa"],
                         "vehiculo_marca": vehiculo["marca"],
                         "vehiculo_color": vehiculo["color"],

@@ -10,9 +10,28 @@ class PerfilOut(BaseModel):
     email: str | None
     roles: list[str]
     fecha_registro: datetime
-    # Solo relevante para `conductor` (Sección 2.2 de la spec: foto que el
-    # pasajero ve al ser asignado, CU-O05 P5) -- `None` para cualquier otro rol.
+    # Ronda de foto de perfil: campo general de `usuarios.foto_url`, para
+    # CUALQUIER rol (antes exclusivo de `conductor`, vía `conductor.foto_url`
+    # -- decisión superada, ver `perfil/service.py`). `None` cuando la cuenta
+    # no tiene una foto propia; el frontend resuelve el avatar por defecto en
+    # tiempo de lectura, nunca se escribe esa ruta acá.
     foto_url: str | None = None
+    # Autoservicio de baja de cuenta. `None` en los 3 cuando la cuenta está
+    # normal -- es la señal que usa el frontend para no pintar ningún aviso.
+    baja_solicitada_en: datetime | None = None
+    baja_efectiva_en: datetime | None = None
+    dias_restantes_baja: int | None = None
+    # Solo poblado en la respuesta de POST /perfil/baja-cuenta: placas que
+    # saldrán de la flota al vencer el plazo (advertencia, no bloqueo).
+    vehiculos_a_retirar: list[str] = Field(default_factory=list)
+
+
+class SolicitarBajaCuentaRequest(BaseModel):
+    # Motivo OPCIONAL a propósito: cerrar la propia cuenta es un derecho del
+    # titular, no una acción que deba justificar (a diferencia de la baja
+    # administrativa, donde el motivo sí es obligatorio porque la decide un
+    # tercero sobre la cuenta de otra persona).
+    motivo: str | None = None
 
 
 # Deliberadamente sin `roles`/`forzar_cambio_password` -- nunca editables
@@ -23,13 +42,21 @@ class PerfilEditar(BaseModel):
     nombre: str | None = Field(default=None, min_length=1, max_length=200)
     telefono: str | None = Field(default=None, min_length=7, max_length=20)
     email: EmailStr | None = None
-    # Solo aplicable si el actor tiene el rol `conductor` -- `perfil/service.py`
-    # lo ignora (no lo rechaza, para no acoplar el schema al rol) si no aplica.
-    foto_url: str | None = Field(default=None, max_length=2000)
     # Decisión D1 del plan (PLAN_UX_COMPLEMENTARIA.md): sin OTP disponible
     # en el sistema, cambiar contacto propio exige la contraseña actual --
     # mismo nivel de exigencia que ya tiene POST /auth/cambiar-password.
     password_actual: str = Field(min_length=1, max_length=128)
+
+
+class PerfilFotoEditar(BaseModel):
+    """Ronda de foto de perfil: endpoint separado de `PATCH /perfil` a
+    propósito -- cambiar la foto no es una edición de contacto (D1 exige
+    contraseña actual justamente porque no hay OTP para reverificar un
+    teléfono/correo nuevo), es una operación de bajo riesgo y fácilmente
+    reversible, así que no se le exige la misma fricción. `archivo_id=None`
+    quita la foto propia (vuelve al avatar por defecto)."""
+
+    archivo_id: str | None = Field(default=None, max_length=64)
 
 
 class SesionOut(BaseModel):

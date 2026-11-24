@@ -22,7 +22,18 @@ DEFAULTS = {
     "idioma": "es",
     "zona_horaria": "America/Guayaquil",
     "radios_despacho_m": [300, 600, 1000],
-    "oferta_expira_segundos": 20,
+    # Bitácora de revisión (2026-08-26, hallazgo #7): 20s era muy poco para que
+    # el conductor revise origen/destino/tarifa estimada antes de decidir.
+    # Subido a 60s (1 min) -- el extremo BAJO del rango pedido (1-2 min), a
+    # propósito: con MAX_OFERTAS_TOTALES=10 candidatos en service_dispatch.py,
+    # la espera máxima real del pasajero antes de SIN_CONDUCTOR es
+    # oferta_expira_segundos * 10 si cada candidato agota su tiempo sin
+    # responder -- a 120s esa cota sube a 20 min, un empeoramiento real de la
+    # experiencia del pasajero que el pedido explícitamente pide no ignorar. A
+    # 60s la cota queda en 10 min (antes: 200s/~3.3min con 20s), un balance
+    # consciente entre dar más tiempo real al conductor y no disparar la
+    # espera máxima del pasajero.
+    "oferta_expira_segundos": 60,
 }
 
 

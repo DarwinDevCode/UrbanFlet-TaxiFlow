@@ -129,10 +129,14 @@ def obtener_panel_rentabilidad(*, meses: int = 12) -> dict:
     tarifario) necesitan.
 
     **Limitaciones declaradas en `metadata`, no disimuladas:**
-      · `zona_disponible=false` — `viajes.zona_origen_id` sigue sin resolverse
-        (0 de 1.3M documentos), así que la matriz es mes  *  franja y no
-        zona  *  franja como pide la spec. Alcance recortado que la propia
-        spec ya previó.
+      · `zona_disponible` — **calculado real** (cierre Tier 1-2, punto 2.2),
+        mismo cálculo que ya usa Confiabilidad sobre la MISMA tabla
+        (`rpt_tiempo_asignacion`). Hoy sigue dando `false` en la práctica
+        porque `viajes.zona_origen_id` no se resuelve (0 de 1.3M documentos),
+        así que la matriz sigue siendo mes  *  franja y no zona  *  franja
+        como pide la spec -- pero ya no es un valor fijo en el código: si el
+        dato de zona llegara a resolverse, este panel lo reflejaría solo, sin
+        esperar un despliegue nuevo (antes sí lo requería).
       · `demanda_viajes_disponible=false` — la "tendencia de demanda de largo
         plazo" se sirve como recaudación bruta por trimestre
         (`rpt_margen_comision`), no como conteo de viajes solicitados por
@@ -155,6 +159,14 @@ def obtener_panel_rentabilidad(*, meses: int = 12) -> dict:
 
     share_demanda = _share_demanda_por_franja(asignacion)
     share_capacidad = _share_capacidad_por_franja(flota)
+
+    # Cierre Tier 1-2, punto 2.2 (C4): mismo cálculo real que ya usa
+    # Confiabilidad (`viajes/service.py::obtener_panel_confiabilidad`) sobre
+    # la MISMA tabla (`rpt_tiempo_asignacion`), en vez de dejarlo fijo en
+    # `False` -- si `viajes.zona_origen_id` llega a resolverse, este panel lo
+    # refleja automáticamente sin esperar un despliegue nuevo de código.
+    zonas = {str(f.get("zona_origen_id") or "").strip() for f in asignacion}
+    zona_disponible = bool(zonas - {"", "SIN_ZONA", "None"})
 
     periodos = ultimos_periodos([f["periodo"] for f in margen_rpt], meses)
     por_periodo_margen = agrupar(margen_rpt, "periodo")
@@ -226,9 +238,30 @@ def obtener_panel_rentabilidad(*, meses: int = 12) -> dict:
 
     margen_promedio = promedio_ponderado(resumen_franja, "margen_pct", "recaudacion")
 
+    # Cierre Tier 1-2, punto 2.1 (C1 opción A): variación PROPIA de
+    # `margen_promedio_pct` para la tarjeta de Rentabilidad del Tablero
+    # Ejecutivo -- antes esa tarjeta mostraba `variacion_recaudacion_trimestral_pct`
+    # (un KPI distinto: recaudación en dólares, no margen). `margen_promedio_pct`
+    # es un agregado sobre TODA la ventana (`meses`), así que compararlo
+    # "vs. periodo previo" requiere primero reducirlo a un margen POR MES con
+    # la misma fórmula (prorrateo por franja, ver docstring de arriba) y
+    # comparar los últimos 2 meses de esa serie -- no los `meses` completos
+    # contra sí mismos, que no tendría un "previo" real.
+    margen_por_mes = [
+        {
+            "periodo": periodo,
+            "margen_pct": promedio_ponderado(filas, "margen_pct", "recaudacion"),
+        }
+        for periodo, filas in sorted(agrupar(matriz, "periodo").items())
+    ]
+    margen_mensual_actual = margen_por_mes[-1]["margen_pct"] if margen_por_mes else None
+    margen_mensual_previo = margen_por_mes[-2]["margen_pct"] if len(margen_por_mes) > 1 else None
+    variacion_margen_promedio_pct = variacion_pct(margen_mensual_actual, margen_mensual_previo)
+
     return {
         "kpis": {
             "margen_promedio_pct": margen_promedio,
+            "variacion_margen_promedio_pct": variacion_margen_promedio_pct,
             "franja_menos_rentable": resumen_franja[0]["franja"] if resumen_franja else None,
             "margen_menos_rentable_pct": resumen_franja[0]["margen_pct"] if resumen_franja else None,
             "recaudacion_ultimo_trimestre": margen_actual,
@@ -239,8 +272,21 @@ def obtener_panel_rentabilidad(*, meses: int = 12) -> dict:
         "tendencia_demanda": tendencia_demanda,
         "metadata": {
             "meses": meses,
-            "zona_disponible": False,
+            "zona_disponible": zona_disponible,
             "demanda_viajes_disponible": False,
+            # Tier 1, punto 6 (H-T5): a diferencia de las demás `rpt_*` del
+            # nivel estratégico, `rpt_margen_comision` (fuente de
+            # `variacion_recaudacion_trimestral_pct`) no publica NINGÚN campo
+            # de conteo de registros (ni `total_registros` ni equivalente) --
+            # confirmado contra el DDL real en `indicadores.py`. No hay forma
+            # de calcular un n real sin inventarlo; se declara `None` en vez
+            # de aproximar con `meses` (que además sería casi siempre <10 y
+            # dispararía la advertencia SIEMPRE, un falso positivo constante).
+            "registros_previos": {
+                "variacion_recaudacion_trimestral_pct": None,
+                "variacion_margen_promedio_pct": None,
+            },
+            "registros_previos_disponible": False,
             "formula": (
                 "margen[mes][franja] = bruto_total * share_demanda  -  comisiones * share_demanda "
                 " -  costo_mantenimiento * share_capacidad. Ver docstring de "
@@ -340,7 +386,10 @@ async def obtener_tablero_ejecutivo(db: AsyncIOMotorDatabase) -> dict:
         d = captacion_service.obtener_panel_crecimiento()
         return (
             d["kpis"]["pct_conversion_onboarding"],
-            d["kpis"]["variacion_altas_pct"],
+            # Cierre Tier 1-2, punto 2.1: variación PROPIA de
+            # `pct_conversion_onboarding` -- antes esta tarjeta mostraba
+            # `variacion_altas_pct`, la variación de un KPI distinto.
+            d["kpis"]["variacion_onboarding_pct"],
             _mini(d["tendencia_onboarding"], "pct_activo"),
         )
 
@@ -368,7 +417,10 @@ async def obtener_tablero_ejecutivo(db: AsyncIOMotorDatabase) -> dict:
         d = obtener_panel_rentabilidad()
         return (
             d["kpis"]["margen_promedio_pct"],
-            d["kpis"]["variacion_recaudacion_trimestral_pct"],
+            # Cierre Tier 1-2, punto 2.1: variación PROPIA de `margen_promedio_pct`
+            # -- antes esta tarjeta mostraba `variacion_recaudacion_trimestral_pct`
+            # (dólares de recaudación, no margen).
+            d["kpis"]["variacion_margen_promedio_pct"],
             _mini(d["tendencia_demanda"], "recaudacion"),
         )
 

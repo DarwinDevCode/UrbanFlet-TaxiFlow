@@ -21,7 +21,7 @@ async def test_default_antes_de_publicar_ninguna(client, db):
     body = resp.json()
     assert body["id"] is None
     assert body["radios_despacho_m"] == [300, 600, 1000]
-    assert body["oferta_expira_segundos"] == 20
+    assert body["oferta_expira_segundos"] == 60
 
 
 async def test_solo_admin_sistema_puede_publicar(client, db):

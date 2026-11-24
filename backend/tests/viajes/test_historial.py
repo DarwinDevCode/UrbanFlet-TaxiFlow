@@ -177,6 +177,35 @@ async def test_conductor_lista_historial_ve_nombre_de_pila_del_pasajero(client, 
     assert body["viajes"][0]["pasajero_calificacion"] == 4.5
 
 
+async def test_conductor_lista_historial_ve_foto_del_pasajero(client, db):
+    """Ronda de fotos en historial/usuarios: `pasajero_foto_url` viaja junto
+    al resto de la "contraparte limitada" de CU-O14 A2 -- mismo tipo de dato
+    de identidad visual que ya expone `pasajero_nombre`, resuelto en tiempo
+    de consulta desde `usuarios.foto_url` (nunca un mecanismo de foto
+    aparte)."""
+    await crear_usuario_activo(db, usuario_id="ph-foto1", telefono="+593970400025", roles=["pasajero"])
+    await db.usuarios.update_one({"_id": "ph-foto1"}, {"$set": {"foto_url": "archivo-foto-pasajero-1"}})
+    await crear_conductor_con_vehiculo(
+        db, conductor_id="c-foto1", telefono="+593970400026", vehiculo_id="v-foto1", placa="HISFOTO1"
+    )
+    headers_conductor = auth_headers("c-foto1", ["conductor"])
+
+    await db.viajes.insert_one(
+        _viaje_terminal(
+            viaje_id="h-foto1",
+            pasajero_id="ph-foto1",
+            conductor_id="c-foto1",
+            estado="FINALIZADO",
+            ts_solicitud=datetime.now(UTC),
+        )
+    )
+
+    resp = await client.get("/viajes", headers=headers_conductor, params={"rol": "conductor"})
+
+    assert resp.status_code == 200
+    assert resp.json()["viajes"][0]["pasajero_foto_url"] == "archivo-foto-pasajero-1"
+
+
 async def test_detalle_de_viaje_para_conductor_incluye_pasajero(client, db):
     await crear_usuario_activo(db, usuario_id="ph6", telefono="+593970400006", roles=["pasajero"])
     await db.usuarios.update_one({"_id": "ph6"}, {"$set": {"nombre": "Carlos Andrade"}})

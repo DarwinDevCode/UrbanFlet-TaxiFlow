@@ -13,13 +13,24 @@ flujos alternos que ameritan su propio slice — no son huecos de la spec):
   rol no está cableado con un canal de notificación propio todavía.
 - A5 (buffer offline de traza en IndexedDB): ya diferido desde el shell de
   turno de Fase 2 (flota/App.tsx); sigue diferido aquí.
-- A6 (recálculo de ruta si el desvío supera 2 km): requiere un motor de
-  ruteo que no existe en el stack (mismo corte que la distancia en línea
-  recta usada en CU-O04/O05).
+- A6 (recálculo de ruta si el desvío supera 2 km): el recálculo en sí ocurre
+  del lado del cliente (web-pasajero desde CU-O04 P3, web-conductor desde el
+  bloque de "navegación óptima" — ver UMBRAL_DESVIO_RUTA_KM en
+  apps/shared-ui/src/api/rutas.ts). Lo que SÍ vive acá es el registro en
+  bitácora que la spec exige ("...el sistema recalcula la ruta y lo
+  registra... el dato queda para auditoría") — ver
+  `registrar_recalculo_ruta_por_desvio` más abajo y
+  `POST /viajes/conductor/recalculo-ruta` en router_ejecucion.py. Antes de
+  esta función no había ningún rastro server-side del recálculo — el
+  cliente llamaba GET /viajes/estimacion-ruta (el mismo endpoint genérico
+  que usa cualquier cálculo de ruta, incluida la primera estimación de
+  tarifa) sin que el backend tuviera forma de distinguir "esto fue un
+  desvío real" de "esto es solo la ruta inicial".
 - Chat/llamada (flujo principal paso 2): sin CU propio ni entidad de datos
   definida en diseno_base_datos.md — no hay MENSAJE/CHAT ahí.
 """
 
+import re
 from datetime import UTC, datetime
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -39,10 +50,38 @@ VELOCIDAD_ESPERA_UMBRAL_KMH = 10.0
 TRAZA_MAX_PUNTOS = 20000
 
 
+# Bitácora de revisión (2026-08-26, hallazgo #7): `esperado` venía como
+# enum(s) crudo(s) (ej. "ASIGNADO, EN_CAMINO o EN_CURSO") incrustado en un
+# mensaje que de resto está en español -- el frontend ya traduce el estado
+# que SÍ tiene el viaje (`ETIQUETA_ESTADO_VIAJE`), pero no traducía el que
+# el backend dice que DEBERÍA tener. Reemplazo por token, no por frase
+# completa, porque `esperado` puede traer 1, 2 o 3 estados unidos por
+# ", "/" o " -- cualquier token que no esté en el diccionario se deja tal
+# cual (nunca rompe el mensaje, solo no lo mejora).
+_ETIQUETA_ESTADO = {
+    "PROGRAMADO": "Programado",
+    "SOLICITADO": "Solicitado",
+    "OFERTADO": "Ofertado",
+    "ASIGNADO": "Asignado",
+    "EN_CAMINO": "En camino",
+    "EN_CURSO": "En curso",
+    "FINALIZADO": "Finalizado",
+    "PAGADO": "Pagado",
+    "CANCELADO": "Cancelado",
+    "SIN_CONDUCTOR": "Sin conductor",
+}
+
+
+def _traducir_estados(texto: str) -> str:
+    return re.sub(r"[A-Z][A-Z_]*", lambda m: _ETIQUETA_ESTADO.get(m.group(0), m.group(0)), texto)
+
+
 class TransicionInvalidaError(DomainError):
     def __init__(self, esperado: str) -> None:
         super().__init__(
-            code="TRANSICION_INVALIDA", message=f"El viaje debe estar en estado {esperado}", status_code=409
+            code="TRANSICION_INVALIDA",
+            message=f"El viaje debe estar en estado {_traducir_estados(esperado)}",
+            status_code=409,
         )
 
 
@@ -204,6 +243,55 @@ async def cancelar_por_conductor(db: AsyncIOMotorDatabase, *, conductor_id: str,
     return await service_dispatch.avanzar_despacho(db, viaje)
 
 
+async def cancelar_por_incidencia(db: AsyncIOMotorDatabase, *, conductor_id: str, viaje_id: str) -> dict:
+    """Ronda 2 del flujo de fallas (Fase C), CU-O07 A4: reporte de falla con
+    `impide_continuar=true` mientras el viaje está EN_CURSO.
+
+    A diferencia de A3 (`cancelar_por_conductor` arriba, que solo permite
+    ASIGNADO/EN_CAMINO y hace volver el MISMO documento a SOLICITADO para
+    redespacharlo), el texto de la propuesta describe una "nueva solicitud
+    automática para el pasajero desde esa posición" -- no un redespacho del
+    mismo viaje. Tiene sentido: un viaje EN_CURSO ya acumuló traza/
+    km_recorridos/min_espera reales de un tramo que no se completó, mezclar
+    eso con un viaje que arranca de cero (con otro conductor, quizás otro
+    vehículo) sería un dato contaminado. Por eso esta función solo cancela
+    -- la creación de la nueva solicitud vive en
+    `reportes_falla/service.py`, que reutiliza
+    `viajes.service.solicitar_viaje` tal cual, sin duplicar la lógica de
+    despacho."""
+    viaje = await db.viajes.find_one({"_id": viaje_id, "conductor_id": conductor_id, "estado": "EN_CURSO"})
+    if viaje is None:
+        raise TransicionInvalidaError("EN_CURSO")
+
+    await write_audit_event(
+        db,
+        actor_id=conductor_id,
+        rol="conductor",
+        accion=AccionAuditoria.VIAJE_TRANSICION_ESTADO,
+        entidad="viajes",
+        entidad_id=viaje["_id"],
+        resultado=ResultadoAuditoria.OK,
+        datos_previos={"estado": "EN_CURSO"},
+        datos_posteriores={"estado": "CANCELADO", "motivo_cancelacion": "INCIDENCIA"},
+    )
+    await db.viajes.update_one(
+        {"_id": viaje["_id"]},
+        {
+            "$set": {"estado": "CANCELADO", "motivo_cancelacion": "INCIDENCIA", "actor_cancelacion": "conductor"},
+            # Mismo criterio de higiene que cancelar_por_conductor: un token
+            # de "compartir viaje" ya emitido no debe seguir vivo sobre un
+            # viaje que quedó cancelado.
+            "$unset": {"token_compartir": "", "token_compartir_expira_en": ""},
+        },
+    )
+    await db.usuarios.update_one({"_id": conductor_id}, {"$set": {"conductor.estado_servicio": "DISPONIBLE"}})
+
+    viaje["estado"] = "CANCELADO"
+    viaje["motivo_cancelacion"] = "INCIDENCIA"
+    viaje["actor_cancelacion"] = "conductor"
+    return viaje
+
+
 async def registrar_punto_traza(
     db: AsyncIOMotorDatabase,
     *,
@@ -238,5 +326,56 @@ async def registrar_punto_traza(
         {
             "$push": {"traza": {"$each": [punto], "$slice": -TRAZA_MAX_PUNTOS}},
             "$set": {"km_recorridos": round(km_recorridos, 3), "min_espera": round(min_espera, 2)},
+        },
+    )
+
+
+async def registrar_recalculo_ruta_por_desvio(
+    db: AsyncIOMotorDatabase,
+    *,
+    conductor_id: str,
+    lat: float,
+    lon: float,
+    distancia_desvio_km: float,
+    ruta_anterior: list[tuple[float, float]],
+    ruta_nueva: list[tuple[float, float]],
+) -> None:
+    """CU-O07 A6: "si la posición se aleja más de 2 km de la ruta prevista
+    sin recálculo, el sistema recalcula la ruta y lo registra... el dato
+    queda para auditoría". El recálculo ya ocurrió en el cliente (ver
+    UMBRAL_DESVIO_RUTA_KM en apps/shared-ui/src/api/rutas.ts) contra el
+    mismo GET /viajes/estimacion-ruta que usa cualquier cálculo de ruta —
+    esta función es exclusivamente el registro en bitácora que faltaba, con
+    el mismo mecanismo write-ahead que el resto de eventos de este archivo
+    (VIAJE_TRANSICION_ESTADO arriba). No hay ningún efecto de negocio que
+    mutar aparte del propio registro -- a diferencia de
+    marcar_en_camino/llegue/iniciar, acá el evento de auditoría ES el
+    efecto completo (mismo patrón que POSIBLE_GPS_SPOOFING en
+    flota/service.py, que tampoco muta la entidad además de auditar).
+
+    Se aplica a cualquier tramo activo del viaje (ASIGNADO/EN_CAMINO yendo
+    hacia el origen, EN_CURSO yendo hacia el destino) -- A6 no distingue
+    tramo, y restringirlo a uno solo dejaría el otro sin rastro.
+    """
+    viaje = await db.viajes.find_one(
+        {"conductor_id": conductor_id, "estado": {"$in": ["ASIGNADO", "EN_CAMINO", "EN_CURSO"]}}
+    )
+    if viaje is None:
+        raise TransicionInvalidaError("ASIGNADO, EN_CAMINO o EN_CURSO")
+
+    await write_audit_event(
+        db,
+        actor_id=conductor_id,
+        rol="conductor",
+        accion=AccionAuditoria.VIAJE_RECALCULO_RUTA,
+        entidad="viajes",
+        entidad_id=viaje["_id"],
+        resultado=ResultadoAuditoria.OK,
+        datos_previos={"ruta": ruta_anterior},
+        datos_posteriores={
+            "lat": lat,
+            "lon": lon,
+            "distancia_desvio_km": round(distancia_desvio_km, 3),
+            "ruta": ruta_nueva,
         },
     )

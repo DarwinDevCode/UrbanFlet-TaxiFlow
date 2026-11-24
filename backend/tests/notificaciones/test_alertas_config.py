@@ -27,14 +27,25 @@ async def test_solo_admin_sistema_puede_ver_o_editar(client, db):
     assert resp.status_code == 403
 
 
-async def test_listar_devuelve_las_3_alertas_con_defaults(client, db):
+async def test_listar_devuelve_las_5_alertas_con_defaults(client, db):
     headers = await _admin(db)
     resp = await client.get("/notificaciones/alertas-config", headers=headers)
 
     assert resp.status_code == 200
     body = resp.json()
     tipos = {a["tipo_alerta"] for a in body}
-    assert tipos == {"denegaciones_rbac", "gps_spoofing", "pipeline_fallido"}
+    # "reporte_falla": Ronda 2 del flujo de fallas (Fase C) -- notificación al
+    # Jefe de Mantenimiento cuando un conductor reporta una falla.
+    # "incidencia_operativa": misma Fase C, corrección posterior (CU-O07 A4)
+    # -- aviso en vivo al Coordinador de Operaciones, mismo evento, rol
+    # destinatario distinto.
+    assert tipos == {
+        "denegaciones_rbac",
+        "gps_spoofing",
+        "pipeline_fallido",
+        "reporte_falla",
+        "incidencia_operativa",
+    }
     for alerta in body:
         assert alerta["activo"] is True
         assert alerta["canal"] == "web_push"
@@ -42,6 +53,8 @@ async def test_listar_devuelve_las_3_alertas_con_defaults(client, db):
     rol_default = {a["tipo_alerta"]: a["rol_destinatario_default"] for a in body}
     assert rol_default["denegaciones_rbac"] == "supervisor_cumplimiento"
     assert rol_default["pipeline_fallido"] == "responsable_plataforma"
+    assert rol_default["reporte_falla"] == "jefe_mantenimiento"
+    assert rol_default["incidencia_operativa"] == "coordinador_operaciones"
 
 
 async def test_actualizar_desactiva_una_alerta_y_lo_audita(client, db):

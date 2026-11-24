@@ -7,6 +7,8 @@ Los navegadores no permiten fijar headers en el handshake WS, así que la
 autenticación viaja como query param `token` (mismo JWT que el resto de la API).
 """
 
+from datetime import datetime
+
 import jwt
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -153,11 +155,22 @@ def _notificacion_to_out(doc: dict) -> alertas_schemas.NotificacionOut:
 async def listar_mias(
     pagina: int = Query(default=1, ge=1),
     limite: int = Query(default=20, ge=1, le=100),
+    tipo: str | None = Query(default=None),
+    leida: bool | None = Query(default=None),
+    desde: datetime | None = Query(default=None),
+    hasta: datetime | None = Query(default=None),
     actor: Actor = Depends(get_current_actor),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ):
     items, total, no_leidas = await service.listar_notificaciones(
-        db, usuario_id=actor.usuario_id, pagina=pagina, limite=limite
+        db,
+        usuario_id=actor.usuario_id,
+        pagina=pagina,
+        limite=limite,
+        tipo=tipo,
+        leida=leida,
+        desde=desde,
+        hasta=hasta,
     )
     return alertas_schemas.NotificacionListOut(
         items=[_notificacion_to_out(d) for d in items], total=total, no_leidas=no_leidas

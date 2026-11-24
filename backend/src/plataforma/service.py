@@ -68,6 +68,18 @@ def _snapshot_informe(client, id_informe: str, nombre: str, tabla: str) -> dict:
         if "actualizado_en" in fila:
             fila["actualizado_en"] = fila["actualizado_en"].isoformat()
 
+    # Excepción justificada en la auditoría de orden de tablas: acá NO aplica
+    # "más reciente primero" -- la consulta filtra por UN `actualizado_en`
+    # exacto, así que todas las filas del informe son del mismo instante de
+    # publicación y no hay recencia que las distinga. Lo que sí faltaba era
+    # determinismo: sin `ORDER BY`, ClickHouse podía devolver las mismas
+    # filas en distinto orden entre consultas. Se ordena por las columnas
+    # dimensionales del propio informe (las que quedan tras quitar la
+    # metadata), que es genérico y no exige conocer cada tabla `rpt_*`.
+    if filas:
+        dimensiones = [c for c in filas[0] if c != "actualizado_en"]
+        filas.sort(key=lambda f: tuple(str(f.get(c, "")) for c in dimensiones))
+
     retrasado = fecha_datos != date.today() if fecha_datos is not None else True
     return {"id": id_informe, "nombre": nombre, "datos_al": fecha_datos, "retrasado": retrasado, "filas": filas}
 
@@ -146,6 +158,16 @@ def obtener_panel_capacidades(*, cortes: int = 12) -> dict:
     ClickHouse, no Mongo, así que no rompe la regla de la Sección 2 de la
     spec estratégica.
 
+    **Acotado a la ventana `cortes` (Tier 1 de la auditoría, hallazgo H-T3):**
+    antes esta query no tenía ningún filtro de fecha -- contaba el histórico
+    completo de la tabla `corridas` pese a que el frontend la etiqueta "en el
+    periodo". `corridas` no es una `rpt_*` con `fecha_datos` propia (es un
+    log de eventos, una fila por corrida real de un DAG), así que no hay un
+    "corte" propio que traducir 1:1 -- se interpreta cada unidad de `cortes`
+    como un día calendario sobre `corridas.iniciado_en`, mismo eje de tiempo
+    que ya usa `listar_corridas` del panel táctico. Con esto la etiqueta "en
+    el periodo" queda veraz sin cambiar el texto.
+
     **"Avance de capacitación por área" va siempre en `None`**: no existe
     ningún dominio de capacitación en el sistema (backlog consciente ya
     documentado en el nivel táctico). Se declara
@@ -159,8 +181,10 @@ def obtener_panel_capacidades(*, cortes: int = 12) -> dict:
             """
             SELECT estado, count() AS total
             FROM urbanflet_gold.corridas
+            WHERE iniciado_en >= now() - INTERVAL {cortes:UInt32} DAY
             GROUP BY estado
-            """
+            """,
+            parameters={"cortes": cortes},
         ).result_rows
     finally:
         client.close()
@@ -201,6 +225,11 @@ def obtener_panel_capacidades(*, cortes: int = 12) -> dict:
 
     pct_actual = tendencia[-1]["pct_cuarentena"] if tendencia else None
     pct_previo = tendencia[-2]["pct_cuarentena"] if len(tendencia) > 1 else None
+    # Tier 1, punto 6 (H-T5): `pct_cuarentena` es un promedio ponderado por
+    # `registros_extraidos` -- el n real del periodo anterior es ese peso.
+    registros_previos_cuarentena = (
+        tendencia[-2]["registros_extraidos"] if len(tendencia) > 1 else None
+    )
 
     return {
         "kpis": {
@@ -217,5 +246,6 @@ def obtener_panel_capacidades(*, cortes: int = 12) -> dict:
             "cortes": cortes,
             "capacitacion_disponible": False,
             "fuentes": ["rpt_cuarentena_dominio", "corridas"],
+            "registros_previos": {"variacion_cuarentena_pct": registros_previos_cuarentena},
         },
     }

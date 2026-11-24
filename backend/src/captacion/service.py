@@ -15,6 +15,7 @@ from datetime import datetime, UTC
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from src.archivos import service as archivos_service
 from src.auth import service as auth_service
 from src.captacion import schemas
 from src.core.audit import AccionAuditoria, ResultadoAuditoria, write_audit_event
@@ -72,6 +73,65 @@ class TipoDocumentoInvalidoError(DomainError):
             message=f"Tipo(s) de documento no reconocidos en el catálogo: {', '.join(sorted(tipos_invalidos))}",
             status_code=422,
         )
+
+
+class ArchivoNoValidoParaDocumentoError(DomainError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="ARCHIVO_NO_VALIDO_PARA_DOCUMENTO",
+            message="El archivo no existe, no te pertenece, o no se subió como documento de postulación",
+            status_code=422,
+        )
+
+
+async def _resolver_documentos(
+    db: AsyncIOMotorDatabase, documentos: list[schemas.DocumentoInput], usuario_id: str
+) -> list[dict]:
+    """Resuelve cada `archivo_id` del cliente contra un archivo real ya
+    subido (`POST /archivos`, contexto "documento_postulacion") -- verifica
+    que exista, que pertenezca a ESTE postulante y que se haya subido con el
+    contexto correcto (no reciclar evidencia de otro flujo). El hash real
+    sale del archivo (`hash_sha256`, calculado en el servidor durante la
+    subida), nunca del cliente. Guarda en las mismas claves que ya usa
+    `_aprobar_solicitud_en_transaccion` (`url_objeto`/`hash_archivo`) y que
+    ya usa `documento_renovacion` -- el archivo_id vive en `url_objeto` desde
+    antes de esta ronda, mismo convenio interno, cero cambios en el código
+    que ya consume `solicitud["documentos"]`."""
+    resueltos: list[dict] = []
+    for d in documentos:
+        archivo = await archivos_service.obtener_archivo(db, archivo_id=d.archivo_id)
+        if archivo["propietario_id"] != usuario_id or archivo["contexto"] != "documento_postulacion":
+            raise ArchivoNoValidoParaDocumentoError()
+        resueltos.append(
+            {
+                "tipo": d.tipo,
+                "propietario_tipo": d.propietario_tipo,
+                "url_objeto": archivo["_id"],
+                "hash_archivo": archivo["hash_sha256"],
+                "fecha_emision": d.fecha_emision.isoformat() if d.fecha_emision else None,
+                "fecha_vencimiento": d.fecha_vencimiento.isoformat() if d.fecha_vencimiento else None,
+            }
+        )
+    return resueltos
+
+
+async def _validar_tipos_documento(db: AsyncIOMotorDatabase, documentos: list[schemas.DocumentoInput]) -> None:
+    """Punto #3 de la ronda de usabilidad de admin_sistema: `tipo` de
+    documento nunca fue texto 100% libre, se valida contra el catálogo
+    `tipos_documento` (Módulo 3.2) antes de cualquier efecto de negocio.
+    Extraído de `crear_solicitud` para que `enviar_solicitud_con_documentos`
+    (Fase 1 de gestión documental en la postulación) reuse exactamente la
+    misma regla, sin duplicarla."""
+    if not documentos:
+        return
+    tipos_pedidos = {d.tipo for d in documentos}
+    validos = {
+        t["nombre"]
+        async for t in db.tipos_documento.find({"nombre": {"$in": list(tipos_pedidos)}, "activo": True})
+    }
+    invalidos = tipos_pedidos - validos
+    if invalidos:
+        raise TipoDocumentoInvalidoError(invalidos)
 
 
 # ---------------------------------------------------------------------------
@@ -162,17 +222,18 @@ async def crear_solicitud(
     # `tipos_documento` (Módulo 3.2) que ya existe -- se valida acá, antes
     # de cualquier efecto de negocio, para no crear la cuenta/solicitud si
     # el tipo no es reconocido.
-    if documentos:
-        tipos_pedidos = {d.tipo for d in documentos}
-        validos = {
-            t["nombre"]
-            async for t in db.tipos_documento.find({"nombre": {"$in": list(tipos_pedidos)}, "activo": True})
-        }
-        invalidos = tipos_pedidos - validos
-        if invalidos:
-            raise TipoDocumentoInvalidoError(invalidos)
+    await _validar_tipos_documento(db, documentos)
 
     usuario = await auth_service.registrar_usuario(db, nombre=nombre, telefono=telefono, email=email, password=password)
+
+    # Gestión documental en la postulación: el flujo real de `web-conductor`
+    # nunca llega acá con `documentos` no vacío (sube los archivos DESPUÉS,
+    # vía `enviar_solicitud_con_documentos`, porque `POST /archivos` exige un
+    # actor que recién existe desde la línea de arriba) -- pero si algún
+    # llamador SÍ manda documentos junto con la cuenta en el mismo request,
+    # se resuelven igual contra el `usuario_id` recién creado, nunca se
+    # confía en el `archivo_id` sin verificar dueño/contexto.
+    documentos_resueltos = await _resolver_documentos(db, documentos, usuario["_id"])
 
     # A3: la placa ya existe en la flota → marca de revisión reforzada
     # (decisión confirmada con el cliente: solo una etiqueta en la bandeja,
@@ -192,7 +253,7 @@ async def crear_solicitud(
         "verificador_id": None,
         "motivo_rechazo": None,
         "vehiculo": vehiculo.model_dump(),
-        "documentos": [d.model_dump(mode="json") for d in documentos],
+        "documentos": documentos_resueltos,
         "revision_reforzada": revision_reforzada,
         "canal": canal,
     }
@@ -201,26 +262,86 @@ async def crear_solicitud(
         # Write-ahead para CU-O01: el evento de envío se escribe antes de
         # persistir la solicitud como ENVIADA. Un BORRADOR (enviar=False) no
         # es todavía un evento sensible — no dispara auditoría.
-        await write_audit_event(
+        await _auditar_envio(
             db,
-            actor_id=usuario["_id"],
-            rol=None,
-            accion=AccionAuditoria.SOLICITUD_CONDUCTOR_ENVIO,
-            entidad="solicitudes",
-            entidad_id=solicitud["_id"],
-            resultado=ResultadoAuditoria.OK,
-            datos_posteriores={"cedula": cedula, "revision_reforzada": revision_reforzada},
+            usuario_id=usuario["_id"],
+            solicitud_id=solicitud["_id"],
+            cedula=cedula,
+            revision_reforzada=revision_reforzada,
         )
 
     await db.solicitudes.insert_one(solicitud)
 
     if enviar:
-        async for admin in db.usuarios.find({"roles": "admin_captacion"}):
-            await dispatcher.notify_user(admin["_id"], "NUEVA_SOLICITUD", {"solicitud_id": solicitud["_id"]})
+        await _notificar_nueva_solicitud(db, dispatcher, solicitud_id=solicitud["_id"])
 
     # El nombre ya se conoce en este mismo request (se acaba de crear la
     # cuenta con él) — no hace falta ir a buscarlo de vuelta a `usuarios`.
     return {**solicitud, "usuario_nombre": nombre}
+
+
+async def _auditar_envio(
+    db: AsyncIOMotorDatabase, *, usuario_id: str, solicitud_id: str, cedula: str, revision_reforzada: bool
+) -> None:
+    await write_audit_event(
+        db,
+        actor_id=usuario_id,
+        rol=None,
+        accion=AccionAuditoria.SOLICITUD_CONDUCTOR_ENVIO,
+        entidad="solicitudes",
+        entidad_id=solicitud_id,
+        resultado=ResultadoAuditoria.OK,
+        datos_posteriores={"cedula": cedula, "revision_reforzada": revision_reforzada},
+    )
+
+
+async def _notificar_nueva_solicitud(
+    db: AsyncIOMotorDatabase, dispatcher: NotificationDispatcher, *, solicitud_id: str
+) -> None:
+    async for admin in db.usuarios.find({"roles": "admin_captacion"}):
+        await dispatcher.notify_user(admin["_id"], "NUEVA_SOLICITUD", {"solicitud_id": solicitud_id})
+
+
+async def enviar_solicitud_con_documentos(
+    db: AsyncIOMotorDatabase,
+    dispatcher: NotificationDispatcher,
+    *,
+    actor_id: str,
+    documentos: list[schemas.DocumentoInput],
+) -> dict:
+    """Segundo paso del flujo de postulación con documentos reales (Fase 1):
+    el postulante ya tiene cuenta y una solicitud propia en BORRADOR (creada
+    por `crear_solicitud(enviar=False)`), ya subió sus archivos autenticado
+    como esa cuenta (`POST /archivos`, contexto "documento_postulacion") --
+    acá se adjuntan, se valida cada uno, y la solicitud pasa a ENVIADA con
+    el MISMO efecto (auditoría + notificación a admin_captacion) que el
+    camino de un solo paso de `crear_solicitud(enviar=True)`."""
+    solicitud = await db.solicitudes.find_one({"usuario_id": actor_id, "estado": "BORRADOR"})
+    if solicitud is None:
+        raise SolicitudNoEncontradaError()
+
+    await _validar_tipos_documento(db, documentos)
+    documentos_resueltos = await _resolver_documentos(db, documentos, actor_id)
+
+    ahora = datetime.now(UTC)
+    await _auditar_envio(
+        db,
+        usuario_id=actor_id,
+        solicitud_id=solicitud["_id"],
+        cedula=solicitud["cedula"],
+        revision_reforzada=solicitud["revision_reforzada"],
+    )
+    await db.solicitudes.update_one(
+        {"_id": solicitud["_id"]},
+        {"$set": {"documentos": documentos_resueltos, "estado": "ENVIADA", "fecha_envio": ahora}},
+    )
+    await _notificar_nueva_solicitud(db, dispatcher, solicitud_id=solicitud["_id"])
+
+    solicitud["documentos"] = documentos_resueltos
+    solicitud["estado"] = "ENVIADA"
+    solicitud["fecha_envio"] = ahora
+    (solicitud,) = await enriquecer_con_usuario_nombre(db, [solicitud])
+    return solicitud
 
 
 async def enriquecer_con_usuario_nombre(db: AsyncIOMotorDatabase, items: list[dict]) -> list[dict]:
@@ -254,7 +375,7 @@ async def listar_solicitudes(
     total = await db.solicitudes.count_documents(filtro)
     items = (
         await db.solicitudes.find(filtro)
-        .sort("fecha_envio", 1)
+        .sort("fecha_envio", -1)
         .skip(offset)
         .limit(limit)
         .to_list(length=limit)
@@ -594,6 +715,25 @@ def obtener_panel_crecimiento(*, meses: int = 12, cortes: int = 12) -> dict:
         if periodo in por_periodo_conv
     ]
 
+    # Cierre Tier 1-2, punto 2.6 (N1): serie temporal de conversión POR
+    # CANAL -- antes la tabla "Conversión por canal" solo mostraba el
+    # consolidado de toda la ventana (`canales`, más abajo), sin evolución en
+    # el tiempo. `rpt_conversion_captacion` ya trae `canal` + `periodo`
+    # juntos en cada fila; esto es un reshape adicional (periodo x canal en
+    # vez de solo periodo) sobre el mismo `conversion` ya cargado -- no una
+    # consulta nueva. Agregado, no reemplaza `tendencia_conversion`.
+    tendencia_conversion_por_canal = [
+        {
+            "periodo": periodo,
+            "canal": canal,
+            "pct_conversion": promedio_ponderado(filas_canal, "pct_conversion", "total_solicitudes") or 0.0,
+            "total_solicitudes": sum(f["total_solicitudes"] for f in filas_canal),
+        }
+        for periodo in periodos
+        if periodo in por_periodo_conv
+        for canal, filas_canal in agrupar(por_periodo_conv[periodo], "canal").items()
+    ]
+
     tendencia_onboarding = [
         {
             "periodo": str(fecha),
@@ -625,9 +765,24 @@ def obtener_panel_crecimiento(*, meses: int = 12, cortes: int = 12) -> dict:
     altas_actual = tendencia_altas[-1]["altas"] if tendencia_altas else None
     altas_previo = tendencia_altas[-2]["altas"] if len(tendencia_altas) > 1 else None
 
+    # Cierre Tier 1-2, punto 2.1 (C1 opción A): variación PROPIA de
+    # `pct_conversion_onboarding` para la tarjeta de Crecimiento del Tablero
+    # Ejecutivo -- antes esa tarjeta mostraba `variacion_altas_pct` (un KPI
+    # distinto). `tendencia_onboarding[-1]` es el mismo corte que ya usa
+    # `pct_conversion_onboarding` (ambos derivan de la corrida más reciente
+    # de `rpt_conversion_onboarding`); `tendencia_onboarding[-2]` es el corte
+    # anterior dentro de la misma ventana de `cortes`.
+    onboarding_actual = tendencia_onboarding[-1]["pct_activo"] if tendencia_onboarding else None
+    onboarding_previo = tendencia_onboarding[-2]["pct_activo"] if len(tendencia_onboarding) > 1 else None
+    variacion_onboarding_pct = variacion_pct(onboarding_actual, onboarding_previo)
+    registros_previos_onboarding = (
+        tendencia_onboarding[-2]["total_registros"] if len(tendencia_onboarding) > 1 else None
+    )
+
     return {
         "kpis": {
             "pct_conversion_onboarding": promedio_ponderado(onboarding, "pct_activo", "total_registros"),
+            "variacion_onboarding_pct": variacion_onboarding_pct,
             "pct_retencion_90d": promedio_ponderado(altas, "pct_retencion", "altas"),
             "altas_periodo": altas_actual,
             "variacion_altas_pct": variacion_pct(altas_actual, altas_previo),
@@ -635,6 +790,7 @@ def obtener_panel_crecimiento(*, meses: int = 12, cortes: int = 12) -> dict:
         },
         "tendencia_altas": tendencia_altas,
         "tendencia_conversion": tendencia_conversion,
+        "tendencia_conversion_por_canal": tendencia_conversion_por_canal,
         "tendencia_onboarding": tendencia_onboarding,
         "canales": canales,
         "metadata": {
@@ -646,5 +802,15 @@ def obtener_panel_crecimiento(*, meses: int = 12, cortes: int = 12) -> dict:
                 "rpt_altas_retencion_canal",
                 "rpt_conversion_onboarding",
             ],
+            # Tier 1 de la auditoría, punto 6 (H-T5): conteo de registros reales
+            # que respaldan el periodo ANTERIOR de cada variación, para que el
+            # frontend advierta "base insuficiente" sin ocultar el dato. Para
+            # `variacion_altas_pct`, `altas` ya ES un conteo (no un promedio
+            # ponderado), así que el propio `altas_previo` es el n real -- no
+            # hace falta un campo de peso aparte.
+            "registros_previos": {
+                "variacion_altas_pct": altas_previo,
+                "variacion_onboarding_pct": registros_previos_onboarding,
+            },
         },
     }

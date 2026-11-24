@@ -40,16 +40,36 @@ TABLERO_FLOTA_CHANNEL = "tablero-flota"
 # desde este backend -- documentado explícitamente, no simulado.
 # ---------------------------------------------------------------------------
 
-TIPOS_ALERTA: tuple[str, ...] = ("denegaciones_rbac", "gps_spoofing", "pipeline_fallido")
+TIPOS_ALERTA: tuple[str, ...] = (
+    "denegaciones_rbac",
+    "gps_spoofing",
+    "pipeline_fallido",
+    "reporte_falla",
+    "incidencia_operativa",
+)
 
 # Rol que recibe la alerta por defecto (además de los destinatarios
 # adicionales configurados) -- el mismo destinatario que ya estaba
 # hardcodeado en el código antes de este módulo, para no cambiar
 # comportamiento hasta que un admin_sistema lo reconfigure explícitamente.
+# "reporte_falla" (Ronda 2 del flujo de fallas, Fase C) es la excepción: no
+# reemplaza ningún envío hardcodeado previo -- antes de esta ronda, un
+# reporte de falla del conductor simplemente no notificaba a nadie.
+# "incidencia_operativa" (misma Fase C, corrección posterior): CU-O07 A4
+# pide un aviso EN VIVO al Coordinador de Operaciones cuando el conductor
+# registra la incidencia -- distinto propósito del de "reporte_falla"
+# (que alimenta la bandeja de pre-órdenes del Jefe de Mantenimiento, Fase
+# D), así que es un tipo de alerta propio y no una reutilización, siguiendo
+# el mismo criterio "un tipo de alerta = un rol destinatario" ya establecido
+# acá para el resto del catálogo. `reportes_falla/service.py::
+# crear_reporte_falla` dispara los DOS tipos en el mismo evento, sin que
+# uno dependa del otro.
 ROL_DEFAULT_POR_ALERTA: dict[str, str] = {
     "denegaciones_rbac": "supervisor_cumplimiento",
     "gps_spoofing": "supervisor_cumplimiento",
     "pipeline_fallido": "responsable_plataforma",
+    "reporte_falla": "jefe_mantenimiento",
+    "incidencia_operativa": "coordinador_operaciones",
 }
 
 DEFAULTS_ALERTA = {"canal": "web_push", "destinatarios_adicionales": [], "activo": True}
@@ -65,6 +85,14 @@ CATEGORIA_POR_EVENTO: dict[str, str] = {
     "NUEVA_SOLICITUD": "captacion",
     "SOLICITUD_DECISION": "captacion",
     "RENOVACION_DOCUMENTO_DECISION": "cumplimiento",
+    # Hallazgo real de la ronda del Centro de notificaciones (sección completa):
+    # estos 2 tipos ya se disparaban desde `cumplimiento/service.py` pero
+    # nunca se habían agregado acá -- caían en el fallback "general" (sin
+    # categoría configurable de push, aunque siempre entregados). Corregido
+    # para que compartan categoría con RENOVACION_DOCUMENTO_DECISION, el
+    # mismo dominio.
+    "DOCUMENTO_VENCIDO": "cumplimiento",
+    "DOCUMENTO_POR_VENCER": "cumplimiento",
     "ORDEN_MANTENIMIENTO_REGISTRADA": "mantenimiento",
     "ORDEN_MANTENIMIENTO_CERRADA": "mantenimiento",
     "ALERTA_SEGURIDAD": "seguridad",
@@ -144,11 +172,42 @@ class NotificationService:
 
 
 async def listar_notificaciones(
-    db: AsyncIOMotorDatabase, *, usuario_id: str, pagina: int = 1, limite: int = 20
+    db: AsyncIOMotorDatabase,
+    *,
+    usuario_id: str,
+    pagina: int = 1,
+    limite: int = 20,
+    tipo: str | None = None,
+    leida: bool | None = None,
+    desde: datetime | None = None,
+    hasta: datetime | None = None,
 ) -> tuple[list[dict], int, int]:
-    filtro = {"usuario_id": usuario_id}
+    """Sección completa del Centro de notificaciones: filtros por tipo,
+    estado y rango de fecha, todos opcionales y combinables (mismo patrón
+    de filtros server-side que el resto de pantallas WorkPanel/bitácora).
+
+    `no_leidas` se calcula SIEMPRE sobre `{usuario_id}` sin ningún filtro
+    -- es el contador global que la campana y el ítem del sidebar muestran;
+    filtrar la lista visible (ej. por tipo) no debe hacer que ese número
+    "baje" de forma engañosa mientras siguen existiendo notificaciones sin
+    leer fuera del filtro actual.
+    """
+    base = {"usuario_id": usuario_id}
+    filtro: dict = dict(base)
+    if tipo:
+        filtro["tipo"] = tipo
+    if leida is not None:
+        filtro["leida"] = leida
+    if desde or hasta:
+        rango: dict = {}
+        if desde:
+            rango["$gte"] = desde
+        if hasta:
+            rango["$lte"] = hasta
+        filtro["ts"] = rango
+
     total = await db.notificaciones_usuario.count_documents(filtro)
-    no_leidas = await db.notificaciones_usuario.count_documents({**filtro, "leida": False})
+    no_leidas = await db.notificaciones_usuario.count_documents({**base, "leida": False})
     cursor = (
         db.notificaciones_usuario.find(filtro)
         .sort("ts", -1)

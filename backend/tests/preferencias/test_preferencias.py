@@ -19,6 +19,14 @@ async def test_preferencias_por_defecto_sin_documento_previo(client, db):
         "sonido_oferta": True,
         "vibracion_oferta": True,
         "recordatorio_turno_hora": None,
+        # Ronda de personalización: accesibilidad + accesos rápidos del
+        # sidebar. Los defaults dejan el sistema exactamente como antes
+        # (escala tipográfica sin cambio, sin favoritos).
+        "tamano_texto": "normal",
+        "secciones_favoritas": [],
+        # Segundo rediseño visual (v2): color de sidebar por cuenta,
+        # "claro" por defecto (PLAN_REDISENO_V2.md §3).
+        "sidebar_tono": "claro",
     }
 
 
@@ -77,3 +85,58 @@ async def test_preferencias_son_por_cuenta_no_compartidas(client, db):
 async def test_preferencias_requiere_autenticacion(client):
     resp = await client.get("/preferencias")
     assert resp.status_code == 401
+
+
+async def test_guardar_tamano_texto_y_secciones_favoritas(client, db):
+    """Ronda de personalización: los 2 campos nuevos se guardan y se releen."""
+    headers = await _headers(db, usuario_id="pref-pers", telefono="+593900001010")
+
+    resp = await client.patch(
+        "/preferencias",
+        headers=headers,
+        json={"tamano_texto": "grande", "secciones_favoritas": ["flota", "finanzas"]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["tamano_texto"] == "grande"
+    assert resp.json()["secciones_favoritas"] == ["flota", "finanzas"]
+
+    relectura = await client.get("/preferencias", headers=headers)
+    assert relectura.json()["tamano_texto"] == "grande"
+    assert relectura.json()["secciones_favoritas"] == ["flota", "finanzas"]
+
+
+async def test_tamano_texto_rechaza_valor_fuera_del_catalogo(client, db):
+    headers = await _headers(db, usuario_id="pref-mal", telefono="+593900001011")
+
+    resp = await client.patch("/preferencias", headers=headers, json={"tamano_texto": "gigante"})
+
+    assert resp.status_code == 422
+
+
+async def test_guardar_sidebar_tono_y_rechazar_valor_fuera_del_catalogo(client, db):
+    """Segundo rediseño visual (v2): 4 opciones predefinidas, nunca un color
+    libre -- guardar una de las 4 se relee igual, y un valor fuera del
+    catálogo se rechaza con 422 (mismo criterio que `tamano_texto`)."""
+    headers = await _headers(db, usuario_id="pref-sidebar", telefono="+593900001030")
+
+    resp = await client.patch("/preferencias", headers=headers, json={"sidebar_tono": "ambar"})
+    assert resp.status_code == 200
+    assert resp.json()["sidebar_tono"] == "ambar"
+
+    relectura = await client.get("/preferencias", headers=headers)
+    assert relectura.json()["sidebar_tono"] == "ambar"
+
+    invalido = await client.patch("/preferencias", headers=headers, json={"sidebar_tono": "azul"})
+    assert invalido.status_code == 422
+
+
+async def test_preferencias_son_por_cuenta_no_globales(client, db):
+    """La preferencia de una cuenta no debe filtrarse a otra."""
+    headers_a = await _headers(db, usuario_id="pref-a", telefono="+593900001020")
+    headers_b = await _headers(db, usuario_id="pref-b", telefono="+593900001021")
+
+    await client.patch("/preferencias", headers=headers_a, json={"tamano_texto": "muy_grande"})
+
+    de_b = await client.get("/preferencias", headers=headers_b)
+    assert de_b.json()["tamano_texto"] == "normal"

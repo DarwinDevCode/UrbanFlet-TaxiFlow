@@ -23,6 +23,7 @@ from src.core.db_clickhouse import fetch_latest_snapshot, fetch_snapshot_history
 from src.core.db_mongo import get_mongo_client
 from src.core.db_transaction import with_transaction
 from src.core.exceptions import DomainError
+from src.archivos import service as archivos_service
 from src.core.notifications import NotificationDispatcher
 
 _UMBRALES_NOTIFICACION = frozenset({30, 15, 7, 1})
@@ -37,6 +38,24 @@ class SinRenovacionPendienteError(DomainError):
     def __init__(self) -> None:
         super().__init__(
             code="SIN_RENOVACION_PENDIENTE", message="El documento no tiene una renovación pendiente", status_code=409
+        )
+
+
+class DocumentoNoPropioError(DomainError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="DOCUMENTO_NO_PROPIO",
+            message="Este documento no pertenece a tu cuenta ni a un vehículo tuyo",
+            status_code=403,
+        )
+
+
+class ArchivoNoValidoParaRenovacionError(DomainError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="ARCHIVO_NO_VALIDO_PARA_RENOVACION",
+            message="El archivo no es tuyo o no se subió para una renovación de documento",
+            status_code=422,
         )
 
 
@@ -165,16 +184,60 @@ async def resolver_nombres_propietarios(db: AsyncIOMotorDatabase, documentos: li
     return nombres
 
 
+async def _ids_vehiculos_de(db: AsyncIOMotorDatabase, conductor_id: str) -> list[str]:
+    vehiculos = await db.vehiculos.find({"propietario_id": conductor_id}, {"_id": 1}).to_list(length=50)
+    return [v["_id"] for v in vehiculos]
+
+
+async def listar_mis_documentos(db: AsyncIOMotorDatabase, *, conductor_id: str) -> list[dict]:
+    """Autoservicio del conductor -- cierra el gap real: hasta ahora ningún
+    endpoint le dejaba ver sus propios documentos, así que la bandeja de
+    renovaciones pendientes (`listar_renovaciones_pendientes`) estaba
+    condenada a quedar vacía para siempre: nadie tenía cómo generar una
+    renovación pendiente. Mismo criterio de propiedad que `_usuario_a_notificar`
+    (documento directo del conductor, o de un vehículo suyo), en la
+    dirección inversa."""
+    ids_vehiculos = await _ids_vehiculos_de(db, conductor_id)
+    filtro = {
+        "$or": [
+            {"propietario_tipo": "CONDUCTOR", "propietario_id": conductor_id},
+            {"propietario_tipo": "VEHICULO", "propietario_id": {"$in": ids_vehiculos}},
+        ]
+    }
+    documentos = await db.documentos.find(filtro).sort("fecha_vencimiento", 1).to_list(length=100)
+    hoy = date.today()
+    for doc in documentos:
+        vencimiento = doc.get("fecha_vencimiento")
+        doc["dias_restantes"] = (date.fromisoformat(vencimiento) - hoy).days if vencimiento else None
+    return documentos
+
+
 async def subir_renovacion(
-    db: AsyncIOMotorDatabase, *, documento_id: str, url_objeto: str, hash_archivo: str, fecha_vencimiento: date
+    db: AsyncIOMotorDatabase, *, actor_id: str, documento_id: str, archivo_id: str, fecha_vencimiento: date
 ) -> dict:
     documento = await db.documentos.find_one({"_id": documento_id})
     if documento is None:
         raise DocumentoNoEncontradoError()
 
+    # El documento tiene que ser del propio actor (directo, o de un vehículo
+    # suyo) -- antes de este cierre de gap, este endpoint no verificaba NADA,
+    # ni siquiera exigía sesión: cualquiera con un `documento_id` podía
+    # cargarle una renovación falsa a un documento ajeno.
+    dueno_real = await _usuario_a_notificar(db, documento["propietario_tipo"], documento["propietario_id"])
+    if dueno_real != actor_id:
+        raise DocumentoNoPropioError()
+
+    # El archivo tiene que ser del propio actor y haberse subido para ESTE
+    # propósito -- mismo criterio ya usado en `perfil.service.editar_foto_perfil`
+    # para que nadie "adopte" como renovación un archivo ajeno o uno subido
+    # para otro contexto (ej. evidencia de una falla).
+    archivo = await archivos_service.obtener_archivo(db, archivo_id=archivo_id)
+    if archivo["propietario_id"] != actor_id or archivo["contexto"] != "documento_renovacion":
+        raise ArchivoNoValidoParaRenovacionError()
+
     pendiente = {
-        "url_objeto": url_objeto,
-        "hash_archivo": hash_archivo,
+        "url_objeto": archivo["_id"],
+        "hash_archivo": archivo["hash_sha256"],
         "fecha_vencimiento": fecha_vencimiento.isoformat(),
     }
     await db.documentos.update_one({"_id": documento_id}, {"$set": {"renovacion_pendiente": pendiente}})
@@ -381,6 +444,9 @@ def obtener_panel_cumplimiento_normativo(*, cortes: int = 12) -> dict:
 
     pct_actual = promedio_ponderado(actual, "pct_vigente", "total_registros")
     pct_previo = tendencia[-2]["pct_vigente"] if len(tendencia) > 1 else None
+    # Tier 1, punto 6 (H-T5): `pct_vigente` es un promedio ponderado por
+    # `total_registros` -- el n real del periodo anterior es ese peso.
+    registros_previos_vigencia = tendencia[-2]["total_registros"] if len(tendencia) > 1 else None
 
     return {
         "kpis": {
@@ -391,5 +457,9 @@ def obtener_panel_cumplimiento_normativo(*, cortes: int = 12) -> dict:
         },
         "tendencia_vigencia": tendencia,
         "tipos": tipos,
-        "metadata": {"cortes": cortes, "fuentes": ["rpt_documentacion_vigente"]},
+        "metadata": {
+            "cortes": cortes,
+            "fuentes": ["rpt_documentacion_vigente"],
+            "registros_previos": {"variacion_vigencia_pct": registros_previos_vigencia},
+        },
     }

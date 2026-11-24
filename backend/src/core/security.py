@@ -24,6 +24,30 @@ def verify_password(password: str, password_hash: str) -> bool:
     return _pwd_context.verify(password, password_hash)
 
 
+# Ronda de correcciones (agosto 2026): generador reusable para "crear usuario"
+# y "restablecer contraseña" (Módulo 1 de admin_sistema) -- una sola
+# implementación, no una copia por endpoint. Alfabeto sin ambigüedad visual
+# (sin `0/O/1/l/I`) para que se pueda comunicar/transcribir a mano sin
+# errores; se fuerza al menos una letra y un dígito con `secrets.choice`
+# sobre cada grupo por separado (no basta con un alfabeto mixto -- una
+# muestra aleatoria podría salir sin dígitos), y el resto se completa y
+# mezcla con `secrets.SystemRandom` (mismo generador criptográfico que
+# `secrets.token_urlsafe`, no `random`).
+_ALFABETO_LETRAS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz"
+_ALFABETO_DIGITOS = "23456789"
+
+
+def generar_password_segura(longitud: int = 14) -> str:
+    if longitud < 2:
+        raise ValueError("longitud debe permitir al menos una letra y un dígito")
+    aleatorio = secrets.SystemRandom()
+    caracteres = [aleatorio.choice(_ALFABETO_LETRAS), aleatorio.choice(_ALFABETO_DIGITOS)]
+    resto = _ALFABETO_LETRAS + _ALFABETO_DIGITOS
+    caracteres += [aleatorio.choice(resto) for _ in range(longitud - 2)]
+    aleatorio.shuffle(caracteres)
+    return "".join(caracteres)
+
+
 def create_token(
     subject: str,
     roles: list[str],

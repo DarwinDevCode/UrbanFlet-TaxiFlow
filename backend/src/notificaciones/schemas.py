@@ -3,7 +3,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-TipoAlerta = Literal["denegaciones_rbac", "gps_spoofing", "pipeline_fallido"]
+TipoAlerta = Literal[
+    "denegaciones_rbac", "gps_spoofing", "pipeline_fallido", "reporte_falla", "incidencia_operativa"
+]
 
 
 class ConfiguracionAlertaOut(BaseModel):

@@ -82,6 +82,112 @@ async def test_finalizar_viaje_calcula_tarifa_final(client, db, redis):
     assert conductor_db["conductor"]["estado_servicio"] == "DISPONIBLE"
 
 
+async def test_finalizar_viaje_desglosa_tarifa_con_piso_aplicado(client, db, redis):
+    """CU-O08 paso 3: viaje corto (fixture por defecto, ~0.5 km) -- el
+    subtotal de los 3 rubros no alcanza la carrera_minima (1.5 DIURNA), así
+    que tarifa_final queda en el piso, mayor que el subtotal desglosado."""
+    _, headers_conductor, _viaje_id = await _viaje_en_curso(
+        client, db, redis, conductor_id="cf-desg1", telefono="+593970300021", vehiculo_id="vf-desg1", placa="FIN0021"
+    )
+
+    resp = await client.post("/viajes/conductor/finalizar", headers=headers_conductor)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    desglose = body["desglose_tarifa"]
+    assert desglose is not None
+    assert desglose["arrancada"] == 0.5
+    # Los 3 rubros ya redondeados deben sumar exacto al subtotal.
+    assert round(desglose["arrancada"] + desglose["distancia"] + desglose["espera"], 2) == desglose["subtotal"]
+    # Viaje corto: el subtotal no alcanza la carrera mínima -> el piso se
+    # aplicó, tarifa_final queda por encima del subtotal desglosado.
+    assert desglose["subtotal"] < body["tarifa_final"]
+    assert body["tarifa_final"] == 1.5
+
+
+async def test_finalizar_viaje_desglosa_tarifa_sin_piso_aplicado(client, db, redis):
+    """Viaje con distancia real suficiente para superar la carrera_minima
+    (1.5 DIURNA) sin necesidad del piso -- subtotal == tarifa_final."""
+    _, headers_conductor, viaje_id = await _viaje_en_curso(
+        client, db, redis, conductor_id="cf-desg2", telefono="+593970300022", vehiculo_id="vf-desg2", placa="FIN0022"
+    )
+    # 2 reportes consecutivos de ~0.015 grados (~1.67 km) cada uno -- cada
+    # salto individual queda bajo el umbral anti-spoofing de
+    # `flota/service.py::_SALTO_IMPOSIBLE_KM` (3 km), pero la suma acumulada
+    # (~3.3 km) alcanza para que 0.5 (arrancada) + 0.35 * km > 1.5 sin
+    # necesidad del piso.
+    await client.post(
+        "/flota/posiciones",
+        headers=headers_conductor,
+        json={
+            "lat": -0.2001,
+            "lon": -78.5001,
+            "precision_m": 10,
+            "velocidad": 30,
+            "ts_dispositivo": "2026-07-29T12:00:10Z",
+        },
+    )
+    await client.post(
+        "/flota/posiciones",
+        headers=headers_conductor,
+        json={
+            "lat": -0.2151,
+            "lon": -78.5001,
+            "precision_m": 10,
+            "velocidad": 30,
+            "ts_dispositivo": "2026-07-29T12:00:15Z",
+        },
+    )
+    viaje_antes = await db.viajes.find_one({"_id": viaje_id})
+    assert viaje_antes["km_recorridos"] > 2.857  # (1.5 - 0.5) / 0.35
+
+    resp = await client.post("/viajes/conductor/finalizar", headers=headers_conductor)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    desglose = body["desglose_tarifa"]
+    assert desglose is not None
+    assert desglose["subtotal"] == body["tarifa_final"]
+    assert desglose["subtotal"] > 1.5
+
+
+async def test_finalizar_viaje_suma_km_recorridos_al_vehiculo(client, db, redis):
+    """Ronda 2, Fase B (H7): alimentación hacia adelante de
+    vehiculos.km_acumulado -- antes de este cambio el campo nunca se
+    escribía (confirmado en la auditoría: 81/81 vehículos reales en 0)."""
+    _, headers_conductor, viaje_id = await _viaje_en_curso(
+        client, db, redis, conductor_id="cf-km1", telefono="+593970300091", vehiculo_id="vf-km1", placa="FINKM001"
+    )
+    # `_viaje_en_curso` ya manda un primer reporte de posición tras
+    # "iniciar" (semilla de la traza, sin distancia acumulada todavía --
+    # `registrar_punto_traza` necesita un punto ANTERIOR para poder
+    # calcular una distancia). Un segundo reporte real es el que efectivamente
+    # suma km_recorridos.
+    await client.post(
+        "/flota/posiciones",
+        headers=headers_conductor,
+        json={
+            "lat": -0.1901,
+            "lon": -78.5001,
+            "precision_m": 10,
+            "velocidad": 30,
+            "ts_dispositivo": "2026-07-29T12:00:10Z",
+        },
+    )
+    viaje_antes = await db.viajes.find_one({"_id": viaje_id})
+    km_recorridos_antes_de_finalizar = viaje_antes["km_recorridos"]
+    assert km_recorridos_antes_de_finalizar > 0
+
+    vehiculo_antes = await db.vehiculos.find_one({"_id": "vf-km1"})
+    assert (vehiculo_antes.get("km_acumulado") or 0.0) == 0.0
+
+    resp = await client.post("/viajes/conductor/finalizar", headers=headers_conductor)
+    assert resp.status_code == 200
+
+    vehiculo_despues = await db.vehiculos.find_one({"_id": "vf-km1"})
+    assert vehiculo_despues["km_acumulado"] == km_recorridos_antes_de_finalizar
+
+
 async def test_finalizar_viaje_sin_destino_usa_posicion_actual(client, db, redis):
     _, headers_conductor, _viaje_id = await _viaje_en_curso(
         client,

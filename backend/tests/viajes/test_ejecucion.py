@@ -164,3 +164,62 @@ async def test_cancelar_por_conductor_en_curso_no_permitido(client, db, redis):
 
     assert resp.status_code == 409
     assert resp.json()["code"] == "TRANSICION_INVALIDA"
+
+
+async def test_recalculo_ruta_por_desvio_registra_evento_en_bitacora(client, db, redis):
+    """CU-O07 A6: el cliente ya recalculó la ruta -- este endpoint solo deja
+    el registro en bitácora que la spec exige (write-ahead, mismo mecanismo
+    que VIAJE_TRANSICION_ESTADO)."""
+    _, headers_conductor, viaje_id = await _asignar_viaje(
+        client, db, redis, conductor_id="ce8", telefono="+593970200018", vehiculo_id="ve8", placa="EJC0008"
+    )
+    await client.post("/viajes/conductor/en-camino", headers=headers_conductor)
+
+    resp = await client.post(
+        "/viajes/conductor/recalculo-ruta",
+        headers=headers_conductor,
+        json={
+            "lat": -0.21,
+            "lon": -78.52,
+            "distancia_desvio_km": 2.4,
+            "ruta_anterior": [[-0.1801, -78.5001], [-0.19, -78.51]],
+            "ruta_nueva": [[-0.21, -78.52], [-0.19, -78.51]],
+        },
+    )
+    assert resp.status_code == 204
+
+    evento = await db.bitacora.find_one({"accion": "VIAJE_RECALCULO_RUTA", "entidad_id": viaje_id})
+    assert evento is not None
+    assert evento["actor_id"] == "ce8"
+    assert evento["rol"] == "conductor"
+    assert evento["resultado"] == "OK"
+    assert evento["datos_previos"]["ruta"] == [[-0.1801, -78.5001], [-0.19, -78.51]]
+    assert evento["datos_posteriores"]["distancia_desvio_km"] == 2.4
+    assert evento["datos_posteriores"]["ruta"] == [[-0.21, -78.52], [-0.19, -78.51]]
+
+
+async def test_recalculo_ruta_sin_viaje_activo_devuelve_409(client, db):
+    await crear_conductor_con_vehiculo(
+        db,
+        conductor_id="ce9",
+        telefono="+593970200019",
+        vehiculo_id="ve9",
+        placa="EJC0009",
+        estado_servicio="DISPONIBLE",
+    )
+    headers_conductor = auth_headers("ce9", ["conductor"])
+
+    resp = await client.post(
+        "/viajes/conductor/recalculo-ruta",
+        headers=headers_conductor,
+        json={
+            "lat": -0.21,
+            "lon": -78.52,
+            "distancia_desvio_km": 2.4,
+            "ruta_anterior": [],
+            "ruta_nueva": [],
+        },
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "TRANSICION_INVALIDA"

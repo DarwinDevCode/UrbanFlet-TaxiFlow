@@ -121,5 +121,9 @@ async def obtener_gobernanza_datos(
             "meses": meses,
             "desde": desde,
             "fuente": "bitacora (Mongo) — sin rpt_* detrás, ver docstring del módulo",
+            # Tier 1, punto 6 (H-T5): `denegados_previos` ya es un conteo real
+            # (count_documents de la ventana anterior completa), no un promedio
+            # ponderado -- es el n real que respalda `variacion_accesos_denegados_pct`.
+            "registros_previos": {"variacion_accesos_denegados_pct": denegados_previos},
         },
     }

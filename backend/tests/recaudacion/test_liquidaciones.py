@@ -116,6 +116,35 @@ async def test_generar_liquidaciones_consolida_un_socio_del_periodo_cerrado(clie
     assert liq["detalle"][0]["viaje_id"] == "vjliq1"
 
 
+async def test_listar_liquidaciones_filtra_por_periodo_inicio_exacto(client, db):
+    """Punto 5 de la ronda de correcciones (agosto 2026): "Ver liquidaciones
+    de este periodo" reusa este mismo filtro."""
+    inicio, _fin = _periodo_actual_cerrado()
+    ts = inicio + timedelta(hours=1)
+    await crear_conductor_con_vehiculo(
+        db, conductor_id="cliqf1", telefono="+593970700099", vehiculo_id="vliqf1", placa="LIQF001"
+    )
+    await _sembrar_viaje_pagado(db, viaje_id="vjliqf1", conductor_id="cliqf1", monto=10.0, comision_pct=0.20, ts=ts)
+    headers_admin = await _admin_financiero_headers(db)
+
+    generado = await client.post("/liquidaciones/generar", headers=headers_admin)
+    periodo_inicio = generado.json()["periodo_inicio"]
+
+    # Vía `params=` (no interpolado en el string) -- el `.isoformat()` de un
+    # datetime UTC-aware trae un sufijo `+00:00`, y un `+` sin codificar en
+    # un querystring armado a mano se decodifica como espacio, lo que rompía
+    # el parseo del datetime en el segundo request de este mismo test.
+    resp = await client.get("/liquidaciones", params={"periodo_inicio": periodo_inicio}, headers=headers_admin)
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert len(items) == 1
+    assert items[0]["conductor_id"] == "cliqf1"
+
+    otro_periodo = (inicio - timedelta(days=7)).isoformat()
+    resp_vacio = await client.get("/liquidaciones", params={"periodo_inicio": otro_periodo}, headers=headers_admin)
+    assert resp_vacio.json()["items"] == []
+
+
 async def test_generar_liquidaciones_es_idempotente(client, db):
     inicio, _fin = _periodo_actual_cerrado()
     ts = inicio + timedelta(hours=1)

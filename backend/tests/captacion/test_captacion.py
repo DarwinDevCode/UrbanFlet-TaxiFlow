@@ -3,6 +3,21 @@ from tests.utils import auth_headers, crear_usuario_activo
 _VEHICULO = {"placa": "ABC-1234", "marca": "Toyota", "modelo": "Yaris", "anio": 2020, "color": "Blanco", "capacidad": 4}
 
 
+async def _subir_archivo_postulacion(client, headers_postulante):
+    """Sube un archivo real (contexto `documento_postulacion`) y devuelve su
+    id -- mismo flujo real que `enviar_solicitud_con_documentos` exige en vez
+    del `url_objeto`/`hash_archivo` de texto libre que aceptaba antes de
+    cerrar el gap (gestión documental en la postulación)."""
+    resp = await client.post(
+        "/archivos",
+        headers=headers_postulante,
+        data={"contexto": "documento_postulacion"},
+        files={"file": ("doc.jpg", b"\xff\xd8\xff" + b"0" * 50, "image/jpeg")},
+    )
+    assert resp.status_code == 201
+    return resp.json()["id"]
+
+
 def _solicitud_payload(**overrides) -> dict:
     payload = {
         "nombre": "Postulante Uno",
@@ -102,30 +117,50 @@ async def test_flujo_completo_tomar_y_aprobar_solicitud(client, db):
             {"_id": "td-matricula", "nombre": "MATRICULA", "descripcion": "", "aplica_a": "vehiculo", "activo": True},
         ]
     )
+    # Gestión documental en la postulación: flujo real de 2 pasos -- BORRADOR
+    # primero (todavía sin cuenta autenticable del lado del cliente hasta
+    # este punto no hace falta), subir cada archivo YA autenticado como el
+    # postulante recién creado, y recién ahí adjuntar+enviar.
     creada = await client.post(
         "/captacion/solicitudes",
         json=_solicitud_payload(
             telefono="+593910000006",
             cedula="0102030408",
             vehiculo={**_VEHICULO, "placa": "APR-0001"},
-            documentos=[
-                {
-                    "tipo": "LICENCIA",
-                    "propietario_tipo": "CONDUCTOR",
-                    "url_objeto": "https://storage.local/licencia.pdf",
-                    "hash_archivo": "abc123",
-                },
-                {
-                    "tipo": "MATRICULA",
-                    "propietario_tipo": "VEHICULO",
-                    "url_objeto": "https://storage.local/matricula.pdf",
-                    "hash_archivo": "def456",
-                },
-            ],
+            enviar=False,
         ),
     )
     solicitud_id = creada.json()["id"]
     usuario_id = creada.json()["usuario_id"]
+    assert creada.json()["estado"] == "BORRADOR"
+
+    headers_postulante = auth_headers(usuario_id, [])
+    archivo_licencia = await _subir_archivo_postulacion(client, headers_postulante)
+    archivo_matricula = await _subir_archivo_postulacion(client, headers_postulante)
+
+    enviada = await client.post(
+        "/captacion/solicitudes/mia/documentos",
+        headers=headers_postulante,
+        json={
+            "documentos": [
+                {
+                    "tipo": "LICENCIA",
+                    "propietario_tipo": "CONDUCTOR",
+                    "archivo_id": archivo_licencia,
+                    "fecha_vencimiento": "2030-01-01",
+                },
+                {
+                    "tipo": "MATRICULA",
+                    "propietario_tipo": "VEHICULO",
+                    "archivo_id": archivo_matricula,
+                    "fecha_vencimiento": "2030-01-01",
+                },
+            ]
+        },
+    )
+    assert enviada.status_code == 200
+    assert enviada.json()["estado"] == "ENVIADA"
+    assert len(enviada.json()["documentos"]) == 2
 
     tomar = await client.post(f"/captacion/solicitudes/{solicitud_id}/tomar", headers=headers)
     assert tomar.status_code == 200
@@ -271,17 +306,16 @@ async def test_listar_solicitudes_filtra_por_cedula(client, db):
 
 
 async def test_crear_solicitud_con_tipo_documento_no_reconocido_devuelve_422(client, db):
+    # La validación de tipo corre ANTES de crear la cuenta/resolver
+    # archivos (ver captacion/service.py::crear_solicitud) -- un
+    # `archivo_id` inventado nunca llega a resolverse, el 422 sale del
+    # catálogo, no de una subida real.
     payload = _solicitud_payload(
         telefono="+593910000070",
         cedula="0900000070",
         vehiculo={**_VEHICULO, "placa": "TDN-0001"},
         documentos=[
-            {
-                "tipo": "TIPO_INEXISTENTE",
-                "propietario_tipo": "CONDUCTOR",
-                "url_objeto": "https://storage.local/doc.pdf",
-                "hash_archivo": "abc123",
-            }
+            {"tipo": "TIPO_INEXISTENTE", "propietario_tipo": "CONDUCTOR", "archivo_id": "no-existe"}
         ],
     )
     resp = await client.post("/captacion/solicitudes", json=payload)
@@ -305,12 +339,7 @@ async def test_crear_solicitud_con_tipo_documento_inactivo_devuelve_422(client, 
         cedula="0900000071",
         vehiculo={**_VEHICULO, "placa": "TDN-0002"},
         documentos=[
-            {
-                "tipo": "CERTIFICADO_ANTECEDENTES",
-                "propietario_tipo": "CONDUCTOR",
-                "url_objeto": "https://storage.local/doc.pdf",
-                "hash_archivo": "abc123",
-            }
+            {"tipo": "CERTIFICADO_ANTECEDENTES", "propietario_tipo": "CONDUCTOR", "archivo_id": "no-existe"}
         ],
     )
     resp = await client.post("/captacion/solicitudes", json=payload)
@@ -320,22 +349,133 @@ async def test_crear_solicitud_con_tipo_documento_inactivo_devuelve_422(client, 
 
 
 async def test_crear_solicitud_con_tipo_documento_activo_es_aceptado(client, db):
+    # A diferencia de los 2 anteriores (fallan antes de tocar archivos), este
+    # SÍ necesita un archivo real y ownership real -- flujo de 2 pasos
+    # (BORRADOR -> subir -> enviar-con-documentos), igual que el flujo
+    # completo de arriba.
     await db.tipos_documento.insert_one(
         {"_id": "td-licencia-2", "nombre": "LICENCIA", "descripcion": "", "aplica_a": "conductor", "activo": True}
     )
-    payload = _solicitud_payload(
-        telefono="+593910000072",
-        cedula="0900000072",
-        vehiculo={**_VEHICULO, "placa": "TDN-0003"},
-        documentos=[
-            {
-                "tipo": "LICENCIA",
-                "propietario_tipo": "CONDUCTOR",
-                "url_objeto": "https://storage.local/doc.pdf",
-                "hash_archivo": "abc123",
-            }
-        ],
+    creada = await client.post(
+        "/captacion/solicitudes",
+        json=_solicitud_payload(
+            telefono="+593910000072", cedula="0900000072", vehiculo={**_VEHICULO, "placa": "TDN-0003"}, enviar=False
+        ),
     )
-    resp = await client.post("/captacion/solicitudes", json=payload)
+    usuario_id = creada.json()["usuario_id"]
+    headers_postulante = auth_headers(usuario_id, [])
+    archivo_id = await _subir_archivo_postulacion(client, headers_postulante)
 
-    assert resp.status_code == 201
+    resp = await client.post(
+        "/captacion/solicitudes/mia/documentos",
+        headers=headers_postulante,
+        json={"documentos": [{"tipo": "LICENCIA", "propietario_tipo": "CONDUCTOR", "archivo_id": archivo_id}]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["estado"] == "ENVIADA"
+    assert len(resp.json()["documentos"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Punto 9 de la ronda de correcciones (agosto 2026): `admin_captacion` ya no
+# puede editar libremente cédula/licencia/vehículo del postulante (ronda
+# "corrección acotada por estado", ahora retirada) -- la corrección de esos
+# datos, si hace falta, le corresponde al postulante, no a quien revisa. El
+# endpoint se eliminó por completo, este test fija que ya no existe.
+# ---------------------------------------------------------------------------
+
+
+async def test_correccion_de_solicitud_ya_no_existe(client, db):
+    creada = await client.post("/captacion/solicitudes", json=_solicitud_payload(telefono="+593910000101"))
+    solicitud_id = creada.json()["id"]
+    headers = await _admin_headers(db)
+
+    resp = await client.patch(
+        f"/captacion/solicitudes/{solicitud_id}/correccion",
+        headers=headers,
+        json={"cedula": "0999999999", "motivo": "intento tras la ronda de correcciones"},
+    )
+
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Gestión documental en la postulación -- POST /captacion/solicitudes/mia/documentos
+# ---------------------------------------------------------------------------
+
+
+async def test_enviar_solicitud_con_documentos_requiere_autenticacion(client):
+    resp = await client.post(
+        "/captacion/solicitudes/mia/documentos",
+        json={"documentos": [{"tipo": "X", "propietario_tipo": "CONDUCTOR", "archivo_id": "a"}]},
+    )
+    assert resp.status_code == 401
+
+
+async def test_enviar_solicitud_con_documentos_sin_borrador_propio_devuelve_404(client, db):
+    await crear_usuario_activo(db, usuario_id="u-sin-borrador", telefono="+593910000200", roles=[])
+    resp = await client.post(
+        "/captacion/solicitudes/mia/documentos",
+        headers=auth_headers("u-sin-borrador", []),
+        json={"documentos": [{"tipo": "X", "propietario_tipo": "CONDUCTOR", "archivo_id": "a"}]},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["code"] == "SOLICITUD_NO_ENCONTRADA"
+
+
+async def test_enviar_solicitud_con_documentos_rechaza_archivo_de_otro_dueno(client, db):
+    await db.tipos_documento.insert_one(
+        {"_id": "td-lic-3", "nombre": "LICENCIA", "descripcion": "", "aplica_a": "conductor", "activo": True}
+    )
+    creada = await client.post(
+        "/captacion/solicitudes",
+        json=_solicitud_payload(
+            telefono="+593910000201", cedula="0900000201", vehiculo={**_VEHICULO, "placa": "OWN-0001"}, enviar=False
+        ),
+    )
+    usuario_id = creada.json()["usuario_id"]
+
+    # Archivo subido por OTRO usuario, no por el dueño de este BORRADOR.
+    await crear_usuario_activo(db, usuario_id="u-otro-postulante", telefono="+593910000202", roles=[])
+    archivo_ajeno = await _subir_archivo_postulacion(client, auth_headers("u-otro-postulante", []))
+
+    resp = await client.post(
+        "/captacion/solicitudes/mia/documentos",
+        headers=auth_headers(usuario_id, []),
+        json={"documentos": [{"tipo": "LICENCIA", "propietario_tipo": "CONDUCTOR", "archivo_id": archivo_ajeno}]},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "ARCHIVO_NO_VALIDO_PARA_DOCUMENTO"
+
+
+async def test_enviar_solicitud_con_documentos_rechaza_contexto_incorrecto(client, db):
+    await db.tipos_documento.insert_one(
+        {"_id": "td-lic-4", "nombre": "LICENCIA", "descripcion": "", "aplica_a": "conductor", "activo": True}
+    )
+    creada = await client.post(
+        "/captacion/solicitudes",
+        json=_solicitud_payload(
+            telefono="+593910000203", cedula="0900000203", vehiculo={**_VEHICULO, "placa": "OWN-0002"}, enviar=False
+        ),
+    )
+    usuario_id = creada.json()["usuario_id"]
+    headers_postulante = auth_headers(usuario_id, [])
+
+    # Mismo dueño, pero subido con OTRO contexto (foto de perfil) -- no debe
+    # colarse como documento de postulación.
+    subida = await client.post(
+        "/archivos",
+        headers=headers_postulante,
+        data={"contexto": "foto_perfil"},
+        files={"file": ("foto.jpg", b"\xff\xd8\xff" + b"0" * 50, "image/jpeg")},
+    )
+    assert subida.status_code == 201
+
+    resp = await client.post(
+        "/captacion/solicitudes/mia/documentos",
+        headers=headers_postulante,
+        json={"documentos": [{"tipo": "LICENCIA", "propietario_tipo": "CONDUCTOR", "archivo_id": subida.json()["id"]}]},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "ARCHIVO_NO_VALIDO_PARA_DOCUMENTO"

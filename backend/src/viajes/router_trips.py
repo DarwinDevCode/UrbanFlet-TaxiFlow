@@ -21,6 +21,11 @@ class RolNoDisponibleError(DomainError):
         super().__init__(code="ROL_NO_DISPONIBLE", message=f"Tu cuenta no tiene el rol '{rol}'", status_code=403)
 
 
+class ViajeNoEncontradoError(DomainError):
+    def __init__(self) -> None:
+        super().__init__(code="VIAJE_NO_ENCONTRADO", message="El viaje no existe", status_code=404)
+
+
 class TokenInternoInvalidoError(DomainError):
     def __init__(self) -> None:
         super().__init__(code="TOKEN_INTERNO_INVALIDO", message="Token interno inválido", status_code=403)
@@ -39,7 +44,11 @@ async def _verificar_token_interno(x_internal_token: str | None = Header(default
         raise TokenInternoInvalidoError()
 
 
-def to_out(doc: dict) -> schemas.ViajeOut:
+def to_out(doc: dict, *, incluir_traza: bool = False) -> schemas.ViajeOut:
+    """`incluir_traza` está apagado por defecto a propósito: la traza GPS solo
+    tiene sentido en un endpoint de DETALLE (un viaje a la vez). En una lista
+    de historial multiplicaría el payload por cada fila sin que ninguna
+    pantalla la use ahí -- ver `ViajeOut.traza` y `service_historial.simplificar_traza`."""
     return schemas.ViajeOut(
         id=doc["_id"],
         pasajero_id=doc["pasajero_id"],
@@ -63,6 +72,7 @@ def to_out(doc: dict) -> schemas.ViajeOut:
         min_espera=doc.get("min_espera"),
         tarifa_estimada=doc.get("tarifa_estimada"),
         tarifa_final=doc.get("tarifa_final"),
+        desglose_tarifa=doc.get("desglose_tarifa"),
         motivo_cancelacion=doc.get("motivo_cancelacion"),
         conductor_nombre=doc.get("conductor_nombre"),
         conductor_calificacion=doc.get("conductor_calificacion"),
@@ -74,6 +84,8 @@ def to_out(doc: dict) -> schemas.ViajeOut:
         calificacion_conductor_a_pasajero=doc.get("calificacion_conductor_a_pasajero"),
         pasajero_nombre=doc.get("pasajero_nombre"),
         pasajero_calificacion=doc.get("pasajero_calificacion"),
+        pasajero_foto_url=doc.get("pasajero_foto_url"),
+        traza=service_historial.simplificar_traza(doc.get("traza")) if incluir_traza else None,
     )
 
 
@@ -89,10 +101,11 @@ async def solicitar_viaje(
 
 @router.post("/activo/cancelar", response_model=schemas.ViajeOut)
 async def cancelar_viaje(
+    body: schemas.CancelarViajePasajeroRequest,
     actor: Actor = Depends(_pasajero),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ):
-    viaje = await service.cancelar_viaje_pasajero(db, pasajero_id=actor.usuario_id)
+    viaje = await service.cancelar_viaje_pasajero(db, pasajero_id=actor.usuario_id, motivo=body.motivo)
     return to_out(viaje)
 
 
@@ -227,6 +240,19 @@ async def obtener_tasa_cancelacion(
     return [schemas.TasaCancelacionOut(**f) for f in filas]
 
 
+@router.get("/panel-tactico/desempeno-conductores", response_model=schemas.PanelDesempenoConductoresOut)
+async def obtener_panel_desempeno_conductores(
+    meses: int = Query(default=3, ge=1, le=24),
+    historico_completo: bool = Query(default=False),
+    incluir_inactivos: bool = Query(default=False),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+    _actor: Actor = Depends(_coordinador_operaciones),
+):
+    return await service.obtener_panel_desempeno_conductores(
+        db, meses=meses, historico_completo=historico_completo, incluir_inactivos=incluir_inactivos
+    )
+
+
 # Sección 3.3 de ux_complementaria.md: historial navegable de todos los
 # viajes de la cooperativa -- acceso restringido por rol (principio de
 # mínimo privilegio ya aplicado en Administración).
@@ -252,6 +278,26 @@ async def listar_historial_global(
     return schemas.HistorialOut(viajes=[to_out(v) for v in viajes], total=total, pagina=pagina, limite=limite)
 
 
+@router.get("/historial-global/{viaje_id}", response_model=schemas.ViajeOut)
+async def obtener_viaje_historial_global(
+    viaje_id: str,
+    _actor: Actor = Depends(_historial_global_roles),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+):
+    """Detalle de UN viaje para el historial global de `web-interno` (mapa del
+    recorrido incluido). Existe como ruta propia porque `GET /viajes/{viaje_id}`
+    (router_finalizacion.py) exige que el actor sea el pasajero o el conductor
+    de ese viaje — un rol interno de supervisión nunca lo es, así que ahí
+    siempre recibiría el 404 genérico. Mismo gate que la lista de la que se
+    abre, y mismo enriquecimiento de "contraparte limitada" (nombre de pila y
+    calificación del pasajero, nunca su contacto)."""
+    viaje = await db.viajes.find_one({"_id": viaje_id})
+    if viaje is None:
+        raise ViajeNoEncontradoError()
+    viaje = await service_historial.enriquecer_con_pasajero(db, viaje)
+    return to_out(viaje, incluir_traza=True)
+
+
 # Nivel estratégico — Panel de Confiabilidad y Disponibilidad del Servicio
 # (OE2a, nivel_estrategico.md §3.2.a). La spec lo asigna a `gerencia`; se
 # suma `coordinador_operaciones` porque es el mismo dominio que ya opera el
@@ -266,3 +312,30 @@ async def obtener_panel_confiabilidad(
     _actor: Actor = Depends(_confiabilidad_estrategico),
 ):
     return schemas.PanelConfiabilidadOut(**service.obtener_panel_confiabilidad(meses=meses))
+
+
+# Nivel estratégico -- Panel descriptivo de Desempeño de Conductores (N6
+# rediseñado, Tier 1 punto 7 / cierre Tier 1-2 punto 1.1). Decisión de
+# negocio ya cerrada: SIN ratio de concentración como KPI de cabecera.
+#
+# **Corregido en el cierre de Tier 1**: la primera versión reusaba TAL CUAL
+# el servicio táctico (misma granularidad mensual por conductor que ve
+# `coordinador_operaciones`) -- rompía el patrón de segunda capa de
+# agregación que siguen los otros 9 paneles estratégicos. Ahora llama a
+# `service.obtener_panel_estrategico_desempeno_conductores`, que agrega por
+# TRIMESTRE (no por mes) sobre las mismas 2 `rpt_*` -- ver el docstring de
+# esa función para el razonamiento completo de costo/beneficio.
+# Mismo criterio de roles que Confiabilidad (mismo dominio, mismo dueño).
+_desempeno_conductores_estrategico = require_roles("gerencia", "coordinador_operaciones")
+
+
+@router.get("/panel-estrategico/desempeno-conductores", response_model=schemas.PanelDesempenoTrimestralOut)
+async def obtener_panel_estrategico_desempeno_conductores(
+    trimestres: int = Query(default=4, ge=1, le=12),
+    historico_completo: bool = Query(default=False),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+    _actor: Actor = Depends(_desempeno_conductores_estrategico),
+):
+    return await service.obtener_panel_estrategico_desempeno_conductores(
+        db, trimestres=trimestres, historico_completo=historico_completo
+    )

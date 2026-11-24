@@ -8,6 +8,11 @@ from pydantic import BaseModel
 
 class RentabilidadKpisOut(BaseModel):
     margen_promedio_pct: float | None
+    # Cierre Tier 1-2, punto 2.1: variación PROPIA de `margen_promedio_pct`
+    # (antes el Tablero mostraba `variacion_recaudacion_trimestral_pct`, un
+    # KPI distinto). Compara el margen mensual (no el promedio de toda la
+    # ventana) de los últimos 2 meses.
+    variacion_margen_promedio_pct: float | None = None
     franja_menos_rentable: str | None
     margen_menos_rentable_pct: float | None
     recaudacion_ultimo_trimestre: float | None
@@ -54,6 +59,8 @@ class RentabilidadMetadataOut(BaseModel):
     # vive en el docstring del servicio.
     formula: str
     fuentes: list[str]
+    registros_previos: dict[str, int | None] | None = None
+    registros_previos_disponible: bool = True
 
 
 class PanelRentabilidadOut(BaseModel):
