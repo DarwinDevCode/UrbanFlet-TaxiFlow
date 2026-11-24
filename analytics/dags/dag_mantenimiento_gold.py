@@ -12,9 +12,15 @@ utilizable (`anular_orden` solo cambia `estado`+`motivo_anulacion`). El único
 datetime real y siempre presente quedó en `fecha_cierre`, que además es
 exactamente el momento en que el costo y el cumplimiento del plan se
 confirman -- mismo criterio que `fact_viaje` usa `ts_fin`, no `ts_solicitud`.
-Las órdenes ABIERTA/EN_TALLER/ANULADA quedan fuera de este fact (no tienen
-costo ni fecha de cierre que aportar); no es una omisión, es coherente con
-"un hecho == un evento de negocio confirmado".
+Las órdenes ABIERTA/EN_TALLER/ESPERANDO_REPUESTO/ANULADA quedan fuera de
+este fact (no tienen costo ni fecha de cierre que aportar); no es una
+omisión, es coherente con "un hecho == un evento de negocio confirmado".
+`ESPERANDO_REPUESTO` (Ronda 2, Fase E del flujo de fallas) es un estado
+intermedio nuevo entre EN_TALLER y CERRADA -- verificado explícitamente
+contra este DAG antes de agregarlo: el filtro de abajo es
+`{"estado": "CERRADA", ...}`, así que una orden en este estado nuevo cae en
+el mismo bucket "sin fecha_cierre todavía" que ya excluía EN_TALLER, sin
+necesitar ningún cambio de código acá.
 
 Nota de alcance -- no existe una spec de nivel táctico en este repo
 (`specs/nivel-tactico/` está vacío; ver CLAUDE.md §1) que defina la

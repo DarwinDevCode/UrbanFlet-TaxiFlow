@@ -1,0 +1,80 @@
+<?xml version="1.0"?>
+<!--
+  Causa raíz real del MEMORY_LIMIT_EXCEEDED que bloqueaba dag_finanzas_gold
+  (y, antes, dag_viajes_core, CLAUDE.md §8.6b): NO era el volumen de datos
+  de negocio (`urbanflet_gold.*` completo pesa ~300MB en disco, con índices
+  primarios en memoria de apenas unos KB por tabla, medido con
+  `system.parts` antes de tocar nada) ni una consulta ineficiente (el
+  `SELECT DISTINCT` que fallaba necesitaba ~100MB de scratch para deduplicar
+  1.2M filas, una cifra normal). La causa real: las tablas de log internas
+  de ClickHouse (`system.text_log`, `system.asynchronous_metric_log`,
+  `system.trace_log`, etc.) vienen SIN ningún TTL en la imagen stock, y
+  llevaban acumulando sin límite desde 2026-07-29 (confirmado con
+  `min(event_time)` real) hasta 51.6 millones de filas en `text_log`
+  (1.73GB en disco, 27.4GB descomprimido) y 198.8 millones en
+  `asynchronous_metric_log`. Eso empujaba el RSS en reposo del servidor a
+  ~1.3GB de un techo interno de 1.37GB (`max_server_memory_usage`,
+  memoria.xml), dejando margen real para casi ninguna consulta, sin
+  importar cuánto se subiera `mem_limit` del contenedor (subirlo solo
+  habría corrido la misma acumulación un poco más adelante en el tiempo).
+
+  Confirmado con el experimento real: truncar estas tablas bajó el RSS real
+  del proceso de ~1.13GiB a ~581MiB de inmediato (medido con
+  `/proc/1/status` VmRSS dentro del contenedor), y la consulta que fallaba
+  pasó a ejecutarse sin error. Este archivo es la corrección permanente:
+  sin TTL, el problema iba a volver a aparecer en unas semanas más de uso
+  normal del stack, sin que nada en el código de la aplicación lo causara.
+
+  TTLs elegidos: 3 días para los logs de diagnóstico de bajo valor una vez
+  pasado el momento (texto/trazas/métricas/perfilado de queries, nadie
+  audita un `text_log` de hace 2 semanas), 7 días para `query_log`/
+  `part_log` (más útiles para investigar un incidente puntual unos días
+  después de que ocurrió). Ninguna de estas tablas la lee código de la
+  aplicación (`backend/`, `analytics/`), confirmado por grep antes de tocar
+  esto: son puramente de observabilidad del propio ClickHouse.
+-->
+<clickhouse>
+    <query_log replace="1">
+        <database>system</database>
+        <table>query_log</table>
+        <ttl>event_date + INTERVAL 7 DAY</ttl>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    </query_log>
+    <part_log replace="1">
+        <database>system</database>
+        <table>part_log</table>
+        <ttl>event_date + INTERVAL 7 DAY</ttl>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    </part_log>
+    <trace_log replace="1">
+        <database>system</database>
+        <table>trace_log</table>
+        <ttl>event_date + INTERVAL 3 DAY</ttl>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    </trace_log>
+    <text_log replace="1">
+        <database>system</database>
+        <table>text_log</table>
+        <ttl>event_date + INTERVAL 3 DAY</ttl>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    </text_log>
+    <metric_log replace="1">
+        <database>system</database>
+        <table>metric_log</table>
+        <ttl>event_date + INTERVAL 3 DAY</ttl>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+        <collect_interval_milliseconds>1000</collect_interval_milliseconds>
+    </metric_log>
+    <asynchronous_metric_log replace="1">
+        <database>system</database>
+        <table>asynchronous_metric_log</table>
+        <ttl>event_date + INTERVAL 3 DAY</ttl>
+        <flush_interval_milliseconds>7000</flush_interval_milliseconds>
+    </asynchronous_metric_log>
+    <processors_profile_log replace="1">
+        <database>system</database>
+        <table>processors_profile_log</table>
+        <ttl>event_date + INTERVAL 3 DAY</ttl>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    </processors_profile_log>
+</clickhouse>

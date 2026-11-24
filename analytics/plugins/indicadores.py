@@ -156,6 +156,29 @@ def ensure_schema_indicadores() -> None:
         )
         ENGINE = MergeTree ORDER BY (fecha_datos, dag_id)
         """,
+        # Punto 3 de la ronda de mejoras de claridad y profundidad analítica
+        # (agosto 2026) -- nuevo dashboard táctico "Rendimiento de Conductores".
+        # Ver refrescar_desempeno_conductor()/refrescar_ingreso_conductor() para
+        # el porqué de 2 tablas separadas (fuentes Gold con grano de periodo
+        # distinto: fact_viaje/fact_ciclo_viaje son por viaje, fact_liquidacion
+        # es por ciclo de liquidación semanal -- ambas se bucketan a mes acá).
+        """
+        CREATE TABLE IF NOT EXISTS urbanflet_gold.rpt_desempeno_conductor
+        (
+            conductor_id String, periodo String, viajes_completados UInt32,
+            viajes_cancelados UInt32, pct_exito Float64, calificacion_promedio Nullable(Float64),
+            fecha_datos Date, actualizado_en DateTime
+        )
+        ENGINE = MergeTree ORDER BY (fecha_datos, periodo, conductor_id)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS urbanflet_gold.rpt_ingreso_conductor
+        (
+            conductor_id String, periodo String, bruto Float64, comisiones Float64,
+            neto Float64, fecha_datos Date, actualizado_en DateTime
+        )
+        ENGINE = MergeTree ORDER BY (fecha_datos, periodo, conductor_id)
+        """,
     ]
     for ddl in ddls:
         client.command(ddl)
@@ -695,6 +718,31 @@ def refrescar_tiempo_asignacion() -> bool:
 # ---------------------------------------------------------------------------
 # SIN_CONDUCTOR se trata como demanda desatendida (spec): sin motivo/actor
 # explicito de cancelacion, se etiqueta motivo='SIN_CONDUCTOR', actor='sistema'.
+#
+# Defecto corregido (ronda de correcciones, agosto 2026): la version anterior
+# calculaba `solicitados` con el MISMO `GROUP BY periodo, zona, motivo, actor`
+# que particiona los cancelados -- como cada fila de ese agrupamiento, salvo
+# el bucket motivo='N/A' (viajes NO cancelados), contiene EXCLUSIVAMENTE
+# viajes cancelados, `solicitados` terminaba siendo un sinonimo de
+# `cancelados` en la practica (`HAVING cancelados > 0` descarta el resto), asi
+# que `tasa_cancelacion` por fila valia SIEMPRE 1.0 y cualquier consumidor que
+# sumara `solicitados` entre filas heredaba ese mismo 100% ficticio -- nunca
+# el universo real de viajes solicitados. Confirmado contra el dato real:
+# `PanelDespacho.tsx` (tactico) sumaba las filas de este informe sin ningun
+# filtro y mostraba 100.0% de forma permanente, sin importar el periodo.
+#
+# Corregido con un JOIN contra una segunda agregacion (`totales`, sin la
+# dimension motivo/actor) que calcula el UNIVERSO real de viajes solicitados
+# por (periodo, zona) -- se repite igual en cada fila de desglose de ese
+# mismo periodo/zona, por diseno (es el mismo denominador para las N filas de
+# motivo/actor que comparten periodo+zona). Un consumidor que sume
+# `cancelados` entre filas de un periodo sigue obteniendo el total correcto
+# (los buckets de cancelados son disjuntos, sin cambios ahi); uno que quiera
+# el `solicitados`/`tasa_cancelacion` agregado del periodo debe deduplicar
+# por zona primero (una fila por zona, no una por motivo/actor) antes de
+# sumar -- ver `obtener_panel_confiabilidad` (backend) y
+# `PanelDespacho.tsx::tasaCancelacionGlobal` (frontend), los 2 unicos
+# consumidores reales, ya corregidos con ese mismo criterio.
 
 def refrescar_tasa_cancelacion() -> bool:
     ensure_schema_indicadores()
@@ -709,16 +757,33 @@ def refrescar_tasa_cancelacion() -> bool:
         filas = client.query(
             """
             SELECT
-                substring(toString(ts_solicitud), 1, 7) AS periodo,
-                ifNull(zona_origen_id, 'DESCONOCIDA') AS zona_origen_id,
-                multiIf(estado = 'SIN_CONDUCTOR', 'SIN_CONDUCTOR', motivo_cancelacion IS NOT NULL, motivo_cancelacion, 'N/A') AS motivo,
-                ifNull(actor_cancelacion, 'sistema') AS actor,
-                countIf(estado IN ('CANCELADO', 'SIN_CONDUCTOR')) AS cancelados,
-                count() AS solicitados,
-                countIf(estado IN ('CANCELADO', 'SIN_CONDUCTOR')) / count() AS tasa_cancelacion
-            FROM urbanflet_gold.fact_ciclo_viaje
-            GROUP BY periodo, zona_origen_id, motivo, actor
-            HAVING cancelados > 0
+                desglose.periodo AS periodo,
+                desglose.zona_origen_id AS zona_origen_id,
+                desglose.motivo AS motivo,
+                desglose.actor AS actor,
+                desglose.cancelados AS cancelados,
+                totales.solicitados AS solicitados,
+                desglose.cancelados / totales.solicitados AS tasa_cancelacion
+            FROM (
+                SELECT
+                    substring(toString(ts_solicitud), 1, 7) AS periodo,
+                    ifNull(zona_origen_id, 'DESCONOCIDA') AS zona_origen_id,
+                    multiIf(estado = 'SIN_CONDUCTOR', 'SIN_CONDUCTOR', motivo_cancelacion IS NOT NULL, motivo_cancelacion, 'N/A') AS motivo,
+                    ifNull(actor_cancelacion, 'sistema') AS actor,
+                    countIf(estado IN ('CANCELADO', 'SIN_CONDUCTOR')) AS cancelados
+                FROM urbanflet_gold.fact_ciclo_viaje
+                GROUP BY periodo, zona_origen_id, motivo, actor
+                HAVING cancelados > 0
+            ) AS desglose
+            INNER JOIN (
+                SELECT
+                    substring(toString(ts_solicitud), 1, 7) AS periodo,
+                    ifNull(zona_origen_id, 'DESCONOCIDA') AS zona_origen_id,
+                    count() AS solicitados
+                FROM urbanflet_gold.fact_ciclo_viaje
+                GROUP BY periodo, zona_origen_id
+            ) AS totales
+            ON desglose.periodo = totales.periodo AND desglose.zona_origen_id = totales.zona_origen_id
             ORDER BY periodo, zona_origen_id
             """
         ).result_rows
@@ -785,6 +850,126 @@ def refrescar_cuarentena_dominio() -> bool:
         client.close()
 
 
+# ---------------------------------------------------------------------------
+# Informe 14/15 -- Rendimiento de conductores (dag_viajes_core/dag_finanzas_gold)
+# Punto 3 de la ronda de mejoras de claridad y profundidad analítica (agosto
+# 2026). Ver CLAUDE.md §17.4 para la justificación de negocio de cada campo.
+# ---------------------------------------------------------------------------
+# 2 tablas, no 1: fact_viaje/fact_ciclo_viaje (grano = un viaje) y
+# fact_liquidacion (grano = un ciclo de liquidación semanal, ya bucketado a
+# mes acá para que comparta la misma clave `periodo` que la primera) tienen
+# grano de tiempo distinto -- combinarlas en una sola consulta ClickHouse
+# obligaría a un FULL OUTER JOIN de dos agregaciones ya resueltas, que
+# ClickHouse soporta pero complica la lectura sin ganar nada: el endpoint que
+# las consume (viajes/service.py::obtener_panel_desempeno_conductores) ya las
+# combina por clave (conductor_id, periodo) en Python, mismo patrón que usa
+# `dag_flota_gold` para resolver `estado_servicio` con un join de lectura.
+
+def refrescar_desempeno_conductor() -> bool:
+    ensure_schema_indicadores()
+    client = medallion.get_client()
+    try:
+        if not _ultima_corrida_ok_o_warn(client, "dag_viajes_core"):
+            LOGGER.warning(
+                "rpt_desempeno_conductor: ultima corrida de dag_viajes_core no OK/WARN, se omite el refresco de hoy."
+            )
+            return False
+
+        completados = {
+            (cid, periodo): (n, calif)
+            for cid, periodo, n, calif in client.query(
+                """
+                SELECT
+                    conductor_id,
+                    formatDateTime(ts_fin, '%Y-%m') AS periodo,
+                    count() AS viajes_completados,
+                    avgIf(calificacion_puntaje, calificacion_puntaje IS NOT NULL) AS calificacion_promedio
+                FROM urbanflet_gold.fact_viaje
+                WHERE conductor_id != ''
+                GROUP BY conductor_id, periodo
+                """
+            ).result_rows
+        }
+        cancelados = {
+            (cid, periodo): n
+            for cid, periodo, n in client.query(
+                """
+                SELECT
+                    conductor_id,
+                    formatDateTime(ts_solicitud, '%Y-%m') AS periodo,
+                    countIf(estado = 'CANCELADO') AS viajes_cancelados
+                FROM urbanflet_gold.fact_ciclo_viaje
+                WHERE conductor_id IS NOT NULL AND conductor_id != ''
+                GROUP BY conductor_id, periodo
+                HAVING viajes_cancelados > 0
+                """
+            ).result_rows
+        }
+
+        claves = set(completados) | set(cancelados)
+        hoy = date.today()
+        ahora = datetime.utcnow()
+        registros = []
+        for cid, periodo in claves:
+            n_completados, calificacion = completados.get((cid, periodo), (0, None))
+            n_cancelados = cancelados.get((cid, periodo), 0)
+            total = n_completados + n_cancelados
+            pct_exito = (n_completados / total) if total > 0 else 0.0
+            registros.append([
+                cid, periodo, n_completados, n_cancelados, pct_exito, calificacion, hoy, ahora,
+            ])
+
+        if registros:
+            client.insert(
+                "urbanflet_gold.rpt_desempeno_conductor",
+                registros,
+                column_names=[
+                    "conductor_id", "periodo", "viajes_completados", "viajes_cancelados",
+                    "pct_exito", "calificacion_promedio", "fecha_datos", "actualizado_en",
+                ],
+            )
+        LOGGER.info("rpt_desempeno_conductor: %d filas de snapshot insertadas (fecha_datos=%s).", len(registros), hoy)
+        return True
+    finally:
+        client.close()
+
+
+def refrescar_ingreso_conductor() -> bool:
+    ensure_schema_indicadores()
+    client = medallion.get_client()
+    try:
+        if not _ultima_corrida_ok_o_warn(client, "dag_finanzas_gold"):
+            LOGGER.warning(
+                "rpt_ingreso_conductor: ultima corrida de dag_finanzas_gold no OK/WARN, se omite el refresco de hoy."
+            )
+            return False
+
+        filas = client.query(
+            """
+            SELECT
+                conductor_id,
+                formatDateTime(periodo_inicio, '%Y-%m') AS periodo,
+                sum(bruto) AS bruto, sum(comisiones) AS comisiones, sum(neto) AS neto
+            FROM urbanflet_gold.fact_liquidacion
+            GROUP BY conductor_id, periodo
+            """
+        ).result_rows
+
+        hoy = date.today()
+        ahora = datetime.utcnow()
+        registros = [[cid, periodo, bruto, comisiones, neto, hoy, ahora] for cid, periodo, bruto, comisiones, neto in filas]
+        if registros:
+            client.insert(
+                "urbanflet_gold.rpt_ingreso_conductor",
+                registros,
+                column_names=["conductor_id", "periodo", "bruto", "comisiones", "neto", "fecha_datos", "actualizado_en"],
+            )
+        LOGGER.info("rpt_ingreso_conductor: %d filas de snapshot insertadas (fecha_datos=%s).", len(registros), hoy)
+        return True
+    finally:
+        client.close()
+
+
 REFRESCOS = {
     "flota_activa_franja": refrescar_flota_activa,
     "tasa_discrepancias": refrescar_tasa_discrepancias,
@@ -799,4 +984,6 @@ REFRESCOS = {
     "tiempo_asignacion": refrescar_tiempo_asignacion,
     "tasa_cancelacion": refrescar_tasa_cancelacion,
     "cuarentena_dominio": refrescar_cuarentena_dominio,
+    "desempeno_conductor": refrescar_desempeno_conductor,
+    "ingreso_conductor": refrescar_ingreso_conductor,
 }

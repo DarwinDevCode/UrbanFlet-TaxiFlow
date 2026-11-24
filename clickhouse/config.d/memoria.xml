@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<!--
+  Techo absoluto de memoria, en vez del default (max_server_memory_usage=0,
+  que en config.xml se resuelve a "max_server_memory_usage_to_ram_ratio (0.9)
+  del RAM disponible"). Dentro de un contenedor con mem_limit, ClickHouse lee
+  el límite del cgroup como "RAM disponible", así que ese 90% escala junto
+  con cualquier subida de mem_limit en docker-compose.yml, dejando siempre el
+  mismo margen relativo (aprox. 10%) sin importar cuánto se suba el
+  contenedor. Ver la nota en docker-compose.yml (servicio clickhouse,
+  2026-08-18) para el hallazgo real que motivó este archivo: dag_viajes_core
+  fallaba con MEMORY_LIMIT_EXCEEDED de forma reproducible al deduplicar
+  contra fact_viaje/fact_ciclo_viaje (aprox. 1.3M filas cada una). Subir
+  mem_limit de 1400m a 1700m no alcanzó, porque el techo interno subió
+  proporcionalmente con el contenedor (de aprox. 1.23GiB a 1.49GiB, siempre
+  cerca del 90% del límite).
+
+  Con mem_limit del contenedor en 1700m: 1400MB de techo absoluto deja
+  aprox. 300MB de margen para el propio proceso y el sistema operativo, por
+  fuera de la contabilidad interna de ClickHouse. Las cachés bajadas de sus
+  valores por defecto (8GB y 5GB, un techo que nunca sirvió para limitar
+  nada en este entorno) a 300MB cada una dejan espacio real, no solo
+  teórico, para el pico de una consulta que necesita varios cientos de MB
+  de una sola vez.
+-->
+<clickhouse>
+    <max_server_memory_usage>1468006400</max_server_memory_usage>
+    <uncompressed_cache_size>314572800</uncompressed_cache_size>
+    <mark_cache_size>314572800</mark_cache_size>
+</clickhouse>

@@ -68,3 +68,5 @@ with DAG(
     PythonOperator(task_id="tiempo_asignacion", python_callable=indicadores.refrescar_tiempo_asignacion)
     PythonOperator(task_id="tasa_cancelacion", python_callable=indicadores.refrescar_tasa_cancelacion)
     PythonOperator(task_id="cuarentena_dominio", python_callable=indicadores.refrescar_cuarentena_dominio)
+    PythonOperator(task_id="desempeno_conductor", python_callable=indicadores.refrescar_desempeno_conductor)
+    PythonOperator(task_id="ingreso_conductor", python_callable=indicadores.refrescar_ingreso_conductor)

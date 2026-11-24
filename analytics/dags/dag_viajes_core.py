@@ -127,6 +127,7 @@ def _extraer(**context):
             "km_recorridos": v.get("km_recorridos"),
             "tarifa_final": v.get("tarifa_final"),
             "monto_pagado": pago.get("monto") if pago else None,
+            "calificacion_puntaje": (v.get("calificacion_pasajero_a_conductor") or {}).get("puntaje"),
         })
 
     crudos_ciclo = [{
@@ -138,6 +139,10 @@ def _extraer(**context):
         "ts_asignacion": v.get("ts_asignacion"),
         "motivo_cancelacion": v.get("motivo_cancelacion"),
         "actor_cancelacion": v.get("actor_cancelacion"),
+        # Punto 3 de la ronda de mejoras (agosto 2026): identidad del socio, para
+        # el nuevo dashboard "Rendimiento de Conductores" (rpt_desempeno_conductor).
+        # Nullable a propósito -- un SIN_CONDUCTOR nunca tuvo conductor asignado.
+        "conductor_id": str(v.get("conductor_id")) if v.get("conductor_id") else None,
     } for v in ciclo_viajes]
 
     n = medallion.insertar_bronze("bronze_viajes", crudos, lote_id)
@@ -265,6 +270,7 @@ def _gold(**context):
             "km_recorridos": km, "duracion_min": dur_min, "tarifa_final": r.get("tarifa_final") or 0,
             "ts_solicitud": r.get("ts_solicitud"), "ts_fin": r.get("ts_fin"),
             "fecha": fecha_logica, "lote_id": lote_id,
+            "calificacion_puntaje": r.get("calificacion_puntaje"),
         })
 
     n_viaje = medallion.cargar_gold_idempotente("fact_viaje", filas_viaje, fecha_logica, lote_id)
@@ -274,7 +280,7 @@ def _gold(**context):
         "viaje_id": r["viaje_id"], "estado": r["estado"], "zona_origen_id": r.get("zona_origen_id"),
         "franja": r.get("franja") or "", "ts_solicitud": r["ts_solicitud"], "ts_asignacion": r.get("ts_asignacion"),
         "motivo_cancelacion": r.get("motivo_cancelacion"), "actor_cancelacion": r.get("actor_cancelacion"),
-        "fecha": fecha_logica, "lote_id": lote_id,
+        "fecha": fecha_logica, "lote_id": lote_id, "conductor_id": r.get("conductor_id"),
     } for r in validos_ciclo]
     n_ciclo = medallion.cargar_gold_idempotente("fact_ciclo_viaje", filas_ciclo, fecha_logica, lote_id)
     LOGGER.info("Gold viajes: %d filas en fact_ciclo_viaje (fecha=%s)", n_ciclo, fecha_logica)

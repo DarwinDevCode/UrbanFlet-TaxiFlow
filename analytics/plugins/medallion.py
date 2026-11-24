@@ -101,7 +101,7 @@ def ensure_schema() -> None:
         estado String, origen_lat Float64, origen_lon Float64, destino_lat Float64,
         destino_lon Float64, franja String, ts_solicitud DateTime, ts_inicio Nullable(DateTime),
         ts_fin Nullable(DateTime), km_recorridos Nullable(Float64), tarifa_final Nullable(Float64),
-        monto_pagado Nullable(Float64)
+        monto_pagado Nullable(Float64), calificacion_puntaje Nullable(UInt8)
         """,
     ))
     ddls.append(_bronze_ddl(
@@ -145,7 +145,8 @@ def ensure_schema() -> None:
         """
         viaje_id String, estado String, zona_origen_id Nullable(String), franja String,
         ts_solicitud DateTime, ts_asignacion Nullable(DateTime),
-        motivo_cancelacion Nullable(String), actor_cancelacion Nullable(String)
+        motivo_cancelacion Nullable(String), actor_cancelacion Nullable(String),
+        conductor_id Nullable(String)
         """,
     ))
     ddls.append(_bronze_ddl(
@@ -196,7 +197,8 @@ def ensure_schema() -> None:
         viaje_id String, pasajero_id String, conductor_id String, vehiculo_id String,
         zona_origen_id String, zona_destino_id String, franja String,
         km_recorridos Float64, duracion_min Float64, tarifa_final Float64,
-        ts_solicitud DateTime, ts_fin DateTime, fecha Date, lote_id String
+        ts_solicitud DateTime, ts_fin DateTime, fecha Date, lote_id String,
+        calificacion_puntaje Nullable(UInt8)
     )
     ENGINE = MergeTree PARTITION BY fecha ORDER BY (fecha, viaje_id)
     """)
@@ -255,7 +257,7 @@ def ensure_schema() -> None:
         viaje_id String, estado String, zona_origen_id Nullable(String), franja String,
         ts_solicitud DateTime, ts_asignacion Nullable(DateTime),
         motivo_cancelacion Nullable(String), actor_cancelacion Nullable(String),
-        fecha Date, lote_id String
+        fecha Date, lote_id String, conductor_id Nullable(String)
     )
     ENGINE = MergeTree PARTITION BY fecha ORDER BY (fecha, viaje_id)
     """)
