@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /
 COPY pyproject.toml ./
 COPY src ./src
 COPY tests ./tests
+COPY scripts ./scripts
 RUN pip install --no-cache-dir -e ".[dev]"
 
 EXPOSE 8000

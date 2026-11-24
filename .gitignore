@@ -29,6 +29,13 @@ mongodata/
 # obtenerlo y dónde debe quedar montado (data/nyc_taxi/yellow_tripdata.csv).
 data/nyc_taxi/
 
+# Fotos ficticias de las 26 personas sembradas por
+# backend/scripts/seed_usuarios_ficticios.py (~51MB, recurso externo
+# adjuntado por el usuario, no código fuente) -- ver el docstring del script
+# para cómo reobtenerlas y dónde deben quedar montadas dentro del
+# contenedor del backend antes de correrlo.
+analytics/seed_data/avatares/
+
 # Airflow
 analytics/logs/
 analytics/plugins/__pycache__/

@@ -1,0 +1,16 @@
+# Contexto de build del backend: solo código y pyproject. Las dependencias se
+# instalan dentro de la imagen con pip.
+.venv
+venv
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.ruff_cache
+.coverage
+coverage.json
+htmlcov
+*.log
+.env
+.env.*
+build
+dist

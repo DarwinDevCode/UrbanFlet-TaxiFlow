@@ -8,7 +8,13 @@ services:
   mongo:
     image: mongo:7
     restart: unless-stopped
-    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    # --wiredTigerCacheSizeGB explícito: sin esto, WiredTiger apunta por
+    # defecto a ~50% de la RAM que ve el contenedor para su caché -- con
+    # mem_limit puesto, eso podría empujar el proceso completo (caché +
+    # overhead de conexiones/índices/oplog) muy cerca del techo. 1GB de
+    # caché dentro de un mem_limit de 2200m deja ~1.2GB de margen real.
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--wiredTigerCacheSizeGB", "1"]
+    mem_limit: 2200m
     ports:
       - "27017:27017"
     volumes:
@@ -29,6 +35,10 @@ services:
   mongo-init:
     image: mongo:7
     restart: "no"
+    # One-shot (rs.initiate + polling hasta PRIMARY, sale) -- límite bajo
+    # defensivo, no cuenta contra el presupuesto de 7.5GB porque no queda
+    # vivo en operación normal.
+    mem_limit: 300m
     depends_on:
       mongo:
         condition: service_healthy
@@ -60,6 +70,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    mem_limit: 150m
     ports:
       - "6379:6379"
     healthcheck:
@@ -72,7 +83,10 @@ services:
   backend:
     build:
       context: ./backend
+    # Tag propio: lo reutilizan `seed` y `flota-simulador` sin reconstruir.
+    image: urbanflet-backend:local
     restart: unless-stopped
+    mem_limit: 500m
     env_file: .env
     environment:
       MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
@@ -87,6 +101,9 @@ services:
       # del bind mount de código -- un respaldo real debe sobrevivir a
       # recrear el contenedor, y nunca debe mezclarse con el código fuente.
       - respaldos_data:/app/respaldos
+      # Fase A de la Ronda 2 (flujo de fallas): mismo patrón para archivos
+      # subidos (evidencia fotográfica de incidencias/órdenes).
+      - archivos_data:/app/archivos
     depends_on:
       mongo:
         condition: service_healthy
@@ -94,11 +111,105 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/salud')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # --- Datos de demostración (una sola vez) ---
+  # Crea configuración base (tarifas, comisión, catálogos), cuentas de prueba
+  # y ~3 meses de operación ficticia en Quevedo pasando por los servicios
+  # reales del backend. Idempotente: si la base ya fue sembrada, sale sin
+  # hacer nada. Ver backend/scripts/seed_demo_portafolio.py.
+  seed:
+    image: urbanflet-backend:local
+    restart: "no"
+    mem_limit: 512m
+    env_file: .env
+    environment:
+      MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      # Mismo volumen que `backend`: las imágenes de documentos y evidencias
+      # que sube la siembra las sirve después GET /archivos/{id}.
+      - archivos_data:/app/archivos
+    command: ["python", "-m", "scripts.seed_demo_portafolio"]
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # --- Solo demo: mueve en el mapa a los socios que están en turno ---
+  # (en producción cada conductor reporta su GPS desde web-conductor).
+  flota-simulador:
+    image: urbanflet-backend:local
+    restart: unless-stopped
+    mem_limit: 160m
+    env_file: .env
+    environment:
+      MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
+      REDIS_URL: redis://redis:6379/0
+    command: ["python", "-m", "scripts.simular_flota_demo"]
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+
+  # --- Los 3 clientes web (build de producción de Vite servido por nginx) ---
+  # El navegador -- no el contenedor -- es quien llama a la API, por eso
+  # VITE_API_URL es la URL del backend vista desde el host.
+  web-pasajero:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        APP: web-pasajero
+        VITE_API_URL: ${PUBLIC_API_URL:-http://localhost:8000}
+        VITE_GOOGLE_MAPS_API_KEY: ${VITE_GOOGLE_MAPS_API_KEY:-}
+    restart: unless-stopped
+    mem_limit: 64m
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  web-conductor:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        APP: web-conductor
+        VITE_API_URL: ${PUBLIC_API_URL:-http://localhost:8000}
+        VITE_GOOGLE_MAPS_API_KEY: ${VITE_GOOGLE_MAPS_API_KEY:-}
+    restart: unless-stopped
+    mem_limit: 64m
+    ports:
+      - "5174:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  web-interno:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        APP: web-interno
+        VITE_API_URL: ${PUBLIC_API_URL:-http://localhost:8000}
+    restart: unless-stopped
+    mem_limit: 64m
+    ports:
+      - "5175:80"
+    depends_on:
+      backend:
+        condition: service_healthy
 
   # --- BD de dataset crudo: exclusivamente 2021 Yellow Taxi Trip Data (línea 43, 52) ---
   pocketbase:
     image: ghcr.io/muchobien/pocketbase:latest
     restart: unless-stopped
+    mem_limit: 150m
     ports:
       - "8090:8090"
     volumes:
@@ -113,15 +224,39 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:24
     restart: unless-stopped
+    # 1700m: subido desde 1400m (2026-08-18), sospechando que el RSS en
+    # reposo alto venía de mark caches/metadata de las tablas
+    # rpt_*/fact_*/bronze_*. Esa hipótesis quedó DESCARTADA con evidencia
+    # real (2026-08-25): `system.parts` mostró que el índice primario +
+    # marks de TODAS las tablas de `urbanflet_gold` combinadas suma apenas
+    # unos KB, nada que explique un RSS de >1GB. La causa real: las tablas
+    # de log internas de ClickHouse (`system.text_log`,
+    # `system.asynchronous_metric_log`, etc.) no traen TTL en la imagen
+    # stock y llevaban acumulando sin límite desde 2026-07-29 -- 51.6M
+    # filas en text_log, 198.8M en asynchronous_metric_log -- empujando el
+    # RSS real a ~1.3GB por sí solas. Corregido de raíz con TTL real en
+    # `clickhouse/config.d/retencion_logs_sistema.xml` (ver ese archivo
+    # para el detalle completo y la medición antes/después). Este
+    # mem_limit de 1700m se deja igual (no hacía falta subirlo más, una
+    # vez resuelta la causa real) -- con las tablas de log en su tamaño
+    # normal el RSS en reposo baja a ~580MB, dejando margen real genuino.
+    mem_limit: 1700m
     ports:
       - "8123:8123"
       - "9000:9000"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/config.d/memoria.xml:/etc/clickhouse-server/config.d/memoria.xml:ro
+      - ./clickhouse/config.d/retencion_logs_sistema.xml:/etc/clickhouse-server/config.d/retencion_logs_sistema.xml:ro
     ulimits:
       nofile:
         soft: 262144
         hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   # --- Orquestación ETL: Apache Airflow 2.x, DAGs Medallion por dominio (línea 45) ---
   # airflow-db es solo el metastore interno de Airflow (jobs, DAG runs); no es
@@ -129,6 +264,7 @@ services:
   airflow-db:
     image: postgres:16-alpine
     restart: unless-stopped
+    mem_limit: 400m
     environment:
       POSTGRES_USER: ${AIRFLOW_DB_USER:-airflow}
       POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:-airflow}
@@ -143,6 +279,9 @@ services:
 
   airflow-init:
     image: apache/airflow:2.9.3-python3.11
+    # One-shot (db migrate + crear usuario admin, sale) -- límite bajo
+    # defensivo, no cuenta contra el presupuesto de 7.5GB.
+    mem_limit: 400m
     depends_on:
       airflow-db:
         condition: service_healthy
@@ -152,6 +291,16 @@ services:
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-}
       AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY:-change-me}
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      # Default de Airflow es 4 workers gunicorn -- cada uno carga su propia
+      # copia completa del DAG bag en memoria. Con un solo usuario real
+      # (nunca concurrencia real de navegador), 4 workers solo multiplican
+      # el consumo base sin ningún beneficio -- confirmado real: el
+      # webserver llegó a 88.8% de un mem_limit de 1200m con solo login +
+      # Grid view + un trigger manual. Bajado a 2, suficiente para servir
+      # una sesión de navegador sin bloquearse mientras gunicorn recicla un
+      # worker. Sin efecto en airflow-init/airflow-scheduler (no corren
+      # gunicorn), la variable solo la lee el proceso `webserver`.
+      AIRFLOW__WEBSERVER__WORKERS: "2"
       MONGO_URI: mongodb://mongo:27017
       POCKETBASE_URL: http://pocketbase:8090
       CLICKHOUSE_HOST: clickhouse
@@ -166,12 +315,21 @@ services:
       - ./analytics/dags:/opt/airflow/dags
       - ./analytics/logs:/opt/airflow/logs
       - ./analytics/plugins:/opt/airflow/plugins
-    entrypoint: /bin/bash
-    command: -c "airflow db migrate && airflow users create --username admin --password admin --firstname Admin --lastname Plataforma --role Admin --email admin@urbanflet.local || true"
+    # Entrypoint por defecto de la imagen: es el que instala
+    # _PIP_ADDITIONAL_REQUIREMENTS (sin él, cargar analytics/plugins falla en
+    # `import clickhouse_connect`).
+    command: ["bash", "-c", "airflow db migrate && airflow users create --username admin --password admin --firstname Admin --lastname Plataforma --role Admin --email admin@urbanflet.local || true"]
 
   airflow-webserver:
     image: apache/airflow:2.9.3-python3.11
     restart: unless-stopped
+    # 1000m: bajar de 4 a 2 workers gunicorn (AIRFLOW__WEBSERVER__WORKERS
+    # arriba) sí redujo el uso (de 1.04GB a ~794MB), pero 800m dejaba el
+    # proceso estable en 99.3% de uso real -- sin OOM-kill en la prueba,
+    # pero sin ningún margen de verdad (una pestaña más, un DAG más pesado
+    # al parsear, y se cae). 1000m es el primer nivel que deja un margen
+    # real verificado (~80%) con la misma carga.
+    mem_limit: 1000m
     depends_on:
       airflow-init:
         condition: service_completed_successfully
@@ -189,6 +347,12 @@ services:
   airflow-scheduler:
     image: apache/airflow:2.9.3-python3.11
     restart: unless-stopped
+    # Con LocalExecutor las tareas de los DAGs corren por fork() DENTRO de
+    # este mismo contenedor (ver CLAUDE.md) -- es el componente de Airflow
+    # con más variabilidad de memoria bajo carga real (ETL en chunks de
+    # pymongo/clickhouse-connect), por eso lleva el mayor mem_limit de los 3
+    # servicios de Airflow.
+    mem_limit: 1300m
     depends_on:
       airflow-init:
         condition: service_completed_successfully
@@ -209,9 +373,35 @@ services:
       - ./analytics/exports:/opt/airflow/exports
     command: scheduler
 
+  # --- Primera carga de la capa Gold para la demo (una sola vez) ---
+  # Ejecuta las tareas reales de los DAGs de dominio día por día sobre los
+  # ~3 meses sembrados, publica los rpt_* que leen los paneles táctico y
+  # estratégico, y despausa los DAGs. Idempotente: si ClickHouse ya tiene
+  # corridas, sale sin hacer nada. Ver analytics/scripts/bootstrap_demo.py.
+  airflow-bootstrap:
+    image: apache/airflow:2.9.3-python3.11
+    restart: "no"
+    mem_limit: 1000m
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      clickhouse:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    environment: *airflow-env
+    volumes:
+      - ./analytics/dags:/opt/airflow/dags
+      - ./analytics/logs:/opt/airflow/logs
+      - ./analytics/plugins:/opt/airflow/plugins
+      - ./analytics/scripts:/opt/airflow/scripts:ro
+      - ./analytics/exports:/opt/airflow/exports
+    command: ["python", "/opt/airflow/scripts/bootstrap_demo.py"]
+
 volumes:
   mongo_data:
   pocketbase_data:
   clickhouse_data:
   airflow_db_data:
   respaldos_data:
+  archivos_data:
